@@ -3,7 +3,7 @@ import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import compression from 'compression';
-import { initDb } from './db/database.js';
+import { initDb, db } from './db/database.js';
 import { authMiddleware, adminMiddleware } from './middleware/auth.js';
 
 // Route imports
@@ -39,6 +39,23 @@ app.set('trust proxy', 1);
 
 app.get('/api/health', (_req, res) => {
   res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// One-time seed endpoint — only seeds if no users exist
+app.post('/api/seed', async (_req, res) => {
+  try {
+    const userCount = (db.prepare('SELECT COUNT(*) as count FROM users').get() as any).count;
+    if (userCount > 0) {
+      res.json({ message: 'Database already seeded', userCount });
+      return;
+    }
+    // Dynamic import of seed script
+    await import('./db/seed.js');
+    res.json({ message: 'Database seeded successfully' });
+  } catch (error: any) {
+    console.error('Seed error:', error);
+    res.status(500).json({ error: 'Seed failed', details: error.message });
+  }
 });
 
 // ============================================================
