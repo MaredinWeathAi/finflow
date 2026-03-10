@@ -1,7 +1,7 @@
 import { NavLink, useLocation } from 'react-router-dom'
 import {
   LayoutDashboard,
-  ArrowLeftRight,
+  Target,
   Lightbulb,
   PieChart,
   Settings,
@@ -12,16 +12,16 @@ import { useAuthStore } from '@/stores/authStore'
 
 const clientMobileNavItems = [
   { to: '/', icon: LayoutDashboard, label: 'Home' },
-  { to: '/transactions', icon: ArrowLeftRight, label: 'Transactions' },
   { to: '/insights', icon: Lightbulb, label: 'Insights' },
+  { to: '/goals', icon: Target, label: 'Goals' },
   { to: '/budgets', icon: PieChart, label: 'Budgets' },
   { to: '/settings', icon: Settings, label: 'Settings' },
 ]
 
 const adminMobileNavItems = [
   { to: '/admin', icon: Shield, label: 'Admin' },
-  { to: '/transactions', icon: ArrowLeftRight, label: 'Transactions' },
   { to: '/insights', icon: Lightbulb, label: 'Insights' },
+  { to: '/goals', icon: Target, label: 'Goals' },
   { to: '/budgets', icon: PieChart, label: 'Budgets' },
   { to: '/settings', icon: Settings, label: 'Settings' },
 ]

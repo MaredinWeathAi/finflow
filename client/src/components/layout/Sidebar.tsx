@@ -25,14 +25,14 @@ import { useState } from 'react'
 const clientNavItems = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
   { to: '/insights', icon: Lightbulb, label: 'Insights' },
-  { to: '/upload', icon: Upload, label: 'Upload' },
-  { to: '/transactions', icon: ArrowLeftRight, label: 'Transactions' },
+  { to: '/goals', icon: Target, label: 'Goals' },
   { to: '/budgets', icon: PieChart, label: 'Budgets' },
+  { to: '/transactions', icon: ArrowLeftRight, label: 'Transactions' },
   { to: '/accounts', icon: Wallet, label: 'Accounts' },
   { to: '/recurring', icon: Repeat, label: 'Recurring' },
   { to: '/cashflow', icon: TrendingUp, label: 'Cash Flow' },
   { to: '/investments', icon: LineChart, label: 'Investments' },
-  { to: '/goals', icon: Target, label: 'Goals' },
+  { to: '/upload', icon: Upload, label: 'Upload' },
   { to: '/reports', icon: FileText, label: 'Reports' },
   { to: '/settings', icon: Settings, label: 'Settings' },
 ]
