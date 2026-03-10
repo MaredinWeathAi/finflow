@@ -1,5 +1,10 @@
 import * as XLSX from 'xlsx';
-import { PDFParse } from 'pdf-parse';
+import {
+  parseStatement,
+  StatementParseResult,
+  normalizeDate as stmtNormalizeDate,
+  normalizeAmount as stmtNormalizeAmount,
+} from './statementParser.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -12,6 +17,10 @@ export interface ParsedRow {
   category?: string;   // raw category string if present
   account?: string;    // raw account reference if present
   notes?: string;
+  isTransfer?: boolean;
+  transferType?: string;
+  transferAccountRef?: string;
+  flags?: string[];
   rawData: Record<string, string>;  // original row data
 }
 
@@ -205,10 +214,10 @@ export async function parsePDF(buffer: Buffer): Promise<ParseResult> {
 
   let text: string;
   try {
-    const parser = new PDFParse({ data: buffer });
-    const result = await parser.getText();
+    const { PDFParse } = await import('pdf-parse');
+    const instance = new PDFParse({ data: buffer });
+    const result = await instance.getText();
     text = result.text;
-    await parser.destroy();
   } catch (err: any) {
     return {
       rows: [],
@@ -219,6 +228,46 @@ export async function parsePDF(buffer: Buffer): Promise<ParseResult> {
     };
   }
 
+  // Try intelligent statement parsing first
+  const statementResult = parseStatement(text);
+  if (statementResult) {
+    return convertStatementToParseResult(statementResult);
+  }
+
+  // Fall back to generic PDF parsing
+  return parseGenericPDF(text);
+}
+
+function convertStatementToParseResult(result: StatementParseResult): ParseResult {
+  const rows: ParsedRow[] = result.transactions.map((txn) => ({
+    date: txn.date,
+    name: txn.merchantName || txn.description,
+    amount: txn.amount,
+    category: txn.category,
+    account: result.metadata.accountNickname,
+    notes: txn.description,
+    isTransfer: txn.isTransfer,
+    transferType: txn.transferType,
+    transferAccountRef: txn.transferAccountRef,
+    flags: txn.flags,
+    rawData: {
+      description: txn.description,
+      section: txn.section,
+      merchantName: txn.merchantName || '',
+    },
+  }));
+
+  return {
+    rows,
+    headers: ['date', 'description', 'amount'],
+    fileType: 'pdf',
+    rowCount: rows.length,
+    errors: result.errors,
+  };
+}
+
+function parseGenericPDF(text: string): ParseResult {
+  const errors: string[] = [];
   const lines = text.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 0);
 
   // Common bank statement patterns:
