@@ -838,3 +838,4 @@ export function normalizeAmount(raw: string): number {
   // Round to 2 decimal places
   return Math.round(result * 100) / 100;
 }
+// Build trigger: 1773180579
