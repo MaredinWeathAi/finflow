@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+server/dist/
+public/
+client/dist/
+
+# Database
+*.db
+*.db-wal
+*.db-shm
+
+# Environment
+.env
+
+# OS
+.DS_Store
+
+# Logs
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# Uploads temp
+uploads/

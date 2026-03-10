@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#1a1a2e"/>
+      <stop offset="100%" style="stop-color:#0E0E16"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#C4B5FD"/>
+      <stop offset="100%" style="stop-color:#A78BFA"/>
+    </linearGradient>
+    <linearGradient id="green" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#6EE7B7"/>
+      <stop offset="100%" style="stop-color:#34D399"/>
+    </linearGradient>
+    <linearGradient id="cardGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#2D2B55"/>
+      <stop offset="100%" style="stop-color:#1E1B3A"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Rounded square background -->
+  <rect width="1024" height="1024" rx="220" ry="220" fill="url(#bg)"/>
+
+  <!-- Subtle border glow -->
+  <rect x="8" y="8" width="1008" height="1008" rx="216" ry="216" fill="none" stroke="#A78BFA" stroke-width="3" opacity="0.3"/>
+
+  <!-- Wallet body -->
+  <rect x="200" y="280" width="624" height="420" rx="40" ry="40" fill="url(#cardGrad)" stroke="#A78BFA" stroke-width="4" opacity="0.9"/>
+
+  <!-- Wallet flap -->
+  <path d="M200 380 Q200 280 300 280 L724 280 Q824 280 824 380 L824 420 Q824 360 724 360 L300 360 Q200 360 200 420 Z" fill="#352F5E" stroke="#A78BFA" stroke-width="3" opacity="0.8"/>
+
+  <!-- Dollar sign circle -->
+  <circle cx="512" cy="520" r="100" fill="url(#green)" opacity="0.9"/>
+  <text x="512" y="560" font-family="system-ui, -apple-system, sans-serif" font-size="130" font-weight="bold" fill="#0E0E16" text-anchor="middle" dominant-baseline="middle" opacity="0.9">$</text>
+
+  <!-- Budget bars - left side -->
+  <rect x="260" y="430" width="140" height="14" rx="7" fill="#A78BFA" opacity="0.5"/>
+  <rect x="260" y="430" width="95" height="14" rx="7" fill="url(#accent)" opacity="0.9"/>
+
+  <rect x="260" y="460" width="140" height="14" rx="7" fill="#A78BFA" opacity="0.5"/>
+  <rect x="260" y="460" width="120" height="14" rx="7" fill="url(#green)" opacity="0.9"/>
+
+  <rect x="260" y="490" width="140" height="14" rx="7" fill="#A78BFA" opacity="0.5"/>
+  <rect x="260" y="490" width="70" height="14" rx="7" fill="#F59E0B" opacity="0.9"/>
+
+  <!-- Budget bars - right side -->
+  <rect x="624" y="430" width="140" height="14" rx="7" fill="#A78BFA" opacity="0.5"/>
+  <rect x="624" y="430" width="110" height="14" rx="7" fill="url(#accent)" opacity="0.9"/>
+
+  <rect x="624" y="460" width="140" height="14" rx="7" fill="#A78BFA" opacity="0.5"/>
+  <rect x="624" y="460" width="80" height="14" rx="7" fill="url(#green)" opacity="0.9"/>
+
+  <rect x="624" y="490" width="140" height="14" rx="7" fill="#A78BFA" opacity="0.5"/>
+  <rect x="624" y="490" width="130" height="14" rx="7" fill="#FF6B6B" opacity="0.9"/>
+
+  <!-- Mini chart line at bottom -->
+  <polyline points="280,640 340,620 400,630 460,600 520,610 580,580 640,590 700,560 760,570"
+    fill="none" stroke="url(#green)" stroke-width="6" stroke-linecap="round" stroke-linejoin="round" opacity="0.8"/>
+
+  <!-- Chart dots -->
+  <circle cx="280" cy="640" r="5" fill="#34D399" opacity="0.9"/>
+  <circle cx="460" cy="600" r="5" fill="#34D399" opacity="0.9"/>
+  <circle cx="640" cy="590" r="5" fill="#34D399" opacity="0.9"/>
+  <circle cx="760" cy="570" r="5" fill="#34D399" opacity="0.9"/>
+
+  <!-- Coins stacked - top left -->
+  <ellipse cx="280" cy="230" rx="55" ry="18" fill="#F59E0B" opacity="0.7"/>
+  <rect x="225" y="212" width="110" height="18" fill="#F59E0B" opacity="0.5"/>
+  <ellipse cx="280" cy="212" rx="55" ry="18" fill="#FBBF24" opacity="0.8"/>
+
+  <!-- Small coin - top right -->
+  <ellipse cx="744" cy="230" rx="45" ry="15" fill="#34D399" opacity="0.6"/>
+  <rect x="699" y="215" width="90" height="15" fill="#34D399" opacity="0.4"/>
+  <ellipse cx="744" cy="215" rx="45" ry="15" fill="#6EE7B7" opacity="0.7"/>
+
+  <!-- Upward arrow -->
+  <path d="M850 780 L850 740 L830 740 L860 700 L890 740 L870 740 L870 780 Z" fill="url(#green)" opacity="0.7"/>
+</svg>

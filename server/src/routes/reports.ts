@@ -1,0 +1,241 @@
+import { Router, Request, Response } from 'express';
+import { db } from '../db/database.js';
+
+const router = Router();
+
+// GET /monthly?month=YYYY-MM-DD - monthly report
+router.get('/monthly', (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.id;
+    const month = (req.query.month as string) || new Date().toISOString().substring(0, 10);
+    const monthStr = month.substring(0, 7) + '-01';
+
+    const [year, mon] = monthStr.split('-').map(Number);
+    const endOfMonth = new Date(year, mon, 0);
+    const endDate = `${year}-${String(mon).padStart(2, '0')}-${String(endOfMonth.getDate()).padStart(2, '0')}`;
+
+    // Total income (positive amounts)
+    const incomeResult = db
+      .prepare(
+        `SELECT COALESCE(SUM(amount), 0) as total
+         FROM transactions
+         WHERE user_id = ? AND amount > 0 AND date >= ? AND date <= ?`
+      )
+      .get(userId, monthStr, endDate) as any;
+
+    // Total expenses (negative amounts)
+    const expenseResult = db
+      .prepare(
+        `SELECT COALESCE(SUM(ABS(amount)), 0) as total
+         FROM transactions
+         WHERE user_id = ? AND amount < 0 AND date >= ? AND date <= ?`
+      )
+      .get(userId, monthStr, endDate) as any;
+
+    const income = Math.round(incomeResult.total * 100) / 100;
+    const expenses = Math.round(expenseResult.total * 100) / 100;
+    const net = Math.round((income - expenses) * 100) / 100;
+    const savingsRate = income > 0 ? Math.round(((income - expenses) / income) * 10000) / 100 : 0;
+
+    // Top expense categories
+    const topCategories = db
+      .prepare(
+        `SELECT c.id, c.name, c.icon, c.color,
+                COALESCE(SUM(ABS(t.amount)), 0) as total,
+                COUNT(t.id) as transaction_count
+         FROM transactions t
+         JOIN categories c ON t.category_id = c.id
+         WHERE t.user_id = ? AND t.amount < 0 AND t.date >= ? AND t.date <= ?
+         GROUP BY c.id
+         ORDER BY total DESC
+         LIMIT 10`
+      )
+      .all(userId, monthStr, endDate);
+
+    // Transaction count
+    const txCount = db
+      .prepare(
+        `SELECT COUNT(*) as count FROM transactions
+         WHERE user_id = ? AND date >= ? AND date <= ?`
+      )
+      .get(userId, monthStr, endDate) as any;
+
+    res.json({
+      month: monthStr,
+      total_income: income,
+      total_expenses: expenses,
+      net,
+      savings_rate: savingsRate,
+      top_categories: (topCategories as any[]).map((c: any) => ({
+        name: c.name,
+        icon: c.icon,
+        color: c.color,
+        amount: c.total,
+        count: c.transaction_count,
+      })),
+      budget_adherence: 0,
+      transaction_count: txCount.count,
+    });
+  } catch (error) {
+    console.error('Monthly report error:', error);
+    res.status(500).json({ error: 'Failed to generate monthly report' });
+  }
+});
+
+// GET /annual?year=YYYY - annual report with monthly breakdown
+router.get('/annual', (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.id;
+    const year = (req.query.year as string) || String(new Date().getFullYear());
+    const startDate = `${year}-01-01`;
+    const endDate = `${year}-12-31`;
+
+    // Monthly breakdown
+    const monthlyData = db
+      .prepare(
+        `SELECT
+           substr(date, 1, 7) as month,
+           SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) as income,
+           SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END) as expenses
+         FROM transactions
+         WHERE user_id = ? AND date >= ? AND date <= ?
+         GROUP BY substr(date, 1, 7)
+         ORDER BY month ASC`
+      )
+      .all(userId, startDate, endDate)
+      .map((row: any) => ({
+        month: row.month,
+        income: Math.round(row.income * 100) / 100,
+        expenses: Math.round(row.expenses * 100) / 100,
+        net: Math.round((row.income - row.expenses) * 100) / 100,
+      }));
+
+    // Annual totals
+    const totalsResult = db
+      .prepare(
+        `SELECT
+           SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) as total_income,
+           SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END) as total_expenses,
+           COUNT(*) as transaction_count
+         FROM transactions
+         WHERE user_id = ? AND date >= ? AND date <= ?`
+      )
+      .get(userId, startDate, endDate) as any;
+
+    const totalIncome = Math.round((totalsResult.total_income || 0) * 100) / 100;
+    const totalExpenses = Math.round((totalsResult.total_expenses || 0) * 100) / 100;
+    const totalNet = Math.round((totalIncome - totalExpenses) * 100) / 100;
+    const avgMonthlyIncome = Math.round((totalIncome / 12) * 100) / 100;
+    const avgMonthlyExpenses = Math.round((totalExpenses / 12) * 100) / 100;
+
+    // Top categories for the year
+    const topCategories = db
+      .prepare(
+        `SELECT c.id, c.name, c.icon, c.color,
+                COALESCE(SUM(ABS(t.amount)), 0) as total,
+                COUNT(t.id) as transaction_count
+         FROM transactions t
+         JOIN categories c ON t.category_id = c.id
+         WHERE t.user_id = ? AND t.amount < 0 AND t.date >= ? AND t.date <= ?
+         GROUP BY c.id
+         ORDER BY total DESC
+         LIMIT 10`
+      )
+      .all(userId, startDate, endDate);
+
+    res.json({
+      year,
+      totalIncome,
+      totalExpenses,
+      totalNet,
+      avgMonthlyIncome,
+      avgMonthlyExpenses,
+      savingsRate: totalIncome > 0 ? Math.round(((totalIncome - totalExpenses) / totalIncome) * 10000) / 100 : 0,
+      transactionCount: totalsResult.transaction_count,
+      monthlyBreakdown: monthlyData,
+      topCategories,
+    });
+  } catch (error) {
+    console.error('Annual report error:', error);
+    res.status(500).json({ error: 'Failed to generate annual report' });
+  }
+});
+
+// GET /cashflow?period=6m - cash flow data (income vs expenses by month)
+router.get('/cashflow', (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.id;
+    const period = (req.query.period as string) || '6m';
+
+    // Parse period
+    let months = 6;
+    const match = period.match(/^(\d+)m$/);
+    if (match) {
+      months = parseInt(match[1]);
+    }
+
+    // Calculate start date
+    const now = new Date();
+    const startDate = new Date(now.getFullYear(), now.getMonth() - months + 1, 1);
+    const startStr = startDate.toISOString().substring(0, 10);
+    const endStr = now.toISOString().substring(0, 10);
+
+    const cashflow = db
+      .prepare(
+        `SELECT
+           substr(date, 1, 7) as month,
+           SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) as income,
+           SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END) as expenses
+         FROM transactions
+         WHERE user_id = ? AND date >= ? AND date <= ?
+         GROUP BY substr(date, 1, 7)
+         ORDER BY month ASC`
+      )
+      .all(userId, startStr, endStr)
+      .map((row: any) => ({
+        month: row.month,
+        income: Math.round(row.income * 100) / 100,
+        expenses: Math.round(row.expenses * 100) / 100,
+        net: Math.round((row.income - row.expenses) * 100) / 100,
+      }));
+
+    // Fill in missing months with zero values
+    const allMonths: any[] = [];
+    const current = new Date(startDate);
+    while (current <= now) {
+      const monthKey = `${current.getFullYear()}-${String(current.getMonth() + 1).padStart(2, '0')}`;
+      const existing = cashflow.find((c: any) => c.month === monthKey);
+      allMonths.push(
+        existing || { month: monthKey, income: 0, expenses: 0, net: 0 }
+      );
+      current.setMonth(current.getMonth() + 1);
+    }
+
+    res.json(allMonths);
+  } catch (error) {
+    console.error('Cash flow error:', error);
+    res.status(500).json({ error: 'Failed to generate cash flow report' });
+  }
+});
+
+// GET /networth-history - return net_worth_snapshots
+router.get('/networth-history', (req: Request, res: Response) => {
+  try {
+    const snapshots = db
+      .prepare(
+        'SELECT * FROM net_worth_snapshots WHERE user_id = ? ORDER BY date ASC'
+      )
+      .all(req.user!.id)
+      .map((s: any) => ({
+        ...s,
+        breakdown: JSON.parse(s.breakdown || '{}'),
+      }));
+
+    res.json(snapshots);
+  } catch (error) {
+    console.error('Net worth history error:', error);
+    res.status(500).json({ error: 'Failed to get net worth history' });
+  }
+});
+
+export default router;

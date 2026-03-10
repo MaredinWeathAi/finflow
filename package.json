@@ -1,0 +1,23 @@
+{
+  "name": "finflow",
+  "version": "1.0.0",
+  "description": "FinFlow - Smart Budget Planning & Financial Insights",
+  "private": true,
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
+    "dev:client": "cd client && npm run dev",
+    "dev:server": "cd server && npx tsx src/index.ts",
+    "build:client": "cd client && npm install && npm run build",
+    "build:server": "cd server && npm install && npx tsc",
+    "build": "npm run build:client && npm run build:server",
+    "start": "node server/dist/index.js",
+    "seed": "cd server && npx tsx src/db/seed.ts",
+    "postinstall": "npm run build"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
