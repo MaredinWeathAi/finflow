@@ -6,8 +6,9 @@ interface AuthState {
   user: User | null
   isLoading: boolean
   isAuthenticated: boolean
-  login: (email: string, password: string) => Promise<void>
-  register: (name: string, email: string, password: string) => Promise<void>
+  isAdmin: boolean
+  login: (identifier: string, password: string) => Promise<void>
+  register: (name: string, email: string, password: string, username?: string) => Promise<void>
   logout: () => void
   checkAuth: () => Promise<void>
 }
@@ -16,36 +17,37 @@ export const useAuthStore = create<AuthState>((set) => ({
   user: null,
   isLoading: true,
   isAuthenticated: false,
+  isAdmin: false,
 
-  login: async (email, password) => {
-    const res = await api.post<{ token: string; user: User }>('/auth/login', { email, password })
-    localStorage.setItem('finflow_token', res.token)
-    set({ user: res.user, isAuthenticated: true })
+  login: async (identifier, password) => {
+    const res = await api.post<{ token: string; user: User }>('/auth/login', { email: identifier, password })
+    localStorage.setItem('finbudget_token', res.token)
+    set({ user: res.user, isAuthenticated: true, isAdmin: res.user.role === 'admin' })
   },
 
-  register: async (name, email, password) => {
-    const res = await api.post<{ token: string; user: User }>('/auth/register', { name, email, password })
-    localStorage.setItem('finflow_token', res.token)
-    set({ user: res.user, isAuthenticated: true })
+  register: async (name, email, password, username) => {
+    const res = await api.post<{ token: string; user: User }>('/auth/register', { name, email, password, username })
+    localStorage.setItem('finbudget_token', res.token)
+    set({ user: res.user, isAuthenticated: true, isAdmin: res.user.role === 'admin' })
   },
 
   logout: () => {
-    localStorage.removeItem('finflow_token')
-    set({ user: null, isAuthenticated: false })
+    localStorage.removeItem('finbudget_token')
+    set({ user: null, isAuthenticated: false, isAdmin: false })
   },
 
   checkAuth: async () => {
-    const token = localStorage.getItem('finflow_token')
+    const token = localStorage.getItem('finbudget_token')
     if (!token) {
       set({ isLoading: false, isAuthenticated: false })
       return
     }
     try {
       const user = await api.get<User>('/auth/me')
-      set({ user, isAuthenticated: true, isLoading: false })
+      set({ user, isAuthenticated: true, isAdmin: user.role === 'admin', isLoading: false })
     } catch {
-      localStorage.removeItem('finflow_token')
-      set({ user: null, isAuthenticated: false, isLoading: false })
+      localStorage.removeItem('finbudget_token')
+      set({ user: null, isAuthenticated: false, isAdmin: false, isLoading: false })
     }
   },
 }))

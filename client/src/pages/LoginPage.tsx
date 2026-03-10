@@ -1,12 +1,13 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, Link } from 'react-router-dom'
 import { useAuthStore } from '@/stores/authStore'
 
 export function LoginPage() {
   const navigate = useNavigate()
   const [isRegister, setIsRegister] = useState(false)
   const [name, setName] = useState('')
-  const [email, setEmail] = useState('demo@finflow.com')
+  const [username, setUsername] = useState('')
+  const [identifier, setIdentifier] = useState('')
   const [password, setPassword] = useState('password123')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
@@ -18,9 +19,9 @@ export function LoginPage() {
     setLoading(true)
     try {
       if (isRegister) {
-        await register(name, email, password)
+        await register(name, identifier, password, username || undefined)
       } else {
-        await login(email, password)
+        await login(identifier, password)
       }
       navigate('/', { replace: true })
     } catch (err: any) {
@@ -37,8 +38,8 @@ export function LoginPage() {
           <div className="w-14 h-14 rounded-2xl bg-primary flex items-center justify-center mx-auto mb-4">
             <span className="text-primary-foreground font-bold text-2xl">F</span>
           </div>
-          <h1 className="text-3xl font-bold tracking-tight">FinFlow</h1>
-          <p className="text-muted-foreground mt-2">Personal Finance Dashboard</p>
+          <h1 className="text-3xl font-bold tracking-tight">FinBudget</h1>
+          <p className="text-muted-foreground mt-2">Smart Budget Management</p>
         </div>
 
         <div className="bg-card rounded-2xl border border-border/50 p-6">
@@ -54,39 +55,63 @@ export function LoginPage() {
 
           <form onSubmit={handleSubmit} className="space-y-4">
             {isRegister && (
-              <div>
-                <label className="text-sm font-medium text-muted-foreground uppercase tracking-wider">
-                  Name
-                </label>
-                <input
-                  type="text"
-                  value={name}
-                  onChange={e => setName(e.target.value)}
-                  className="mt-1.5 w-full h-10 rounded-lg border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-                  placeholder="John Doe"
-                  required
-                />
-              </div>
+              <>
+                <div>
+                  <label className="text-sm font-medium text-muted-foreground uppercase tracking-wider">
+                    Full Name
+                  </label>
+                  <input
+                    type="text"
+                    value={name}
+                    onChange={e => setName(e.target.value)}
+                    className="mt-1.5 w-full h-10 rounded-lg border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                    placeholder="John Doe"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="text-sm font-medium text-muted-foreground uppercase tracking-wider">
+                    Username (optional)
+                  </label>
+                  <input
+                    type="text"
+                    value={username}
+                    onChange={e => setUsername(e.target.value)}
+                    className="mt-1.5 w-full h-10 rounded-lg border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                    placeholder="johndoe"
+                  />
+                </div>
+              </>
             )}
 
             <div>
               <label className="text-sm font-medium text-muted-foreground uppercase tracking-wider">
-                Email
+                {isRegister ? 'Email' : 'Email or Username'}
               </label>
               <input
-                type="email"
-                value={email}
-                onChange={e => setEmail(e.target.value)}
+                type={isRegister ? 'email' : 'text'}
+                value={identifier}
+                onChange={e => setIdentifier(e.target.value)}
                 className="mt-1.5 w-full h-10 rounded-lg border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-                placeholder="you@example.com"
+                placeholder={isRegister ? 'you@example.com' : 'Email or username'}
                 required
               />
             </div>
 
             <div>
-              <label className="text-sm font-medium text-muted-foreground uppercase tracking-wider">
-                Password
-              </label>
+              <div className="flex items-center justify-between">
+                <label className="text-sm font-medium text-muted-foreground uppercase tracking-wider">
+                  Password
+                </label>
+                {!isRegister && (
+                  <Link
+                    to="/forgot-password"
+                    className="text-xs text-primary hover:text-primary/80 transition-colors"
+                  >
+                    Forgot password?
+                  </Link>
+                )}
+              </div>
               <input
                 type="password"
                 value={password}
@@ -119,7 +144,7 @@ export function LoginPage() {
         </div>
 
         <p className="text-center text-xs text-muted-foreground mt-4">
-          Demo credentials: demo@finflow.com / password123
+          Admin: marcelo / demo123 &bull; Client: johndoe / password123
         </p>
       </div>
     </div>

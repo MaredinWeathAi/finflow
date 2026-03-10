@@ -4,7 +4,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import compression from 'compression';
 import { initDb } from './db/database.js';
-import { authMiddleware } from './middleware/auth.js';
+import { authMiddleware, adminMiddleware } from './middleware/auth.js';
 
 // Route imports
 import authRoutes from './routes/auth.js';
@@ -21,6 +21,7 @@ import dataRoutes from './routes/data.js';
 import insightsRoutes from './routes/insights.js';
 import uploadRoutes from './routes/upload.js';
 import clarificationsRoutes from './routes/clarifications.js';
+import adminRoutes from './routes/admin.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -95,6 +96,7 @@ app.use('/api/data', authMiddleware, dataRoutes);
 app.use('/api/insights', authMiddleware, insightsRoutes);
 app.use('/api/upload', authMiddleware, uploadRoutes);
 app.use('/api/clarifications', authMiddleware, clarificationsRoutes);
+app.use('/api/admin', authMiddleware, adminMiddleware, adminRoutes);
 
 // ============================================================
 // ERROR HANDLING

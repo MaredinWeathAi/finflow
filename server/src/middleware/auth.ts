@@ -11,13 +11,14 @@ declare global {
       user?: {
         id: string;
         email: string;
+        role: string;
       };
     }
   }
 }
 
-export function generateToken(userId: string, email: string): string {
-  return jwt.sign({ id: userId, email }, JWT_SECRET, {
+export function generateToken(userId: string, email: string, role: string = 'client'): string {
+  return jwt.sign({ id: userId, email, role }, JWT_SECRET, {
     expiresIn: JWT_EXPIRES_IN,
   });
 }
@@ -40,11 +41,20 @@ export function authMiddleware(
     const decoded = jwt.verify(token, JWT_SECRET) as {
       id: string;
       email: string;
+      role: string;
     };
 
-    req.user = { id: decoded.id, email: decoded.email };
+    req.user = { id: decoded.id, email: decoded.email, role: decoded.role || 'client' };
     next();
   } catch (error) {
     res.status(401).json({ error: 'Invalid or expired token' });
   }
+}
+
+export function adminMiddleware(req: Request, res: Response, next: NextFunction): void {
+  if (!req.user || req.user.role !== 'admin') {
+    res.status(403).json({ error: 'Admin access required' });
+    return;
+  }
+  next();
 }

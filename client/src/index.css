@@ -86,3 +86,13 @@
 .stagger-6 { animation-delay: 0.3s; }
 .stagger-7 { animation-delay: 0.35s; }
 .stagger-8 { animation-delay: 0.4s; }
+
+/* Print styles */
+@media print {
+  body { background: white !important; color: black !important; }
+  .print\:hidden { display: none !important; }
+  .print\:block { display: block !important; }
+  .print\:bg-white { background: white !important; }
+  .print\:text-black { color: black !important; }
+  .print\:border-gray-200 { border-color: #e5e7eb !important; }
+}

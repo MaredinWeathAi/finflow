@@ -253,6 +253,36 @@ function initDb(): void {
     CREATE INDEX IF NOT EXISTS idx_net_worth_snapshots_date ON net_worth_snapshots(date);
   `);
 
+  // Run migrations (safe to re-run)
+  const migrations = [
+    "ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'client'",
+    "ALTER TABLE users ADD COLUMN username TEXT",
+    "ALTER TABLE users ADD COLUMN phone TEXT",
+    "ALTER TABLE users ADD COLUMN advisor_id TEXT REFERENCES users(id)",
+  ];
+  for (const sql of migrations) {
+    try { db.exec(sql); } catch { /* column already exists */ }
+  }
+
+  // Create password reset tokens table if not exists
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS password_reset_tokens (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        token TEXT NOT NULL UNIQUE,
+        expires_at TEXT NOT NULL,
+        used INTEGER DEFAULT 0,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_reset_tokens_token ON password_reset_tokens(token);
+      CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+      CREATE INDEX IF NOT EXISTS idx_users_advisor_id ON users(advisor_id);
+      CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
+    `);
+  } catch { /* tables already exist */ }
+
   console.log('Database initialized successfully');
 }
 

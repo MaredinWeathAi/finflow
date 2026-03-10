@@ -3,6 +3,9 @@ export interface User {
   email: string
   name: string
   currency: string
+  role: 'admin' | 'client'
+  username?: string
+  phone?: string
   created_at: string
 }
 

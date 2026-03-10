@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { randomUUID } from 'crypto';
+import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -31,10 +32,10 @@ db.exec(`DELETE FROM categories WHERE user_id IN (SELECT id FROM users WHERE ema
 db.exec(`DELETE FROM accounts WHERE user_id IN (SELECT id FROM users WHERE email='demo@finflow.com')`);
 db.exec(`DELETE FROM users WHERE email='demo@finflow.com'`);
 
-// 1. Create user
-db.prepare(`INSERT INTO users (id, email, password_hash, name, currency, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-  .run(userId, 'demo@finflow.com', passwordHash, 'Marcelo Zinn', 'USD', now, now);
-console.log('✅ Created demo user (demo@finflow.com / demo123)');
+// 1. Create admin user
+db.prepare(`INSERT INTO users (id, email, username, password_hash, name, role, currency, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+  .run(userId, 'demo@finflow.com', 'marcelo', passwordHash, 'Marcelo Zinn', 'admin', 'USD', now, now);
+console.log('✅ Created admin user (demo@finflow.com / demo123)');
 
 // 2. Create accounts
 const accounts: Record<string, string> = {};
@@ -264,8 +265,95 @@ for (let m = 5; m >= 0; m--) {
 }
 console.log('✅ Created 6 months of net worth history');
 
+// Create demo client users linked to the admin
+const adminUser = userId;
+
+const clients = [
+  { email: 'john@example.com', username: 'johndoe', name: 'John Doe', phone: '555-0101' },
+  { email: 'sarah@example.com', username: 'sarahj', name: 'Sarah Johnson', phone: '555-0102' },
+  { email: 'mike@example.com', username: 'mikew', name: 'Mike Williams', phone: '555-0103' },
+];
+
+for (const c of clients) {
+  const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(c.email) as any;
+  if (!existing) {
+    const cId = crypto.randomUUID();
+    const cHash = bcrypt.hashSync('password123', 10);
+    const cNow = new Date().toISOString();
+    db.prepare(`INSERT INTO users (id, email, username, password_hash, name, phone, role, advisor_id, currency, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, 'client', ?, 'USD', ?, ?)`)
+      .run(cId, c.email, c.username, cHash, c.name, c.phone, adminUser, cNow, cNow);
+
+    // Create some sample data for each client
+    // Add 1 checking account
+    const accId = crypto.randomUUID();
+    db.prepare(`INSERT INTO accounts (id, user_id, name, type, institution, balance, created_at, updated_at)
+      VALUES (?, ?, 'Main Checking', 'checking', 'Chase', ?, ?, ?)`)
+      .run(accId, cId, Math.round(Math.random() * 15000 + 2000), cNow, cNow);
+
+    // Add 1 savings account
+    const savId = crypto.randomUUID();
+    db.prepare(`INSERT INTO accounts (id, user_id, name, type, institution, balance, created_at, updated_at)
+      VALUES (?, ?, 'Savings', 'savings', 'Ally', ?, ?, ?)`)
+      .run(savId, cId, Math.round(Math.random() * 30000 + 5000), cNow, cNow);
+
+    // Add some default categories
+    const catNames = ['Housing', 'Food & Dining', 'Transportation', 'Entertainment', 'Healthcare', 'Salary'];
+    const catIcons = ['🏠', '🍕', '🚗', '🎬', '🏥', '💰'];
+    const catColors = ['#4F46E5', '#F59E0B', '#10B981', '#EC4899', '#06B6D4', '#22C55E'];
+    const catIds: string[] = [];
+    for (let i = 0; i < catNames.length; i++) {
+      const catId = crypto.randomUUID();
+      catIds.push(catId);
+      db.prepare(`INSERT INTO categories (id, user_id, name, icon, color, is_income, sort_order)
+        VALUES (?, ?, ?, ?, ?, ?, ?)`)
+        .run(catId, cId, catNames[i], catIcons[i], catColors[i], catNames[i] === 'Salary' ? 1 : 0, i);
+    }
+
+    // Add some transactions for last 3 months
+    for (let m = 0; m < 3; m++) {
+      const d = new Date();
+      d.setMonth(d.getMonth() - m);
+      const monthStr = d.toISOString().substring(0, 7);
+
+      // Salary
+      const salDate = `${monthStr}-01`;
+      db.prepare(`INSERT INTO transactions (id, user_id, account_id, name, amount, category_id, date, created_at, updated_at)
+        VALUES (?, ?, ?, 'Salary', ?, ?, ?, ?, ?)`)
+        .run(crypto.randomUUID(), cId, accId, 4500 + Math.random() * 1000, catIds[5], salDate, cNow, cNow);
+
+      // Expenses
+      const expenseItems = [
+        { name: 'Rent', cat: 0, amt: -(1200 + Math.random() * 300) },
+        { name: 'Groceries', cat: 1, amt: -(150 + Math.random() * 100) },
+        { name: 'Gas', cat: 2, amt: -(40 + Math.random() * 30) },
+        { name: 'Netflix', cat: 3, amt: -15.99 },
+        { name: 'Doctor Visit', cat: 4, amt: -(50 + Math.random() * 100) },
+      ];
+      for (const exp of expenseItems) {
+        const expDate = `${monthStr}-${String(Math.floor(Math.random() * 25 + 1)).padStart(2, '0')}`;
+        db.prepare(`INSERT INTO transactions (id, user_id, account_id, name, amount, category_id, date, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+          .run(crypto.randomUUID(), cId, accId, exp.name, Math.round(exp.amt * 100) / 100, catIds[exp.cat], expDate, cNow, cNow);
+      }
+    }
+
+    // Add a budget
+    const budgetMonth = new Date().toISOString().substring(0, 7) + '-01';
+    for (let i = 0; i < 5; i++) {
+      db.prepare(`INSERT INTO budgets (id, user_id, category_id, month, amount) VALUES (?, ?, ?, ?, ?)`)
+        .run(crypto.randomUUID(), cId, catIds[i], budgetMonth, [1500, 500, 200, 100, 200][i]);
+    }
+  }
+}
+console.log('✅ Created 3 demo client users with sample data');
+
 console.log('\n🎉 Seeding complete!');
-console.log('   Login: demo@finflow.com / demo123');
+console.log('   Admin Login: demo@finflow.com / demo123');
+console.log('   Client Logins:');
+console.log('     john@example.com / password123');
+console.log('     sarah@example.com / password123');
+console.log('     mike@example.com / password123');
 console.log(`   Total transactions: ${txCount}`);
 
 db.close();

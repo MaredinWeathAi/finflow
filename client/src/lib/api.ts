@@ -4,7 +4,7 @@ async function request<T>(
   endpoint: string,
   options: RequestInit = {}
 ): Promise<T> {
-  const token = localStorage.getItem('finflow_token')
+  const token = localStorage.getItem('finbudget_token')
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...(options.headers as Record<string, string>),
@@ -36,7 +36,7 @@ export const api = {
   delete: <T>(endpoint: string) =>
     request<T>(endpoint, { method: 'DELETE' }),
   upload: <T>(endpoint: string, formData: FormData) => {
-    const token = localStorage.getItem('finflow_token')
+    const token = localStorage.getItem('finbudget_token')
     const headers: Record<string, string> = {}
     if (token) headers['Authorization'] = `Bearer ${token}`
     return fetch(`${API_BASE}${endpoint}`, {

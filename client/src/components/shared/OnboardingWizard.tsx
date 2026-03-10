@@ -13,7 +13,7 @@ interface OnboardingWizardProps {
 const STEPS = [
   {
     id: 'welcome',
-    title: 'Welcome to FinFlow',
+    title: 'Welcome to FinBudget',
     subtitle: 'Let\'s set up your financial dashboard in 3 quick steps',
     icon: Sparkles,
   },
