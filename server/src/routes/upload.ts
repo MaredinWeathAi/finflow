@@ -489,6 +489,46 @@ function extractCoreName(name: string): string {
     .trim();
 }
 
+// PUT /items/bulk-update - update multiple items at once
+// IMPORTANT: This route must be defined BEFORE /items/:id to avoid being caught by the param route
+router.put('/items/bulk-update', (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.id;
+    const { itemIds, updates } = req.body;
+
+    if (!Array.isArray(itemIds) || itemIds.length === 0) {
+      return res.status(400).json({ error: 'itemIds array is required' });
+    }
+
+    const updateStmt = db.prepare(
+      `UPDATE pending_items SET
+        status = COALESCE(?, status),
+        matched_category_id = COALESCE(?, matched_category_id),
+        matched_account_id = COALESCE(?, matched_account_id)
+       WHERE id = ? AND user_id = ?`
+    );
+
+    const bulkUpdate = db.transaction((ids: string[]) => {
+      let updated = 0;
+      for (const id of ids) {
+        const result = updateStmt.run(
+          updates.status || null,
+          updates.matched_category_id || null,
+          updates.matched_account_id || null,
+          id, userId
+        );
+        updated += result.changes;
+      }
+      return updated;
+    });
+
+    const updated = bulkUpdate(itemIds);
+    res.json({ message: `${updated} items updated`, updated });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to bulk update items' });
+  }
+});
+
 // PUT /items/:id - approve/skip/edit a pending item (with smart learn-and-apply)
 router.put('/items/:id', (req: Request, res: Response) => {
   try {
@@ -572,45 +612,6 @@ router.put('/items/:id', (req: Request, res: Response) => {
     });
   } catch (error) {
     res.status(500).json({ error: 'Failed to update item' });
-  }
-});
-
-// PUT /items/bulk-update - update multiple items at once
-router.put('/items/bulk-update', (req: Request, res: Response) => {
-  try {
-    const userId = req.user!.id;
-    const { itemIds, updates } = req.body;
-
-    if (!Array.isArray(itemIds) || itemIds.length === 0) {
-      return res.status(400).json({ error: 'itemIds array is required' });
-    }
-
-    const updateStmt = db.prepare(
-      `UPDATE pending_items SET
-        status = COALESCE(?, status),
-        matched_category_id = COALESCE(?, matched_category_id),
-        matched_account_id = COALESCE(?, matched_account_id)
-       WHERE id = ? AND user_id = ?`
-    );
-
-    const bulkUpdate = db.transaction((ids: string[]) => {
-      let updated = 0;
-      for (const id of ids) {
-        const result = updateStmt.run(
-          updates.status || null,
-          updates.matched_category_id || null,
-          updates.matched_account_id || null,
-          id, userId
-        );
-        updated += result.changes;
-      }
-      return updated;
-    });
-
-    const updated = bulkUpdate(itemIds);
-    res.json({ message: `${updated} items updated`, updated });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to bulk update items' });
   }
 });
 

@@ -23,6 +23,9 @@ import {
   TrendingUp,
   TrendingDown,
   DollarSign,
+  Square,
+  CheckSquare,
+  MinusSquare,
 } from 'lucide-react'
 import { cn, formatCurrency } from '@/lib/utils'
 import { useCategories } from '@/hooks/useCategories'
@@ -559,20 +562,41 @@ function ItemRow({
   categories,
   accounts,
   onUpdateItem,
+  isSelected,
+  onToggleSelect,
+  selectionMode,
 }: {
   item: PendingItem
   categories: Category[]
   accounts: { id: string; name: string }[]
   onUpdateItem: (id: string, updates: Partial<PendingItem>) => void
+  isSelected?: boolean
+  onToggleSelect?: (id: string) => void
+  selectionMode?: boolean
 }) {
   return (
     <tr
       className={cn(
         'hover:bg-accent/20 transition-colors',
         item.status === 'skipped' && 'opacity-50',
-        item.status === 'imported' && 'opacity-60'
+        item.status === 'imported' && 'opacity-60',
+        isSelected && 'bg-primary/5'
       )}
     >
+      {selectionMode && (
+        <td className="pl-4 pr-1 py-3 w-8">
+          <button
+            onClick={() => onToggleSelect?.(item.id)}
+            className="p-0.5 rounded hover:bg-accent/30 transition-colors text-muted-foreground hover:text-foreground"
+          >
+            {isSelected ? (
+              <CheckSquare className="w-4 h-4 text-primary" />
+            ) : (
+              <Square className="w-4 h-4" />
+            )}
+          </button>
+        </td>
+      )}
       <td className="px-4 py-3">
         <StatusBadge status={item.status} />
       </td>
@@ -665,10 +689,36 @@ function ItemRow({
   )
 }
 
-function ItemsTableHeader() {
+function ItemsTableHeader({
+  selectionMode,
+  allSelected,
+  someSelected,
+  onToggleAll,
+}: {
+  selectionMode?: boolean
+  allSelected?: boolean
+  someSelected?: boolean
+  onToggleAll?: () => void
+}) {
   return (
     <thead>
       <tr className="border-b border-border/30">
+        {selectionMode && (
+          <th className="pl-4 pr-1 py-3 w-8">
+            <button
+              onClick={onToggleAll}
+              className="p-0.5 rounded hover:bg-accent/30 transition-colors text-muted-foreground hover:text-foreground"
+            >
+              {allSelected ? (
+                <CheckSquare className="w-4 h-4 text-primary" />
+              ) : someSelected ? (
+                <MinusSquare className="w-4 h-4 text-primary" />
+              ) : (
+                <Square className="w-4 h-4" />
+              )}
+            </button>
+          </th>
+        )}
         <th className="px-4 py-3 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
           Status
         </th>
@@ -702,6 +752,7 @@ function AllItemsTab({
   onUpdateItem,
   onBulkApprove,
   onBulkSkipDuplicates,
+  onBulkAction,
 }: {
   items: PendingItem[]
   categories: Category[]
@@ -709,8 +760,11 @@ function AllItemsTab({
   onUpdateItem: (id: string, updates: Partial<PendingItem>) => void
   onBulkApprove: () => void
   onBulkSkipDuplicates: () => void
+  onBulkAction: (ids: string[], action: 'approved' | 'skipped') => Promise<void>
 }) {
   const [showResolved, setShowResolved] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [isBulkActing, setIsBulkActing] = useState(false)
 
   // Split items: needs review (pending, duplicate) vs resolved (approved, imported, skipped)
   const needsReview = items.filter((i) => i.status === 'pending' || i.status === 'duplicate')
@@ -719,27 +773,108 @@ function AllItemsTab({
   const hasDuplicates = items.some((i) => i.status === 'duplicate')
   const hasPending = items.some((i) => i.status === 'pending')
 
+  // Selection helpers
+  const selectionMode = needsReview.length > 0
+  const allSelected = needsReview.length > 0 && needsReview.every((i) => selectedIds.has(i.id))
+  const someSelected = needsReview.some((i) => selectedIds.has(i.id))
+  const selectedCount = needsReview.filter((i) => selectedIds.has(i.id)).length
+
+  const toggleSelect = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const toggleAll = () => {
+    if (allSelected) {
+      setSelectedIds(new Set())
+    } else {
+      setSelectedIds(new Set(needsReview.map((i) => i.id)))
+    }
+  }
+
+  const handleBulkSelected = async (action: 'approved' | 'skipped') => {
+    const ids = needsReview.filter((i) => selectedIds.has(i.id)).map((i) => i.id)
+    if (ids.length === 0) return
+    setIsBulkActing(true)
+    try {
+      await onBulkAction(ids, action)
+      setSelectedIds(new Set())
+    } finally {
+      setIsBulkActing(false)
+    }
+  }
+
+  // Clean up stale selections when items change status
+  useEffect(() => {
+    setSelectedIds((prev) => {
+      const reviewIds = new Set(needsReview.map((i) => i.id))
+      const cleaned = new Set([...prev].filter((id) => reviewIds.has(id)))
+      return cleaned.size !== prev.size ? cleaned : prev
+    })
+  }, [needsReview.length])
+
   return (
     <div className="space-y-4">
-      {/* Bulk Actions */}
+      {/* Bulk Actions Toolbar */}
       <div className="flex items-center gap-2 flex-wrap">
-        {hasPending && (
-          <button
-            onClick={onBulkApprove}
-            className="h-8 px-3 rounded-lg bg-emerald-500/10 text-emerald-400 text-xs font-medium hover:bg-emerald-500/20 transition-colors flex items-center gap-1.5"
-          >
-            <CheckCircle2 className="w-3.5 h-3.5" />
-            Approve All Pending
-          </button>
+        {/* Selection-based actions (shown when items are selected) */}
+        {selectedCount > 0 && (
+          <div className="flex items-center gap-2 bg-card rounded-xl border border-primary/30 px-3 py-1.5">
+            <span className="text-xs font-semibold text-primary tabular-nums">
+              {selectedCount} selected
+            </span>
+            <div className="w-px h-4 bg-border/50" />
+            <button
+              onClick={() => handleBulkSelected('approved')}
+              disabled={isBulkActing}
+              className="h-7 px-2.5 rounded-lg bg-emerald-500/10 text-emerald-400 text-xs font-medium hover:bg-emerald-500/20 transition-colors flex items-center gap-1.5 disabled:opacity-50"
+            >
+              <Check className="w-3.5 h-3.5" />
+              Approve
+            </button>
+            <button
+              onClick={() => handleBulkSelected('skipped')}
+              disabled={isBulkActing}
+              className="h-7 px-2.5 rounded-lg bg-red-500/10 text-red-400 text-xs font-medium hover:bg-red-500/20 transition-colors flex items-center gap-1.5 disabled:opacity-50"
+            >
+              <SkipForward className="w-3.5 h-3.5" />
+              Skip
+            </button>
+            <button
+              onClick={() => setSelectedIds(new Set())}
+              className="h-7 px-2 rounded-lg text-muted-foreground text-xs hover:bg-accent/30 transition-colors"
+            >
+              Clear
+            </button>
+          </div>
         )}
-        {hasDuplicates && (
-          <button
-            onClick={onBulkSkipDuplicates}
-            className="h-8 px-3 rounded-lg bg-amber-500/10 text-amber-400 text-xs font-medium hover:bg-amber-500/20 transition-colors flex items-center gap-1.5"
-          >
-            <SkipForward className="w-3.5 h-3.5" />
-            Skip All Duplicates
-          </button>
+
+        {/* Quick actions (shown when nothing selected) */}
+        {selectedCount === 0 && (
+          <>
+            {hasPending && (
+              <button
+                onClick={onBulkApprove}
+                className="h-8 px-3 rounded-lg bg-emerald-500/10 text-emerald-400 text-xs font-medium hover:bg-emerald-500/20 transition-colors flex items-center gap-1.5"
+              >
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                Approve All Pending
+              </button>
+            )}
+            {hasDuplicates && (
+              <button
+                onClick={onBulkSkipDuplicates}
+                className="h-8 px-3 rounded-lg bg-amber-500/10 text-amber-400 text-xs font-medium hover:bg-amber-500/20 transition-colors flex items-center gap-1.5"
+              >
+                <SkipForward className="w-3.5 h-3.5" />
+                Skip All Duplicates
+              </button>
+            )}
+          </>
         )}
       </div>
 
@@ -755,14 +890,33 @@ function AllItemsTab({
               <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-400">
                 {needsReview.length}
               </span>
+              {needsReview.length > 1 && selectedCount === 0 && (
+                <span className="text-[10px] text-muted-foreground ml-1">
+                  (use checkboxes to select &amp; bulk action)
+                </span>
+              )}
             </div>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
-              <ItemsTableHeader />
+              <ItemsTableHeader
+                selectionMode={selectionMode}
+                allSelected={allSelected}
+                someSelected={someSelected}
+                onToggleAll={toggleAll}
+              />
               <tbody className="divide-y divide-border/30">
                 {needsReview.map((item) => (
-                  <ItemRow key={item.id} item={item} categories={categories} accounts={accounts} onUpdateItem={onUpdateItem} />
+                  <ItemRow
+                    key={item.id}
+                    item={item}
+                    categories={categories}
+                    accounts={accounts}
+                    onUpdateItem={onUpdateItem}
+                    selectionMode={selectionMode}
+                    isSelected={selectedIds.has(item.id)}
+                    onToggleSelect={toggleSelect}
+                  />
                 ))}
               </tbody>
             </table>
@@ -1425,6 +1579,25 @@ export function UploadPage() {
     }
   }
 
+  // Bulk action on selected items (approve or skip)
+  const handleBulkAction = async (ids: string[], action: 'approved' | 'skipped') => {
+    try {
+      await api.put('/upload/items/bulk-update', {
+        itemIds: ids,
+        updates: { status: action },
+      })
+      setPendingItems((prev) =>
+        prev.map((item) =>
+          ids.includes(item.id) ? { ...item, status: action as PendingItem['status'] } : item
+        )
+      )
+      const label = action === 'approved' ? 'approved' : 'skipped'
+      toast.success(`${ids.length} item${ids.length > 1 ? 's' : ''} ${label}`)
+    } catch {
+      toast.error(`Failed to ${action === 'approved' ? 'approve' : 'skip'} items`)
+    }
+  }
+
   // Import approved items
   const handleImportApproved = async () => {
     if (!currentSession) return
@@ -1639,6 +1812,7 @@ export function UploadPage() {
               onUpdateItem={handleUpdateItem}
               onBulkApprove={handleBulkApprove}
               onBulkSkipDuplicates={handleBulkSkipDuplicates}
+              onBulkAction={handleBulkAction}
             />
           )}
 
