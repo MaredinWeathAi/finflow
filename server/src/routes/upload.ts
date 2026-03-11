@@ -476,7 +476,20 @@ router.get('/sessions/:id', (req: Request, res: Response) => {
   }
 });
 
-// PUT /items/:id - approve/skip/edit a pending item
+// Helper: extract a "core name" from a transaction description for similarity matching.
+// Strips numbers, trailing reference IDs, and normalises whitespace so
+// "AMEX AUTOPAY 230415" and "AMEX AUTOPAY 230502" both become "amex autopay".
+function extractCoreName(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[#\-_:\/\\]/g, ' ')       // replace common separators with space
+    .replace(/\b\d{4,}\b/g, '')          // drop long numbers (reference IDs, dates)
+    .replace(/\b\d{1,3}\.\d{2}\b/g, '') // drop dollar amounts like 123.45
+    .replace(/\s+/g, ' ')               // collapse whitespace
+    .trim();
+}
+
+// PUT /items/:id - approve/skip/edit a pending item (with smart learn-and-apply)
 router.put('/items/:id', (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
@@ -502,14 +515,61 @@ router.put('/items/:id', (req: Request, res: Response) => {
        WHERE id = ?`
     ).run(status, parsed_name, parsed_amount, parsed_date, matched_category_id, matched_account_id, id);
 
-    // If user categorized an item, learn the rule
+    // ── Smart learn-and-apply ──────────────────────────────────────────
+    // When a user assigns a category, learn the rule AND auto-apply it
+    // to all similar pending items in the same session.
+    const autoUpdated: Array<{ id: string; matched_category_id: string; status: string }> = [];
+
     if (matched_category_id && existing.parsed_name) {
+      // 1. Learn the rule so future uploads auto-categorize
       try {
         learnRuleFromCategorizer(userId, existing.parsed_name.toLowerCase(), matched_category_id, 'contains');
-      } catch (e) { /* ignore */ }
+      } catch (e) { /* ignore duplicate rules */ }
+
+      // 2. Find similar pending items in the same session
+      const coreName = extractCoreName(existing.parsed_name);
+      if (coreName.length >= 3) {
+        const siblings = db
+          .prepare(
+            `SELECT id, parsed_name FROM pending_items
+             WHERE session_id = ? AND user_id = ? AND id != ?
+               AND status IN ('pending', 'duplicate')
+               AND (matched_category_id IS NULL OR matched_category_id = '')`
+          )
+          .all(existing.session_id, userId, id) as Array<{ id: string; parsed_name: string }>;
+
+        const toUpdate: string[] = [];
+        for (const sib of siblings) {
+          const sibCore = extractCoreName(sib.parsed_name);
+          // Match if core names are identical, or one contains the other (min 3 chars)
+          if (
+            sibCore === coreName ||
+            (sibCore.length >= 3 && coreName.includes(sibCore)) ||
+            (sibCore.length >= 3 && sibCore.includes(coreName))
+          ) {
+            toUpdate.push(sib.id);
+          }
+        }
+
+        if (toUpdate.length > 0) {
+          const updateSibling = db.prepare(
+            `UPDATE pending_items SET matched_category_id = ?, status = 'approved' WHERE id = ?`
+          );
+          const applyBatch = db.transaction((ids: string[]) => {
+            for (const sibId of ids) {
+              updateSibling.run(matched_category_id, sibId);
+              autoUpdated.push({ id: sibId, matched_category_id, status: 'approved' });
+            }
+          });
+          applyBatch(toUpdate);
+        }
+      }
     }
 
-    res.json({ message: 'Item updated' });
+    res.json({
+      message: 'Item updated',
+      autoUpdated,  // frontend uses this to update its local state
+    });
   } catch (error) {
     res.status(500).json({ error: 'Failed to update item' });
   }

@@ -1350,11 +1350,33 @@ export function UploadPage() {
       if (updates.matched_category_id !== undefined) payload.matched_category_id = updates.matched_category_id
       if (updates.matched_account_id !== undefined) payload.matched_account_id = updates.matched_account_id
 
-      await api.put(`/upload/items/${id}`, payload)
+      const result = await api.put<{
+        message: string
+        autoUpdated?: Array<{ id: string; matched_category_id: string; status: string }>
+      }>(`/upload/items/${id}`, payload)
 
-      setPendingItems((prev) =>
-        prev.map((item) => (item.id === id ? { ...item, ...updates } : item))
-      )
+      setPendingItems((prev) => {
+        // Build a map of auto-updated items for fast lookup
+        const autoMap = new Map<string, { matched_category_id: string; status: string }>()
+        if (result?.autoUpdated) {
+          for (const au of result.autoUpdated) {
+            autoMap.set(au.id, { matched_category_id: au.matched_category_id, status: au.status })
+          }
+        }
+
+        return prev.map((item) => {
+          if (item.id === id) return { ...item, ...updates }
+          const auto = autoMap.get(item.id)
+          if (auto) return { ...item, matched_category_id: auto.matched_category_id, status: auto.status as PendingItem['status'] }
+          return item
+        })
+      })
+
+      // Show toast if items were auto-categorized
+      if (result?.autoUpdated && result.autoUpdated.length > 0) {
+        const catName = categories.find((c) => c.id === updates.matched_category_id)?.name || 'selected category'
+        toast.success(`Smart match: applied "${catName}" to ${result.autoUpdated.length} similar item${result.autoUpdated.length > 1 ? 's' : ''}`)
+      }
     } catch (err) {
       console.error('Failed to update item:', err)
       toast.error('Failed to update item')
