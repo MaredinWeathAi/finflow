@@ -16,6 +16,7 @@ import { ReportsPage } from '@/pages/ReportsPage'
 import { SettingsPage } from '@/pages/SettingsPage'
 import { InsightsPage } from '@/pages/InsightsPage'
 import { UploadPage } from '@/pages/UploadPage'
+import { CategoriesPage } from '@/pages/CategoriesPage'
 import { AdminDashboardPage } from '@/pages/AdminDashboardPage'
 import { AdminClientsPage } from '@/pages/AdminClientsPage'
 import { AdminClientDetailPage } from '@/pages/AdminClientDetailPage'
@@ -83,6 +84,7 @@ export default function App() {
           <Route path="/insights" element={<InsightsPage />} />
           <Route path="/upload" element={<UploadPage />} />
           <Route path="/transactions" element={<TransactionsPage />} />
+          <Route path="/categories" element={<CategoriesPage />} />
           <Route path="/budgets" element={<BudgetsPage />} />
           <Route path="/accounts" element={<AccountsPage />} />
           <Route path="/recurring" element={<RecurringPage />} />

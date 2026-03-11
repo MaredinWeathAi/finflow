@@ -13,7 +13,7 @@ const router = Router();
 const storage = multer.memoryStorage();
 const upload = multer({
   storage,
-  limits: { fileSize: 20 * 1024 * 1024, files: 10 }, // 20MB per file, max 10
+  limits: { fileSize: 20 * 1024 * 1024, files: 10 },
   fileFilter: (_req, file, cb) => {
     const ext = path.extname(file.originalname).toLowerCase();
     const allowed = ['.csv', '.xlsx', '.xls', '.pdf'];
@@ -25,7 +25,131 @@ const upload = multer({
   },
 });
 
-// POST / - upload files, parse, detect duplicates
+// Helper: detect if a transaction looks like a transfer
+function detectTransferType(name: string, amount: number): { isTransfer: boolean; transferType?: string } {
+  const lowerName = name.toLowerCase();
+  const transferKeywords = [
+    'transfer', 'xfer', 'tfr', 'payment to', 'payment from',
+    'zelle', 'venmo', 'paypal', 'wire', 'ach',
+    'credit card payment', 'cc payment', 'card payment',
+    'online payment', 'autopay', 'bill pay',
+    'from checking', 'from savings', 'to checking', 'to savings',
+    'internal transfer', 'between accounts'
+  ];
+  const isTransfer = transferKeywords.some(kw => lowerName.includes(kw));
+
+  if (!isTransfer) return { isTransfer: false };
+
+  // Determine transfer type
+  if (lowerName.includes('credit card') || lowerName.includes('cc payment') || lowerName.includes('card payment')) {
+    return { isTransfer: true, transferType: 'credit_card_payment' };
+  }
+  if (lowerName.includes('zelle') || lowerName.includes('venmo') || lowerName.includes('paypal')) {
+    return { isTransfer: true, transferType: 'p2p' };
+  }
+  return { isTransfer: true, transferType: 'internal' };
+}
+
+// Helper: classify income type
+function classifyIncomeType(name: string, amount: number): string {
+  if (amount <= 0) return 'expense';
+
+  const lowerName = name.toLowerCase();
+
+  // Recurring income patterns
+  const recurringIncomeKeywords = ['payroll', 'salary', 'direct deposit', 'wage', 'paycheck', 'pension', 'social security', 'disability', 'unemployment'];
+  if (recurringIncomeKeywords.some(kw => lowerName.includes(kw))) return 'recurring_income';
+
+  // Investment/interest income
+  const investmentKeywords = ['dividend', 'interest', 'capital gain', 'distribution'];
+  if (investmentKeywords.some(kw => lowerName.includes(kw))) return 'investment_income';
+
+  // Refunds/reimbursements
+  const refundKeywords = ['refund', 'reimburse', 'return', 'cashback', 'credit', 'reversal'];
+  if (refundKeywords.some(kw => lowerName.includes(kw))) return 'refund';
+
+  // One-time/misc income
+  return 'other_income';
+}
+
+// Helper: auto-create account from statement metadata
+function autoCreateAccount(userId: string, statementMeta: any): string {
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+
+  // Map statement account type to our account types
+  let accountType = 'checking';
+  const stmtType = (statementMeta.accountType || '').toLowerCase();
+  if (stmtType.includes('saving')) accountType = 'savings';
+  else if (stmtType.includes('credit') || stmtType.includes('card')) accountType = 'credit';
+  else if (stmtType.includes('loan') || stmtType.includes('mortgage')) accountType = 'loan';
+
+  const accountName = statementMeta.accountNickname || `${statementMeta.institution} ${accountType.charAt(0).toUpperCase() + accountType.slice(1)}`;
+  const institution = statementMeta.institution || 'Unknown';
+  const balance = statementMeta.endingBalance || 0;
+
+  // Check if similar account already exists
+  const existing = db.prepare(
+    `SELECT id FROM accounts WHERE user_id = ? AND (
+      (institution LIKE ? AND type = ?) OR name = ?
+    )`
+  ).get(userId, `%${institution}%`, accountType, accountName) as any;
+
+  if (existing) return existing.id;
+
+  db.prepare(
+    `INSERT INTO accounts (id, user_id, name, type, institution, balance, icon, is_hidden, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`
+  ).run(id, userId, accountName, accountType, institution, balance,
+    accountType === 'credit' ? '💳' : accountType === 'savings' ? '💰' : '🏦',
+    now, now);
+
+  console.log(`Auto-created account: ${accountName} (${accountType}) for user ${userId}`);
+  return id;
+}
+
+// Ensure user has default categories
+function ensureDefaultCategories(userId: string): void {
+  const existingCount = (db.prepare('SELECT COUNT(*) as count FROM categories WHERE user_id = ?').get(userId) as any).count;
+  if (existingCount > 0) return;
+
+  const defaults = [
+    { name: 'Housing', icon: '🏠', color: '#6366F1', isIncome: false },
+    { name: 'Groceries', icon: '🛒', color: '#22C55E', isIncome: false },
+    { name: 'Food & Dining', icon: '🍔', color: '#F59E0B', isIncome: false },
+    { name: 'Transportation', icon: '🚗', color: '#3B82F6', isIncome: false },
+    { name: 'Shopping', icon: '🛍️', color: '#8B5CF6', isIncome: false },
+    { name: 'Utilities', icon: '💡', color: '#14B8A6', isIncome: false },
+    { name: 'Healthcare', icon: '🏥', color: '#EF4444', isIncome: false },
+    { name: 'Entertainment', icon: '🎬', color: '#EC4899', isIncome: false },
+    { name: 'Subscriptions', icon: '📱', color: '#F97316', isIncome: false },
+    { name: 'Insurance', icon: '🛡️', color: '#06B6D4', isIncome: false },
+    { name: 'Health & Fitness', icon: '💪', color: '#10B981', isIncome: false },
+    { name: 'Personal Care', icon: '💇', color: '#D946EF', isIncome: false },
+    { name: 'Education', icon: '📚', color: '#0EA5E9', isIncome: false },
+    { name: 'Travel', icon: '✈️', color: '#F472B6', isIncome: false },
+    { name: 'Pets', icon: '🐾', color: '#A78BFA', isIncome: false },
+    { name: 'Gifts & Donations', icon: '🎁', color: '#FB923C', isIncome: false },
+    { name: 'Investments', icon: '📊', color: '#818CF8', isIncome: false },
+    { name: 'Salary', icon: '💵', color: '#10B981', isIncome: true },
+    { name: 'Freelance', icon: '💼', color: '#22D3EE', isIncome: true },
+    { name: 'Other Income', icon: '💰', color: '#34D399', isIncome: true },
+    { name: 'Transfer', icon: '🔄', color: '#94A3B8', isIncome: false },
+    { name: 'Uncategorized', icon: '❓', color: '#64748B', isIncome: false },
+  ];
+
+  const insert = db.prepare(
+    `INSERT INTO categories (id, user_id, name, icon, color, is_income, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?)`
+  );
+
+  defaults.forEach((cat, idx) => {
+    insert.run(crypto.randomUUID(), userId, cat.name, cat.icon, cat.color, cat.isIncome ? 1 : 0, idx);
+  });
+
+  console.log(`Created ${defaults.length} default categories for user ${userId}`);
+}
+
+// POST / - upload files, parse, detect duplicates, auto-create accounts
 router.post('/', upload.array('files', 10), async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
@@ -34,6 +158,9 @@ router.post('/', upload.array('files', 10), async (req: Request, res: Response) 
     if (!files || files.length === 0) {
       return res.status(400).json({ error: 'No files provided' });
     }
+
+    // Ensure user has default categories
+    ensureDefaultCategories(userId);
 
     const now = new Date().toISOString();
     const sessionId = crypto.randomUUID();
@@ -63,6 +190,25 @@ router.post('/', upload.array('files', 10), async (req: Request, res: Response) 
         // Parse the file
         const result = await parseFile(file.buffer, file.originalname);
 
+        // Auto-create account from statement metadata if needed
+        let autoAccountId: string | null = null;
+        if (result.statementMeta) {
+          autoAccountId = autoCreateAccount(userId, result.statementMeta);
+        }
+
+        // If user has no accounts at all, create a default checking account
+        if (!autoAccountId) {
+          const accountCount = (db.prepare('SELECT COUNT(*) as count FROM accounts WHERE user_id = ?').get(userId) as any).count;
+          if (accountCount === 0) {
+            const defaultAcctId = crypto.randomUUID();
+            db.prepare(
+              `INSERT INTO accounts (id, user_id, name, type, institution, balance, icon, is_hidden, created_at, updated_at)
+               VALUES (?, ?, 'Main Account', 'checking', 'My Bank', 0, '🏦', 0, ?, ?)`
+            ).run(defaultAcctId, userId, now, now);
+            autoAccountId = defaultAcctId;
+          }
+        }
+
         // Update file record
         db.prepare(
           `UPDATE uploaded_files SET row_count = ?, status = 'parsed' WHERE id = ?`
@@ -70,8 +216,8 @@ router.post('/', upload.array('files', 10), async (req: Request, res: Response) 
 
         // Create pending items from parsed rows
         const insertPending = db.prepare(
-          `INSERT INTO pending_items (id, session_id, file_id, user_id, item_type, raw_data, parsed_name, parsed_amount, parsed_date, parsed_category, matched_category_id, status, confidence, created_at)
-           VALUES (?, ?, ?, ?, 'transaction', ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
+          `INSERT INTO pending_items (id, session_id, file_id, user_id, item_type, raw_data, parsed_name, parsed_amount, parsed_date, parsed_category, matched_category_id, matched_account_id, status, confidence, created_at)
+           VALUES (?, ?, ?, ?, 'transaction', ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
         );
 
         const filePendingItems: PendingItemData[] = [];
@@ -82,14 +228,34 @@ router.post('/', upload.array('files', 10), async (req: Request, res: Response) 
           // Auto-categorize
           const catResult = categorizeItem(row.name, row.amount, userId);
 
+          // Detect transfer type
+          const transferInfo = detectTransferType(row.name, row.amount);
+
+          // If it's a transfer, try to assign the Transfer category
+          let finalCategoryId = catResult.categoryId;
+          let finalCategoryName = catResult.categoryName;
+          if (transferInfo.isTransfer || row.isTransfer) {
+            const transferCat = db.prepare(
+              `SELECT id, name FROM categories WHERE user_id = ? AND LOWER(name) = 'transfer'`
+            ).get(userId) as any;
+            if (transferCat) {
+              finalCategoryId = transferCat.id;
+              finalCategoryName = transferCat.name;
+            }
+          }
+
+          // Classify income type
+          const incomeType = classifyIncomeType(row.name, row.amount);
+
           insertPending.run(
             itemId, sessionId, fileId, userId,
-            JSON.stringify(row.rawData),
+            JSON.stringify({ ...row.rawData, incomeType, transferType: transferInfo.transferType || row.transferType || null }),
             row.name,
             row.amount,
             row.date,
-            row.category || catResult.categoryName || null,
-            catResult.categoryId,
+            row.category || finalCategoryName || null,
+            finalCategoryId,
+            autoAccountId,
             catResult.confidence,
             now
           );
@@ -99,8 +265,8 @@ router.post('/', upload.array('files', 10), async (req: Request, res: Response) 
             parsed_name: row.name,
             parsed_amount: row.amount,
             parsed_date: row.date,
-            parsed_category: row.category || catResult.categoryName,
-            matched_category_id: catResult.categoryId || undefined,
+            parsed_category: row.category || finalCategoryName,
+            matched_category_id: finalCategoryId || undefined,
             file_id: fileId,
           });
         }
@@ -123,6 +289,7 @@ router.post('/', upload.array('files', 10), async (req: Request, res: Response) 
           withdrawalCount,
           transferCount,
           statementMeta: result.statementMeta,
+          autoAccountId,
         });
       } catch (parseError: any) {
         db.prepare(
@@ -165,7 +332,7 @@ router.post('/', upload.array('files', 10), async (req: Request, res: Response) 
 
     // Generate clarifications for uncategorized items
     const uncategorized = allPendingItems.filter(item => !item.matched_category_id);
-    for (const item of uncategorized.slice(0, 20)) { // Limit to 20 clarifications
+    for (const item of uncategorized.slice(0, 20)) {
       db.prepare(
         `INSERT INTO clarifications (id, user_id, source, item_type, title, description, context, status, created_at)
          VALUES (?, ?, 'upload', 'category', ?, ?, ?, 'pending', ?)`
@@ -218,7 +385,6 @@ router.get('/sessions', (req: Request, res: Response) => {
       )
       .all(userId) as any[];
 
-    // Attach files to each session
     const getFiles = db.prepare('SELECT * FROM uploaded_files WHERE session_id = ?');
     const enriched = sessions.map(s => ({
       ...s,
@@ -299,7 +465,7 @@ router.put('/items/:id', (req: Request, res: Response) => {
     if (matched_category_id && existing.parsed_name) {
       try {
         learnRuleFromCategorizer(userId, existing.parsed_name.toLowerCase(), matched_category_id, 'contains');
-      } catch (e) { /* ignore if categorizer not available */ }
+      } catch (e) { /* ignore */ }
     }
 
     res.json({ message: 'Item updated' });
@@ -308,12 +474,51 @@ router.put('/items/:id', (req: Request, res: Response) => {
   }
 });
 
-// POST /sessions/:id/import - import all approved/pending items as transactions
+// PUT /items/bulk-update - update multiple items at once
+router.put('/items/bulk-update', (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.id;
+    const { itemIds, updates } = req.body;
+
+    if (!Array.isArray(itemIds) || itemIds.length === 0) {
+      return res.status(400).json({ error: 'itemIds array is required' });
+    }
+
+    const updateStmt = db.prepare(
+      `UPDATE pending_items SET
+        status = COALESCE(?, status),
+        matched_category_id = COALESCE(?, matched_category_id),
+        matched_account_id = COALESCE(?, matched_account_id)
+       WHERE id = ? AND user_id = ?`
+    );
+
+    const bulkUpdate = db.transaction((ids: string[]) => {
+      let updated = 0;
+      for (const id of ids) {
+        const result = updateStmt.run(
+          updates.status || null,
+          updates.matched_category_id || null,
+          updates.matched_account_id || null,
+          id, userId
+        );
+        updated += result.changes;
+      }
+      return updated;
+    });
+
+    const updated = bulkUpdate(itemIds);
+    res.json({ message: `${updated} items updated`, updated });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to bulk update items' });
+  }
+});
+
+// POST /sessions/:id/import - import approved/pending items as transactions
 router.post('/sessions/:id/import', (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
     const { id } = req.params;
-    const { importAll } = req.body; // if true, import all pending items too
+    const { importAll } = req.body;
 
     const session = db
       .prepare('SELECT * FROM upload_sessions WHERE id = ? AND user_id = ?')
@@ -323,6 +528,7 @@ router.post('/sessions/:id/import', (req: Request, res: Response) => {
       return res.status(404).json({ error: 'Session not found' });
     }
 
+    // Import all non-skipped items
     const statusFilter = importAll ? "('pending', 'approved')" : "('approved')";
     const items = db
       .prepare(
@@ -334,13 +540,20 @@ router.post('/sessions/:id/import', (req: Request, res: Response) => {
       return res.json({ message: 'No items to import', imported: 0 });
     }
 
-    // Get default account (first checking account, or any account)
-    const defaultAccount = db
+    // Get or create default account
+    let defaultAccount = db
       .prepare("SELECT id FROM accounts WHERE user_id = ? ORDER BY CASE WHEN type = 'checking' THEN 0 ELSE 1 END, created_at ASC LIMIT 1")
       .get(userId) as any;
 
     if (!defaultAccount) {
-      return res.status(400).json({ error: 'No accounts found. Please create an account first.' });
+      // Auto-create a default account
+      const accId = crypto.randomUUID();
+      const now2 = new Date().toISOString();
+      db.prepare(
+        `INSERT INTO accounts (id, user_id, name, type, institution, balance, icon, is_hidden, created_at, updated_at)
+         VALUES (?, ?, 'Main Account', 'checking', 'My Bank', 0, '🏦', 0, ?, ?)`
+      ).run(accId, userId, now2, now2);
+      defaultAccount = { id: accId };
     }
 
     const now = new Date().toISOString();

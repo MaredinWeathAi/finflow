@@ -405,6 +405,84 @@ router.post('/bulk-categorize', (req: Request, res: Response) => {
   }
 });
 
+// POST /recategorize - change category of a transaction and propagate to all similar ones
+router.post('/recategorize', (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.id;
+    const { transactionId, categoryId, propagate } = req.body;
+
+    if (!transactionId || !categoryId) {
+      res.status(400).json({ error: 'transactionId and categoryId are required' });
+      return;
+    }
+
+    // Get the transaction
+    const transaction = db.prepare(
+      'SELECT * FROM transactions WHERE id = ? AND user_id = ?'
+    ).get(transactionId, userId) as any;
+
+    if (!transaction) {
+      res.status(404).json({ error: 'Transaction not found' });
+      return;
+    }
+
+    // Verify category belongs to user
+    const category = db.prepare(
+      'SELECT id, name FROM categories WHERE id = ? AND user_id = ?'
+    ).get(categoryId, userId) as any;
+
+    if (!category) {
+      res.status(404).json({ error: 'Category not found' });
+      return;
+    }
+
+    const now = new Date().toISOString();
+    let updatedCount = 1;
+
+    // Update the target transaction
+    db.prepare('UPDATE transactions SET category_id = ?, updated_at = ? WHERE id = ?')
+      .run(categoryId, now, transactionId);
+
+    // If propagate is true, update all similar transactions (same name pattern)
+    if (propagate !== false) {
+      // Find similar transactions by name (case-insensitive)
+      const normalizedName = transaction.name.toLowerCase().trim();
+
+      // Update all transactions with the same name (case-insensitive) that have a different category
+      const result = db.prepare(
+        `UPDATE transactions SET category_id = ?, updated_at = ?
+         WHERE user_id = ? AND LOWER(TRIM(name)) = ? AND id != ? AND (category_id IS NULL OR category_id != ?)`
+      ).run(categoryId, now, userId, normalizedName, transactionId, categoryId);
+
+      updatedCount += result.changes;
+
+      // Learn the rule for future categorization
+      try {
+        // Check if rule already exists
+        const existingRule = db.prepare(
+          `SELECT id FROM category_rules WHERE user_id = ? AND LOWER(pattern) = ? AND category_id = ?`
+        ).get(userId, normalizedName, categoryId) as any;
+
+        if (!existingRule) {
+          db.prepare(
+            `INSERT INTO category_rules (id, user_id, pattern, category_id, match_type, created_at)
+             VALUES (?, ?, ?, ?, 'contains', ?)`
+          ).run(crypto.randomUUID(), userId, normalizedName, categoryId, now);
+        }
+      } catch (e) { /* ignore */ }
+    }
+
+    res.json({
+      message: `Updated ${updatedCount} transaction${updatedCount !== 1 ? 's' : ''}`,
+      updated: updatedCount,
+      categoryName: category.name,
+    });
+  } catch (error) {
+    console.error('Recategorize error:', error);
+    res.status(500).json({ error: 'Failed to recategorize transactions' });
+  }
+});
+
 // POST /import-csv - placeholder that accepts CSV text and returns parsed preview
 router.post('/import-csv', (req: Request, res: Response) => {
   try {

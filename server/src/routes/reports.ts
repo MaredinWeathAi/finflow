@@ -238,4 +238,133 @@ router.get('/networth-history', (req: Request, res: Response) => {
   }
 });
 
+// GET /summary - comprehensive financial summary for reports page
+router.get('/summary', (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.id;
+    const month = (req.query.month as string) || new Date().toISOString().substring(0, 7);
+    const monthStart = month + '-01';
+    const [year, mon] = month.split('-').map(Number);
+    const endOfMonth = new Date(year, mon, 0);
+    const monthEnd = `${year}-${String(mon).padStart(2, '0')}-${String(endOfMonth.getDate()).padStart(2, '0')}`;
+
+    // Income and expenses
+    const incomeResult = db.prepare(
+      `SELECT COALESCE(SUM(amount), 0) as total FROM transactions WHERE user_id = ? AND amount > 0 AND date >= ? AND date <= ?`
+    ).get(userId, monthStart, monthEnd) as any;
+
+    const expenseResult = db.prepare(
+      `SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions WHERE user_id = ? AND amount < 0 AND date >= ? AND date <= ?`
+    ).get(userId, monthStart, monthEnd) as any;
+
+    const income = Math.round(incomeResult.total * 100) / 100;
+    const expenses = Math.round(expenseResult.total * 100) / 100;
+
+    // Category breakdown (expenses)
+    const expenseCategories = db.prepare(`
+      SELECT c.id, c.name, c.icon, c.color,
+        COALESCE(SUM(ABS(t.amount)), 0) as total,
+        COUNT(t.id) as count
+      FROM transactions t
+      JOIN categories c ON t.category_id = c.id
+      WHERE t.user_id = ? AND t.amount < 0 AND t.date >= ? AND t.date <= ?
+      GROUP BY c.id ORDER BY total DESC
+    `).all(userId, monthStart, monthEnd) as any[];
+
+    // Category breakdown (income)
+    const incomeCategories = db.prepare(`
+      SELECT c.id, c.name, c.icon, c.color,
+        COALESCE(SUM(t.amount), 0) as total,
+        COUNT(t.id) as count
+      FROM transactions t
+      JOIN categories c ON t.category_id = c.id
+      WHERE t.user_id = ? AND t.amount > 0 AND t.date >= ? AND t.date <= ?
+      GROUP BY c.id ORDER BY total DESC
+    `).all(userId, monthStart, monthEnd) as any[];
+
+    // Account balances
+    const accounts = db.prepare(
+      'SELECT id, name, type, institution, balance, icon FROM accounts WHERE user_id = ? AND is_hidden = 0 ORDER BY type, name'
+    ).all(userId) as any[];
+
+    // Goals progress
+    const goals = db.prepare(
+      'SELECT id, name, target_amount, current_amount, target_date, icon, color FROM goals WHERE user_id = ? AND is_completed = 0'
+    ).all(userId) as any[];
+
+    // Budget performance
+    const budgets = db.prepare(`
+      SELECT b.*, c.name as category_name, c.icon as category_icon, c.color as category_color,
+        (SELECT COALESCE(SUM(ABS(t.amount)), 0) FROM transactions t
+         WHERE t.user_id = ? AND t.category_id = b.category_id AND t.amount < 0
+         AND t.date >= ? AND t.date < date(?, '+1 month')) as spent
+      FROM budgets b
+      LEFT JOIN categories c ON b.category_id = c.id
+      WHERE b.user_id = ? AND b.month = ?
+    `).all(userId, monthStart, monthStart, userId, monthStart) as any[];
+
+    // Daily spending trend for this month
+    const dailySpending = db.prepare(`
+      SELECT date,
+        SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) as income,
+        SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END) as expenses
+      FROM transactions
+      WHERE user_id = ? AND date >= ? AND date <= ?
+      GROUP BY date ORDER BY date ASC
+    `).all(userId, monthStart, monthEnd) as any[];
+
+    // Last 6 months trend
+    const sixMonthsAgo = new Date(year, mon - 7, 1);
+    const trendStart = `${sixMonthsAgo.getFullYear()}-${String(sixMonthsAgo.getMonth() + 1).padStart(2, '0')}-01`;
+    const monthlyTrend = db.prepare(`
+      SELECT substr(date, 1, 7) as month,
+        SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) as income,
+        SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END) as expenses
+      FROM transactions
+      WHERE user_id = ? AND date >= ? AND date <= ?
+      GROUP BY substr(date, 1, 7)
+      ORDER BY month ASC
+    `).all(userId, trendStart, monthEnd) as any[];
+
+    // Top merchants
+    const topMerchants = db.prepare(`
+      SELECT name, COUNT(*) as count, SUM(ABS(amount)) as total
+      FROM transactions
+      WHERE user_id = ? AND amount < 0 AND date >= ? AND date <= ?
+      GROUP BY LOWER(TRIM(name))
+      ORDER BY total DESC LIMIT 10
+    `).all(userId, monthStart, monthEnd) as any[];
+
+    // Transaction count
+    const txCount = (db.prepare(
+      'SELECT COUNT(*) as count FROM transactions WHERE user_id = ? AND date >= ? AND date <= ?'
+    ).get(userId, monthStart, monthEnd) as any).count;
+
+    res.json({
+      month,
+      income,
+      expenses,
+      net: Math.round((income - expenses) * 100) / 100,
+      savingsRate: income > 0 ? Math.round(((income - expenses) / income) * 10000) / 100 : 0,
+      transactionCount: txCount,
+      expenseCategories,
+      incomeCategories,
+      accounts,
+      goals,
+      budgets,
+      dailySpending,
+      monthlyTrend: monthlyTrend.map((m: any) => ({
+        ...m,
+        income: Math.round(m.income * 100) / 100,
+        expenses: Math.round(m.expenses * 100) / 100,
+        net: Math.round((m.income - m.expenses) * 100) / 100,
+      })),
+      topMerchants,
+    });
+  } catch (error) {
+    console.error('Summary report error:', error);
+    res.status(500).json({ error: 'Failed to generate summary report' });
+  }
+});
+
 export default router;

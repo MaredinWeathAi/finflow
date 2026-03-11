@@ -15,6 +15,7 @@ import {
   ChevronRight,
   Users,
   Shield,
+  Tag,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/authStore'
@@ -28,6 +29,7 @@ const clientNavItems = [
   { to: '/cashflow', icon: TrendingUp, label: 'Cash Flow' },
   { to: '/accounts', icon: Wallet, label: 'Accounts' },
   { to: '/transactions', icon: ArrowLeftRight, label: 'Transactions' },
+  { to: '/categories', icon: Tag, label: 'Categories' },
   { to: '/upload', icon: Upload, label: 'Upload' },
   { to: '/reports', icon: FileText, label: 'Reports' },
   { to: '/settings', icon: Settings, label: 'Settings' },

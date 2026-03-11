@@ -19,6 +19,59 @@ router.get('/', (req: Request, res: Response) => {
   }
 });
 
+// POST /ensure-defaults - create default categories if user has none
+router.post('/ensure-defaults', (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.id;
+    const existingCount = (db.prepare('SELECT COUNT(*) as count FROM categories WHERE user_id = ?').get(userId) as any).count;
+
+    if (existingCount > 0) {
+      const categories = db.prepare('SELECT * FROM categories WHERE user_id = ? ORDER BY sort_order ASC, name ASC').all(userId);
+      res.json({ message: 'Categories already exist', created: 0, categories });
+      return;
+    }
+
+    const defaults = [
+      { name: 'Housing', icon: '🏠', color: '#6366F1', isIncome: false },
+      { name: 'Groceries', icon: '🛒', color: '#22C55E', isIncome: false },
+      { name: 'Food & Dining', icon: '🍔', color: '#F59E0B', isIncome: false },
+      { name: 'Transportation', icon: '🚗', color: '#3B82F6', isIncome: false },
+      { name: 'Shopping', icon: '🛍️', color: '#8B5CF6', isIncome: false },
+      { name: 'Utilities', icon: '💡', color: '#14B8A6', isIncome: false },
+      { name: 'Healthcare', icon: '🏥', color: '#EF4444', isIncome: false },
+      { name: 'Entertainment', icon: '🎬', color: '#EC4899', isIncome: false },
+      { name: 'Subscriptions', icon: '📱', color: '#F97316', isIncome: false },
+      { name: 'Insurance', icon: '🛡️', color: '#06B6D4', isIncome: false },
+      { name: 'Health & Fitness', icon: '💪', color: '#10B981', isIncome: false },
+      { name: 'Personal Care', icon: '💇', color: '#D946EF', isIncome: false },
+      { name: 'Education', icon: '📚', color: '#0EA5E9', isIncome: false },
+      { name: 'Travel', icon: '✈️', color: '#F472B6', isIncome: false },
+      { name: 'Pets', icon: '🐾', color: '#A78BFA', isIncome: false },
+      { name: 'Gifts & Donations', icon: '🎁', color: '#FB923C', isIncome: false },
+      { name: 'Investments', icon: '📊', color: '#818CF8', isIncome: false },
+      { name: 'Salary', icon: '💵', color: '#10B981', isIncome: true },
+      { name: 'Freelance', icon: '💼', color: '#22D3EE', isIncome: true },
+      { name: 'Other Income', icon: '💰', color: '#34D399', isIncome: true },
+      { name: 'Transfer', icon: '🔄', color: '#94A3B8', isIncome: false },
+      { name: 'Uncategorized', icon: '❓', color: '#64748B', isIncome: false },
+    ];
+
+    const insert = db.prepare(
+      `INSERT INTO categories (id, user_id, name, icon, color, is_income, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?)`
+    );
+
+    defaults.forEach((cat, idx) => {
+      insert.run(crypto.randomUUID(), userId, cat.name, cat.icon, cat.color, cat.isIncome ? 1 : 0, idx);
+    });
+
+    const categories = db.prepare('SELECT * FROM categories WHERE user_id = ? ORDER BY sort_order ASC, name ASC').all(userId);
+    res.json({ message: 'Default categories created', created: defaults.length, categories });
+  } catch (error) {
+    console.error('Ensure defaults error:', error);
+    res.status(500).json({ error: 'Failed to create default categories' });
+  }
+});
+
 // POST / - create category
 router.post('/', (req: Request, res: Response) => {
   try {
