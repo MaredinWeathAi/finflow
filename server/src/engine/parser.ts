@@ -30,6 +30,22 @@ export interface ParseResult {
   fileType: string;
   rowCount: number;
   errors: string[];
+  statementMeta?: {
+    institution: string;
+    accountType: string;
+    accountNickname: string;
+    period: { start: string; end: string };
+    beginningBalance: number;
+    endingBalance: number;
+    summary: {
+      totalDeposits: number;
+      totalWithdrawals: number;
+      totalTransfers: number;
+      totalFees: number;
+      transactionCount: number;
+      transferCount: number;
+    };
+  };
 }
 
 export interface ColumnMap {
@@ -257,12 +273,37 @@ function convertStatementToParseResult(result: StatementParseResult): ParseResul
     },
   }));
 
+  // Calculate summary statistics
+  const deposits = rows.filter((r) => r.amount > 0);
+  const withdrawals = rows.filter((r) => r.amount < 0);
+  const transfers = rows.filter((r) => r.isTransfer);
+  const fees = rows.filter((r) => r.flags?.includes('fee'));
+
   return {
     rows,
     headers: ['date', 'description', 'amount'],
     fileType: 'pdf',
     rowCount: rows.length,
     errors: result.errors,
+    statementMeta: {
+      institution: result.metadata.institution,
+      accountType: result.metadata.accountType,
+      accountNickname: result.metadata.accountNickname,
+      period: {
+        start: result.metadata.statementPeriod.start,
+        end: result.metadata.statementPeriod.end,
+      },
+      beginningBalance: result.metadata.beginningBalance,
+      endingBalance: result.metadata.endingBalance,
+      summary: {
+        totalDeposits: deposits.reduce((sum, r) => sum + r.amount, 0),
+        totalWithdrawals: withdrawals.reduce((sum, r) => sum + Math.abs(r.amount), 0),
+        totalTransfers: transfers.length,
+        totalFees: fees.reduce((sum, r) => sum + Math.abs(r.amount), 0),
+        transactionCount: rows.length,
+        transferCount: transfers.length,
+      },
+    },
   };
 }
 

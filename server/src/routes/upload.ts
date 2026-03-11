@@ -107,6 +107,11 @@ router.post('/', upload.array('files', 10), async (req: Request, res: Response) 
 
         allPendingItems = [...allPendingItems, ...filePendingItems];
 
+        // Count transaction types
+        const depositCount = filePendingItems.filter((item) => item.parsed_amount > 0).length;
+        const withdrawalCount = filePendingItems.filter((item) => item.parsed_amount < 0).length;
+        const transferCount = result.rows.filter((row) => row.isTransfer).length;
+
         fileResults.push({
           id: fileId,
           filename: file.originalname,
@@ -114,6 +119,10 @@ router.post('/', upload.array('files', 10), async (req: Request, res: Response) 
           rowCount: result.rowCount,
           status: 'parsed',
           errors: result.errors,
+          depositCount,
+          withdrawalCount,
+          transferCount,
+          statementMeta: result.statementMeta,
         });
       } catch (parseError: any) {
         db.prepare(
@@ -127,6 +136,10 @@ router.post('/', upload.array('files', 10), async (req: Request, res: Response) 
           rowCount: 0,
           status: 'error',
           error: parseError.message,
+          depositCount: 0,
+          withdrawalCount: 0,
+          transferCount: 0,
+          statementMeta: undefined,
         });
       }
     }

@@ -92,7 +92,7 @@ function detectStatementType(text: string): DetectedStatement | null {
 }
 
 // ---------------------------------------------------------------------------
-// BofA Checking Parser
+// BofA Checking Parser (Tab-Delimited Format)
 // ---------------------------------------------------------------------------
 
 function parseBofaChecking(fullText: string, lines: string[]): StatementParseResult {
@@ -102,82 +102,17 @@ function parseBofaChecking(fullText: string, lines: string[]): StatementParseRes
   // Extract metadata
   const metadata = extractBofaCheckingMetadata(fullText, lines, errors);
 
-  // Find and parse sections
-  let currentSection = '';
-  let i = 0;
+  // Parse deposits section
+  parseCheckingSection(fullText, 'deposits', transactions, metadata, errors);
 
-  while (i < lines.length) {
-    const line = lines[i];
+  // Parse withdrawals section (and continued)
+  parseCheckingSection(fullText, 'withdrawals', transactions, metadata, errors);
 
-    // Detect section headers
-    if (/Deposits and other additions/i.test(line)) {
-      currentSection = 'deposits';
-      i++;
-      continue;
-    } else if (/Withdrawals and other subtractions/i.test(line)) {
-      currentSection = 'withdrawals';
-      i++;
-      continue;
-    } else if (/Checks/i.test(line) && currentSection) {
-      currentSection = 'checks';
-      i++;
-      continue;
-    } else if (/Service fees/i.test(line)) {
-      currentSection = 'fees';
-      i++;
-      continue;
-    }
+  // Parse checks section (special two-per-line format)
+  parseCheckingChecksSection(fullText, transactions, metadata, errors);
 
-    // Skip header lines and total lines
-    if (!line || /^Date\s+Description\s+Amount$/i.test(line) || /^Total\s+/i.test(line)) {
-      i++;
-      continue;
-    }
-
-    // Try to parse transaction line
-    if (currentSection) {
-      const dateMatch = line.match(/^(\d{1,2}\/\d{1,2}\/\d{2})\s+(.+)/);
-      if (dateMatch) {
-        const [, rawDate, rest] = dateMatch;
-        const amountMatch = rest.match(/\s+([\d,]+\.\d{2})$/);
-
-        if (amountMatch) {
-          const description = rest.slice(0, amountMatch.index).trim();
-          const rawAmount = amountMatch[1];
-
-          // Accumulate continuation lines
-          let fullDescription = description;
-          let j = i + 1;
-          while (j < lines.length) {
-            const nextLine = lines[j];
-            // Continuation line: no date at start, but has content
-            if (nextLine && !nextLine.match(/^\d{1,2}\/\d{1,2}\/\d{2}/)) {
-              fullDescription += ' ' + nextLine;
-              j++;
-            } else {
-              break;
-            }
-          }
-          i = j - 1;
-
-          try {
-            const txn = parseBofaCheckingTransaction(
-              rawDate,
-              fullDescription,
-              rawAmount,
-              currentSection,
-              metadata
-            );
-            transactions.push(txn);
-          } catch (err: any) {
-            errors.push(`BofA Checking line parse error: ${err.message}`);
-          }
-        }
-      }
-    }
-
-    i++;
-  }
+  // Parse service fees section
+  parseCheckingSection(fullText, 'fees', transactions, metadata, errors);
 
   // Calculate summary
   const summary = calculateSummary(transactions);
@@ -188,6 +123,215 @@ function parseBofaChecking(fullText: string, lines: string[]): StatementParseRes
     summary,
     errors,
   };
+}
+
+/**
+ * Parse a standard checking section (deposits, withdrawals, or fees)
+ * Format: Tab-delimited fields, transactions start with date MM/DD/YY
+ */
+function parseCheckingSection(
+  fullText: string,
+  section: 'deposits' | 'withdrawals' | 'fees',
+  transactions: ParsedTransaction[],
+  metadata: StatementMetadata,
+  errors: string[]
+): void {
+  let startPattern: RegExp;
+  let endPattern: RegExp;
+
+  if (section === 'deposits') {
+    startPattern = /^Deposits and other additions\s*\n\s*Date\s+Description\s+Amount/m;
+    endPattern = /^Total deposits and other additions/m;
+  } else if (section === 'withdrawals') {
+    startPattern = /^Withdrawals and other subtractions[^\n]*\n\s*Date\s+Description\s+Amount/m;
+    endPattern = /^Total withdrawals and other subtractions/m;
+  } else {
+    // fees
+    startPattern = /^Service fees\s*\n\s*Date\s+Transaction description\s+Amount/m;
+    endPattern = /^Total service fees/m;
+  }
+
+  const startMatch = fullText.match(startPattern);
+  const endMatch = fullText.match(endPattern);
+
+  if (!startMatch) {
+    return; // Section not found
+  }
+
+  const startIdx = startMatch.index! + startMatch[0].length;
+  const endIdx = endMatch ? endMatch.index! : fullText.length;
+  const sectionText = fullText.substring(startIdx, endIdx);
+
+  // Split into lines and process
+  const sectionLines = sectionText.split('\n');
+  let i = 0;
+
+  while (i < sectionLines.length) {
+    const line = sectionLines[i];
+    const trimmed = line.trim();
+
+    // Skip empty lines, headers, and total lines
+    if (
+      !trimmed ||
+      /^Date\s+/i.test(trimmed) ||
+      /^Total\s+/i.test(trimmed) ||
+      /^Total #/i.test(trimmed) ||
+      /^\*/i.test(trimmed) ||
+      /^There is a gap/i.test(trimmed)
+    ) {
+      i++;
+      continue;
+    }
+
+    // Check if line starts with a date (MM/DD/YY format)
+    const dateMatch = trimmed.match(/^(\d{1,2}\/\d{1,2}\/\d{2})\s*\t(.*)$/);
+    if (dateMatch) {
+      const rawDate = dateMatch[1];
+      let description = '';
+      let rawAmount: string | null = null;
+      let tabFields = dateMatch[2].split('\t');
+
+      // Collect this line and continuation lines
+      let j = i + 1;
+      while (j < sectionLines.length) {
+        const nextLine = sectionLines[j];
+        const nextTrimmed = nextLine.trim();
+        // Continuation line: does NOT start with a date
+        if (nextTrimmed && !nextTrimmed.match(/^\d{1,2}\/\d{1,2}\/\d{2}\s*\t/)) {
+          // Add continuation to tab fields
+          const continuationFields = nextTrimmed.split('\t');
+          tabFields = tabFields.concat(continuationFields);
+          j++;
+        } else {
+          break;
+        }
+      }
+
+      // Extract amount (last numeric field in tab-delimited line)
+      // Amount pattern: -?[\d,]+\.\d{2}
+      for (let k = tabFields.length - 1; k >= 0; k--) {
+        const field = tabFields[k].trim();
+        if (/^-?[\d,]+\.\d{2}$/.test(field)) {
+          rawAmount = field;
+          // Description is everything except this field and the date
+          description = tabFields.slice(0, k).join(' ').trim();
+          break;
+        }
+      }
+
+      // If we found an amount, create a transaction
+      if (rawAmount !== null) {
+        try {
+          const txn = parseBofaCheckingTransaction(
+            rawDate,
+            description,
+            rawAmount,
+            section,
+            metadata
+          );
+          transactions.push(txn);
+        } catch (err: any) {
+          errors.push(`BofA Checking parse error at ${rawDate}: ${err.message}`);
+        }
+      }
+
+      i = j;
+    } else {
+      i++;
+    }
+  }
+}
+
+/**
+ * Parse the Checks section which has a special format:
+ * Date [TAB] Check# [TAB] Amount [TAB] Date [TAB] Check# [TAB] Amount
+ * (up to 2 checks per line)
+ */
+function parseCheckingChecksSection(
+  fullText: string,
+  transactions: ParsedTransaction[],
+  metadata: StatementMetadata,
+  errors: string[]
+): void {
+  const startPattern = /^Checks$/m;
+  const endPattern = /^Total checks/m;
+
+  const startMatch = fullText.match(startPattern);
+  const endMatch = fullText.match(endPattern);
+
+  if (!startMatch) {
+    return; // No checks section
+  }
+
+  const startIdx = startMatch.index! + startMatch[0].length;
+  const endIdx = endMatch ? endMatch.index! : fullText.length;
+  const sectionText = fullText.substring(startIdx, endIdx);
+
+  const sectionLines = sectionText.split('\n');
+
+  for (let i = 0; i < sectionLines.length; i++) {
+    const line = sectionLines[i].trim();
+
+    // Skip headers and empty lines
+    if (
+      !line ||
+      /^Date\s+Check/i.test(line) ||
+      /^Total\s+/i.test(line) ||
+      /^\*/i.test(line) ||
+      /^There is a gap/i.test(line)
+    ) {
+      continue;
+    }
+
+    // Parse check line format: Date TAB Check# TAB Amount [TAB Date TAB Check# TAB Amount]
+    const fields = line.split(/\s*\t\s*/).map((f) => f.trim());
+
+    if (fields.length >= 3) {
+      // Parse first check
+      if (fields[0] && /^\d{1,2}\/\d{1,2}\/\d{2}$/.test(fields[0].trim())) {
+        const checkNum = fields[1];
+        const amount = fields[2];
+
+        if (checkNum && /^\d+\*?$/.test(checkNum) && /^-?[\d,]+\.\d{2}$/.test(amount)) {
+          try {
+            const description = `Check #${checkNum}`;
+            const txn = parseBofaCheckingTransaction(
+              fields[0],
+              description,
+              amount,
+              'checks',
+              metadata
+            );
+            transactions.push(txn);
+          } catch (err: any) {
+            errors.push(`BofA Checking check parse error: ${err.message}`);
+          }
+        }
+      }
+
+      // Parse second check if present
+      if (fields.length >= 6 && fields[3] && /^\d{1,2}\/\d{1,2}\/\d{2}$/.test(fields[3].trim())) {
+        const checkNum = fields[4];
+        const amount = fields[5];
+
+        if (checkNum && /^\d+\*?$/.test(checkNum) && /^-?[\d,]+\.\d{2}$/.test(amount)) {
+          try {
+            const description = `Check #${checkNum}`;
+            const txn = parseBofaCheckingTransaction(
+              fields[3],
+              description,
+              amount,
+              'checks',
+              metadata
+            );
+            transactions.push(txn);
+          } catch (err: any) {
+            errors.push(`BofA Checking check parse error: ${err.message}`);
+          }
+        }
+      }
+    }
+  }
 }
 
 function extractBofaCheckingMetadata(
@@ -203,11 +347,10 @@ function extractBofaCheckingMetadata(
   let beginningBalance = 0;
   let endingBalance = 0;
 
-  // Extract account number
-  let match = fullText.match(/Account\s+(?:number|#):\s*([X\d\s]+)/i);
+  // Extract account number - pattern: "Account number: 0055 0942 8434"
+  let match = fullText.match(/Account\s+number:\s*([\d\s]+)/i);
   if (match) {
     accountNumber = match[1].replace(/\s+/g, ' ').trim();
-    // Try to extract last 4 digits for nickname
     const last4 = accountNumber.match(/\d{4}$/);
     if (last4) {
       accountNickname = `CHK ${last4[0]}`;
@@ -215,25 +358,34 @@ function extractBofaCheckingMetadata(
   }
 
   // Extract owner name
-  match = fullText.match(/Account\s+Holder:\s*(.+?)(?:\n|$)/i);
+  match = fullText.match(/^([A-Z][A-Z\s]+)\n.*?\nAccount/m);
   if (match) {
-    ownerName = match[1].trim();
+    const nameCandidate = match[1].trim();
+    if (nameCandidate.length > 2 && nameCandidate.length < 100) {
+      ownerName = nameCandidate;
+    }
   }
 
-  // Extract statement period
-  match = fullText.match(/Statement\s+(?:Period|Date).*?(\d{1,2}\/\d{1,2}\/\d{2,4})\s+(?:to|through|-|–)\s*(\d{1,2}\/\d{1,2}\/\d{2,4})/i);
+  // Extract statement period from text format: "for September 12, 2025 to October 14, 2025"
+  match = fullText.match(/for\s+(\w+)\s+(\d{1,2}),?\s+(\d{4})\s+to\s+(\w+)\s+(\d{1,2}),?\s+(\d{4})/i);
   if (match) {
-    statementStart = normalizeDate(match[1]);
-    statementEnd = normalizeDate(match[2]);
+    const [, startMonthName, startDay, startYear, endMonthName, endDay, endYear] = match;
+    const startMonthNum = monthNameToNumber(startMonthName);
+    const endMonthNum = monthNameToNumber(endMonthName);
+    if (startMonthNum && endMonthNum) {
+      statementStart = `${startYear}-${String(startMonthNum).padStart(2, '0')}-${startDay.padStart(2, '0')}`;
+      statementEnd = `${endYear}-${String(endMonthNum).padStart(2, '0')}-${endDay.padStart(2, '0')}`;
+    }
   }
 
-  // Extract beginning and ending balance
-  match = fullText.match(/Beginning\s+Balance[:\s]*\$?([\d,]+\.\d{2})/i);
+  // Extract beginning balance - "Beginning balance on September 12, 2025 [TAB] $6,673.23"
+  match = fullText.match(/Beginning\s+balance[^$]*\$?([\d,]+\.\d{2})/i);
   if (match) {
     beginningBalance = normalizeAmount(match[1]);
   }
 
-  match = fullText.match(/Ending\s+Balance[:\s]*\$?([\d,]+\.\d{2})/i);
+  // Extract ending balance - "Ending balance on October 14, 2025 [TAB] $5,824.43"
+  match = fullText.match(/Ending\s+balance[^$]*\$?([\d,]+\.\d{2})/i);
   if (match) {
     endingBalance = normalizeAmount(match[1]);
   }
@@ -257,14 +409,20 @@ function parseBofaCheckingTransaction(
   section: string,
   metadata: StatementMetadata
 ): ParsedTransaction {
-  const date = normalizeDate(rawDate, new Date().getFullYear());
+  const date = normalizeDate(rawDate, parseInt(metadata.statementPeriod.end.split('-')[0], 10));
   const amount = normalizeAmount(rawAmount);
 
-  // Determine actual sign based on section
+  // Determine sign based on section
   let signedAmount = amount;
   if (section === 'withdrawals' || section === 'checks' || section === 'fees') {
-    signedAmount = -Math.abs(amount);
+    // These sections should be negative, but the amount might already have the sign
+    if (amount >= 0) {
+      signedAmount = -Math.abs(amount);
+    } else {
+      signedAmount = amount;
+    }
   } else if (section === 'deposits') {
+    // Deposits should be positive
     signedAmount = Math.abs(amount);
   }
 
@@ -334,39 +492,60 @@ function parseBofaCreditCard(fullText: string, lines: string[]): StatementParseR
       continue;
     }
 
-    // CC transaction line formats:
-    // MM/DD MM/DD DESCRIPTION REFNUM ACCTLAST4 AMOUNT  (normal)
-    // MM/DD MM/DD DESCRIPTION REFNUM ACCTLAST4 -AMOUNT (payments/credits)
-    // MM/DD MM/DD INTEREST CHARGED ON ... AMOUNT (no ref/acct)
+    // CC transaction lines are tab-delimited:
+    // MM/DD TAB MM/DD TAB DESCRIPTION TAB REFNUM TAB ACCTLAST4 TAB AMOUNT
+    // MM/DD TAB MM/DD TAB INTEREST CHARGED ON ... TAB AMOUNT
     if (currentSection) {
-      // Pattern 1: with ref number and account suffix
-      let ccMatch = line.match(/^(\d{1,2}\/\d{1,2})\s+(\d{1,2}\/\d{1,2})\s+(.+?)\s+(\d{4})\s+(\d{4})\s+(-?[\d,]+\.\d{2})$/);
-      if (!ccMatch) {
-        // Pattern 2: interest lines without ref/acct
-        ccMatch = line.match(/^(\d{1,2}\/\d{1,2})\s+(\d{1,2}\/\d{1,2})\s+(INTEREST CHARGED.+?)\s+(-?[\d,]+\.\d{2})$/);
-        if (ccMatch) {
-          // Pad missing fields
-          ccMatch = [...ccMatch.slice(0, 4), '', '', ccMatch[4]] as any;
-        }
-      }
-      if (ccMatch) {
-        const txDate = ccMatch[1];
-        const postDate = ccMatch[2];
-        const description = ccMatch[3];
-        const rawAmount = ccMatch[ccMatch.length - 1] || ccMatch[6];
+      // Split by tabs and parse
+      const fields = line.split(/\t/).map(f => f.trim()).filter(f => f.length > 0);
 
-        try {
-          const txn = parseBofaCreditCardTransaction(
-            txDate,
-            postDate,
-            description,
-            rawAmount,
-            currentSection,
-            metadata
-          );
-          transactions.push(txn);
-        } catch (err: any) {
-          errors.push(`BofA CC line parse error: ${err.message}`);
+      // Must start with date pattern MM/DD
+      if (fields.length >= 3 && /^\d{1,2}\/\d{1,2}$/.test(fields[0]) && /^\d{1,2}\/\d{1,2}$/.test(fields[1])) {
+        const txDate = fields[0];
+        const postDate = fields[1];
+
+        // Find amount: last field that looks like a number
+        let rawAmount = '';
+        let descFields: string[] = [];
+
+        for (let fi = fields.length - 1; fi >= 2; fi--) {
+          if (/^-?[\d,]+\.\d{2}$/.test(fields[fi])) {
+            rawAmount = fields[fi];
+            descFields = fields.slice(2, fi);
+            break;
+          }
+        }
+
+        // If no amount found in trailing fields, check if last field has amount embedded
+        if (!rawAmount) {
+          const lastField = fields[fields.length - 1];
+          const amtMatch = lastField.match(/(-?[\d,]+\.\d{2})$/);
+          if (amtMatch) {
+            rawAmount = amtMatch[1];
+            const descPart = lastField.slice(0, amtMatch.index).trim();
+            descFields = [...fields.slice(2, fields.length - 1), descPart].filter(f => f.length > 0);
+          } else {
+            descFields = fields.slice(2);
+          }
+        }
+
+        // Filter out ref numbers and account suffixes from description
+        const description = descFields.filter(f => !/^\d{4}$/.test(f)).join(' ').trim();
+
+        if (rawAmount && description) {
+          try {
+            const txn = parseBofaCreditCardTransaction(
+              txDate,
+              postDate,
+              description,
+              rawAmount,
+              currentSection,
+              metadata
+            );
+            transactions.push(txn);
+          } catch (err: any) {
+            errors.push(`BofA CC line parse error: ${err.message}`);
+          }
         }
       }
     }

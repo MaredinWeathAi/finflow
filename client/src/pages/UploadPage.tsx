@@ -17,6 +17,12 @@ import {
   ArrowRight,
   Clock,
   Info,
+  Zap,
+  CreditCard,
+  Wallet,
+  TrendingUp,
+  TrendingDown,
+  DollarSign,
 } from 'lucide-react'
 import { cn, formatCurrency } from '@/lib/utils'
 import { useCategories } from '@/hooks/useCategories'
@@ -267,32 +273,283 @@ function UploadDropZone({
   )
 }
 
+// ── Statement Detection Results ─────────────────────────────────────────
+
+interface FileResult {
+  id: string;
+  filename: string;
+  fileType: string;
+  rowCount: number;
+  status: 'parsed' | 'error';
+  errors?: string[];
+  error?: string;
+  depositCount?: number;
+  withdrawalCount?: number;
+  transferCount?: number;
+  statementMeta?: {
+    institution: string;
+    accountType: string;
+    accountNickname: string;
+    period: { start: string; end: string };
+    beginningBalance: number;
+    endingBalance: number;
+    summary: {
+      totalDeposits: number;
+      totalWithdrawals: number;
+      totalTransfers: number;
+      totalFees: number;
+      transactionCount: number;
+      transferCount: number;
+    };
+  };
+}
+
+function getAccountTypeIcon(accountType: string) {
+  switch (accountType) {
+    case 'checking':
+      return <Wallet className="w-5 h-5 text-blue-400" />;
+    case 'savings':
+      return <DollarSign className="w-5 h-5 text-emerald-400" />;
+    case 'credit_card':
+      return <CreditCard className="w-5 h-5 text-purple-400" />;
+    default:
+      return <Wallet className="w-5 h-5 text-muted-foreground" />;
+  }
+}
+
+function formatDateRange(start: string, end: string): string {
+  try {
+    const startDate = parseISO(start);
+    const endDate = parseISO(end);
+    return `${format(startDate, 'MMM d')} - ${format(endDate, 'MMM d, yyyy')}`;
+  } catch {
+    return `${start} to ${end}`;
+  }
+}
+
+function StatementDetectionCard({ file, isLoading }: { file: FileResult; isLoading: boolean }) {
+  const { statementMeta, depositCount = 0, withdrawalCount = 0, transferCount = 0, status, error } = file;
+
+  if (status === 'error') {
+    return (
+      <div className="bg-card rounded-2xl border border-red-500/20 p-5">
+        <div className="flex items-start gap-3">
+          <div className="w-10 h-10 rounded-xl bg-red-500/10 flex items-center justify-center shrink-0 mt-0.5">
+            <AlertCircle className="w-5 h-5 text-red-400" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-semibold text-foreground">{file.filename}</p>
+            <p className="text-xs text-red-400 mt-1">{error || 'Failed to parse file'}</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (isLoading || !statementMeta) {
+    return (
+      <div className="bg-card rounded-2xl border border-border/50 p-5 animate-pulse">
+        <div className="flex items-start gap-3">
+          <div className="w-10 h-10 rounded-xl bg-muted" />
+          <div className="flex-1 space-y-2">
+            <div className="h-4 bg-muted rounded w-48" />
+            <div className="h-3 bg-muted rounded w-64" />
+            <div className="h-3 bg-muted rounded w-40 mt-3" />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-card rounded-2xl border border-border/50 p-5">
+      <div className="flex items-start gap-4">
+        {/* Account Icon */}
+        <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center shrink-0 mt-0.5">
+          {getAccountTypeIcon(statementMeta.accountType)}
+        </div>
+
+        {/* Main Content */}
+        <div className="flex-1 min-w-0">
+          {/* Header: Bank + Account */}
+          <div className="flex items-baseline gap-2 mb-2">
+            <p className="text-sm font-semibold text-foreground">{statementMeta.institution}</p>
+            <p className="text-xs text-muted-foreground">{statementMeta.accountNickname}</p>
+          </div>
+
+          {/* Statement Period */}
+          <p className="text-xs text-muted-foreground mb-3">
+            {formatDateRange(statementMeta.period.start, statementMeta.period.end)}
+          </p>
+
+          {/* Balance Row */}
+          <div className="flex items-center gap-4 mb-4 p-3 rounded-lg bg-muted/30 border border-border/20">
+            <div>
+              <p className="text-xs text-muted-foreground uppercase tracking-wider font-medium">Beginning</p>
+              <p className="text-sm font-bold text-foreground">{formatCurrency(statementMeta.beginningBalance)}</p>
+            </div>
+            <div className="text-muted-foreground">
+              <ArrowRight className="w-4 h-4" />
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground uppercase tracking-wider font-medium">Ending</p>
+              <p className="text-sm font-bold text-foreground">{formatCurrency(statementMeta.endingBalance)}</p>
+            </div>
+          </div>
+
+          {/* Transaction Breakdown */}
+          <div className="grid grid-cols-3 gap-2">
+            <div className="p-2 rounded-lg bg-emerald-500/5 border border-emerald-500/20">
+              <div className="flex items-center gap-1 mb-1">
+                <TrendingUp className="w-3.5 h-3.5 text-emerald-400" />
+                <p className="text-[10px] font-semibold text-muted-foreground uppercase">Deposits</p>
+              </div>
+              <p className="text-sm font-bold text-emerald-400">{depositCount}</p>
+            </div>
+            <div className="p-2 rounded-lg bg-red-500/5 border border-red-500/20">
+              <div className="flex items-center gap-1 mb-1">
+                <TrendingDown className="w-3.5 h-3.5 text-red-400" />
+                <p className="text-[10px] font-semibold text-muted-foreground uppercase">Withdrawals</p>
+              </div>
+              <p className="text-sm font-bold text-red-400">{withdrawalCount}</p>
+            </div>
+            <div className="p-2 rounded-lg bg-blue-500/5 border border-blue-500/20">
+              <div className="flex items-center gap-1 mb-1">
+                <Zap className="w-3.5 h-3.5 text-blue-400" />
+                <p className="text-[10px] font-semibold text-muted-foreground uppercase">Transfers</p>
+              </div>
+              <p className="text-sm font-bold text-blue-400">{transferCount}</p>
+            </div>
+          </div>
+
+          {/* Status Badge */}
+          <div className="mt-3 flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+            <span className="text-xs font-medium text-emerald-400">Parsed successfully</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Upload Progress Indicator ──────────────────────────────────────
+
+function UploadProgressIndicator({ step, totalSteps = 4 }: { step: number; totalSteps?: number }) {
+  const steps = [
+    { label: 'Uploading files...', icon: Upload },
+    { label: 'Analyzing statements...', icon: FileText },
+    { label: 'Categorizing transactions...', icon: Zap },
+    { label: 'Complete!', icon: CheckCircle2 },
+  ];
+
+  const displaySteps = steps.slice(0, totalSteps);
+
+  return (
+    <div className="bg-card rounded-2xl border border-border/50 p-6">
+      <div className="space-y-4">
+        {displaySteps.map((s, idx) => {
+          const stepNum = idx + 1;
+          const isActive = stepNum === step;
+          const isComplete = stepNum < step;
+
+          return (
+            <div key={idx} className="flex items-center gap-3">
+              <div
+                className={cn(
+                  'w-8 h-8 rounded-full flex items-center justify-center shrink-0 font-semibold text-xs transition-all',
+                  isComplete
+                    ? 'bg-emerald-500/20 text-emerald-400'
+                    : isActive
+                    ? 'bg-primary text-primary-foreground'
+                    : 'bg-muted text-muted-foreground'
+                )}
+              >
+                {isComplete ? <Check className="w-4 h-4" /> : stepNum}
+              </div>
+              <div className="flex-1">
+                <p
+                  className={cn(
+                    'text-sm font-medium',
+                    isActive ? 'text-foreground' : isComplete ? 'text-emerald-400' : 'text-muted-foreground'
+                  )}
+                >
+                  {s.label}
+                </p>
+              </div>
+              {isActive && <Loader2 className="w-4 h-4 animate-spin text-primary" />}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // ── Review Section ──────────────────────────────────────────────────────
 
-function ReviewSummaryBar({ session, items }: { session: UploadSession; items: PendingItem[] }) {
+function ReviewSummaryBar({ session, items, fileResults }: { session: UploadSession; items: PendingItem[]; fileResults?: FileResult[] }) {
   const totalItems = items.length
   const categorized = items.filter((i) => i.matched_category_id).length
   const duplicates = items.filter((i) => i.status === 'duplicate').length
   const needsReview = items.filter((i) => !i.matched_category_id && i.status === 'pending').length
+  const totalDeposits = fileResults?.reduce((sum, f) => sum + (f.depositCount || 0), 0) || 0
+  const totalWithdrawals = fileResults?.reduce((sum, f) => sum + (f.withdrawalCount || 0), 0) || 0
+  const totalTransfers = fileResults?.reduce((sum, f) => sum + (f.transferCount || 0), 0) || 0
 
   return (
-    <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
-      <div className="bg-card rounded-xl border border-border/50 p-4">
-        <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Total Items</p>
-        <p className="text-xl font-bold mt-1">{totalItems}</p>
+    <div className="space-y-4 mb-5">
+      {/* Main Stats */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="bg-card rounded-xl border border-border/50 p-4">
+          <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Total Items</p>
+          <p className="text-xl font-bold mt-1">{totalItems}</p>
+        </div>
+        <div className="bg-card rounded-xl border border-border/50 p-4">
+          <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Auto-Categorized</p>
+          <p className="text-xl font-bold mt-1 text-emerald-400">{categorized}</p>
+        </div>
+        <div className="bg-card rounded-xl border border-border/50 p-4">
+          <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Duplicates</p>
+          <p className="text-xl font-bold mt-1 text-amber-400">{duplicates}</p>
+        </div>
+        <div className="bg-card rounded-xl border border-border/50 p-4">
+          <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Needs Review</p>
+          <p className="text-xl font-bold mt-1 text-red-400">{needsReview}</p>
+        </div>
       </div>
-      <div className="bg-card rounded-xl border border-border/50 p-4">
-        <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Auto-Categorized</p>
-        <p className="text-xl font-bold mt-1 text-emerald-400">{categorized}</p>
-      </div>
-      <div className="bg-card rounded-xl border border-border/50 p-4">
-        <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Duplicates</p>
-        <p className="text-xl font-bold mt-1 text-amber-400">{duplicates}</p>
-      </div>
-      <div className="bg-card rounded-xl border border-border/50 p-4">
-        <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Needs Review</p>
-        <p className="text-xl font-bold mt-1 text-red-400">{needsReview}</p>
-      </div>
+
+      {/* File Breakdown */}
+      {fileResults && fileResults.length > 0 && (
+        <div className="bg-card rounded-xl border border-border/50 p-4">
+          <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3">
+            {fileResults.length} File{fileResults.length !== 1 ? 's' : ''} Uploaded
+          </p>
+          <div className="space-y-2">
+            {fileResults.map((file) => (
+              <div key={file.id} className="flex items-center justify-between text-xs">
+                <div className="flex items-center gap-2">
+                  {getFileIcon(file.filename)}
+                  <span className="text-muted-foreground">{file.filename}</span>
+                </div>
+                {file.status === 'parsed' && (
+                  <div className="flex items-center gap-3 text-muted-foreground">
+                    <span>{file.rowCount} rows</span>
+                    {file.statementMeta && (
+                      <span className="text-[10px] bg-primary/20 text-primary px-1.5 py-0.5 rounded">
+                        {file.statementMeta.accountNickname}
+                      </span>
+                    )}
+                  </div>
+                )}
+                {file.status === 'error' && (
+                  <span className="text-red-400 text-[10px]">Error parsing</span>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -849,11 +1106,13 @@ function UploadHistory({
 // ── Main Page Component ─────────────────────────────────────────────────
 
 export function UploadPage() {
-  const [step, setStep] = useState<'upload' | 'review'>('upload')
+  const [step, setStep] = useState<'upload' | 'detection' | 'review'>('upload')
+  const [uploadProgress, setUploadProgress] = useState(1) // 1-4 for progress steps
   const [files, setFiles] = useState<File[]>([])
   const [isUploading, setIsUploading] = useState(false)
   const [isImporting, setIsImporting] = useState(false)
   const [currentSession, setCurrentSession] = useState<UploadSession | null>(null)
+  const [fileResults, setFileResults] = useState<FileResult[]>([])
   const [sessions, setSessions] = useState<UploadSession[]>([])
   const [pendingItems, setPendingItems] = useState<PendingItem[]>([])
   const [duplicateMatches, setDuplicateMatches] = useState<DuplicateMatch[]>([])
@@ -928,24 +1187,40 @@ export function UploadPage() {
     if (files.length === 0) return
 
     setIsUploading(true)
+    setUploadProgress(1)
+    setStep('detection')
+
     try {
       const formData = new FormData()
       files.forEach((file) => {
         formData.append('files', file)
       })
 
-      const session = await api.upload<UploadSession>('/upload', formData)
-      setCurrentSession(session)
+      // Simulate progress through steps
+      setTimeout(() => setUploadProgress(2), 500);
+      setTimeout(() => setUploadProgress(3), 1500);
+
+      const response = await api.upload<any>('/upload', formData)
+      setCurrentSession(response)
+      setFileResults(response.files || [])
       setFiles([])
 
-      // Fetch full session details
-      await fetchSessionDetails(session.id)
-      setStep('review')
-      setActiveTab('all')
-      toast.success(`${session.total_items} items parsed from ${session.file_count} file${session.file_count !== 1 ? 's' : ''}`)
+      // Final progress step
+      setTimeout(async () => {
+        setUploadProgress(4)
+
+        // Small delay before moving to review
+        setTimeout(async () => {
+          await fetchSessionDetails(response.id)
+          setStep('review')
+          setActiveTab('all')
+          toast.success(`${response.total_items} items parsed from ${response.file_count} file${response.file_count !== 1 ? 's' : ''}`)
+        }, 800)
+      }, 800)
     } catch (err) {
       console.error('Upload failed:', err)
       toast.error('Failed to upload files. Please try again.')
+      setStep('upload')
     } finally {
       setIsUploading(false)
     }
@@ -1129,6 +1404,39 @@ export function UploadPage() {
         </>
       )}
 
+      {step === 'detection' && (
+        <div className="space-y-6">
+          {/* Progress Indicator */}
+          <UploadProgressIndicator step={uploadProgress} />
+
+          {/* Statement Detection Cards */}
+          {fileResults.length > 0 && uploadProgress > 1 && (
+            <div>
+              <h2 className="text-lg font-semibold mb-4">Statement Detection</h2>
+              <div className="space-y-3">
+                {fileResults.map((file) => (
+                  <StatementDetectionCard key={file.id} file={file} isLoading={uploadProgress < 4} />
+                ))}
+              </div>
+
+              {/* Bulk Stats */}
+              {uploadProgress === 4 && (
+                <div className="mt-6 p-4 rounded-lg bg-emerald-500/5 border border-emerald-500/20">
+                  <div className="flex items-center gap-2 mb-2">
+                    <CheckCircle2 className="w-5 h-5 text-emerald-400" />
+                    <p className="text-sm font-semibold text-emerald-400">All files processed</p>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    {fileResults.reduce((sum, f) => sum + f.rowCount, 0)} transactions detected across{' '}
+                    {fileResults.length} file{fileResults.length !== 1 ? 's' : ''}
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
       {step === 'review' && currentSession && (
         <>
           {/* Back to upload button */}
@@ -1138,6 +1446,7 @@ export function UploadPage() {
               setCurrentSession(null)
               setPendingItems([])
               setDuplicateMatches([])
+              setFileResults([])
             }}
             className="mb-4 text-sm text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1"
           >
@@ -1146,7 +1455,7 @@ export function UploadPage() {
           </button>
 
           {/* Summary Bar */}
-          <ReviewSummaryBar session={currentSession} items={pendingItems} />
+          <ReviewSummaryBar session={currentSession} items={pendingItems} fileResults={fileResults} />
 
           {/* Tab Navigation */}
           <div className="flex items-center gap-1 mb-5 border-b border-border/30">
