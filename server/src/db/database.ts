@@ -309,6 +309,14 @@ function initDb(): void {
     try { db.exec(sql); } catch { /* column already exists */ }
   }
 
+  // Backfill: mark existing NULL-source records as 'seed' (they predate the source column)
+  try {
+    const updated = db.prepare("UPDATE transactions SET source = 'seed' WHERE source IS NULL").run();
+    if (updated.changes > 0) console.log(`  Backfilled ${updated.changes} transactions with source='seed'`);
+    const updatedAccts = db.prepare("UPDATE accounts SET source = 'seed' WHERE source IS NULL").run();
+    if (updatedAccts.changes > 0) console.log(`  Backfilled ${updatedAccts.changes} accounts with source='seed'`);
+  } catch { /* safe to ignore */ }
+
   // Create password reset tokens table if not exists
   try {
     db.exec(`
