@@ -482,10 +482,10 @@ router.get('/sessions/:id', (req: Request, res: Response) => {
 function extractCoreName(name: string): string {
   return name
     .toLowerCase()
-    .replace(/[#\-_:\/\\]/g, ' ')       // replace common separators with space
-    .replace(/\b\d{4,}\b/g, '')          // drop long numbers (reference IDs, dates)
-    .replace(/\b\d{1,3}\.\d{2}\b/g, '') // drop dollar amounts like 123.45
-    .replace(/\s+/g, ' ')               // collapse whitespace
+    .replace(/[#\-_:\/\\*]+/g, ' ')      // replace common separators with space
+    .replace(/\b\d+\b/g, '')             // drop ALL standalone numbers (refs, dates, indices)
+    .replace(/\d+\.\d+/g, '')            // drop decimal numbers (amounts)
+    .replace(/\s+/g, ' ')                // collapse whitespace
     .trim();
 }
 
