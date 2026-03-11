@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import crypto from 'crypto';
 import { db } from '../db/database.js';
 
 const router = Router();
@@ -223,6 +224,28 @@ router.post('/rollover/:month', (req: Request, res: Response) => {
   } catch (error) {
     console.error('Rollover error:', error);
     res.status(500).json({ error: 'Failed to calculate rollover' });
+  }
+});
+
+// DELETE /:id - delete budget
+router.delete('/:id', (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+
+    const existing = db
+      .prepare('SELECT * FROM budgets WHERE id = ? AND user_id = ?')
+      .get(id, req.user!.id);
+
+    if (!existing) {
+      res.status(404).json({ error: 'Budget not found' });
+      return;
+    }
+
+    db.prepare('DELETE FROM budgets WHERE id = ? AND user_id = ?').run(id, req.user!.id);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete budget error:', error);
+    res.status(500).json({ error: 'Failed to delete budget' });
   }
 });
 
