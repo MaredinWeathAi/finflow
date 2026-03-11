@@ -8,7 +8,7 @@ export function LoginPage() {
   const [name, setName] = useState('')
   const [username, setUsername] = useState('')
   const [identifier, setIdentifier] = useState('')
-  const [password, setPassword] = useState('password123')
+  const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const { login, register } = useAuthStore()
@@ -133,7 +133,7 @@ export function LoginPage() {
 
           <div className="mt-4 text-center">
             <button
-              onClick={() => { setIsRegister(!isRegister); setError('') }}
+              onClick={() => { setIsRegister(!isRegister); setError(''); setPassword(''); setIdentifier(''); setName(''); setUsername('') }}
               className="text-sm text-muted-foreground hover:text-foreground transition-colors"
             >
               {isRegister
@@ -144,7 +144,7 @@ export function LoginPage() {
         </div>
 
         <p className="text-center text-xs text-muted-foreground mt-4">
-          Admin: marcelo / demo123 &bull; Client: johndoe / password123
+          Secure budget management for you and your advisor
         </p>
       </div>
     </div>

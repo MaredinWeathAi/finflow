@@ -90,6 +90,13 @@ app.use(express.static(publicDir, {
 
 initDb();
 
+// Database persistence verification
+console.log(`Database path: ${process.env.DATABASE_PATH || '(default - NOT persistent on Railway)'}`);
+if (!process.env.DATABASE_PATH && process.env.NODE_ENV === 'production') {
+  console.warn('⚠️  WARNING: DATABASE_PATH not set in production! Data will NOT persist across deploys.');
+  console.warn('⚠️  Set DATABASE_PATH=/data/finflow.db and attach a persistent volume at /data');
+}
+
 // Auto-seed if database is empty (fresh volume or first deploy)
 try {
   const userCount = (db.prepare('SELECT COUNT(*) as count FROM users').get() as any).count;
@@ -101,7 +108,7 @@ try {
       console.error('Auto-seed failed:', err);
     });
   } else {
-    console.log(`Database has ${userCount} users, skipping seed`);
+    console.log(`✅ Database persistent: ${userCount} users found`);
   }
 } catch (e) {
   console.error('Seed check failed:', e);

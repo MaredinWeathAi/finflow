@@ -38,10 +38,19 @@ router.post('/register', (req: Request, res: Response) => {
     const now = new Date().toISOString();
     const userRole = role || 'client';
 
+    // Auto-assign to the first admin as advisor so they appear in the admin panel
+    let advisorId: string | null = null;
+    if (userRole === 'client') {
+      const admin = db.prepare("SELECT id FROM users WHERE role = 'admin' ORDER BY created_at ASC LIMIT 1").get() as any;
+      if (admin) {
+        advisorId = admin.id;
+      }
+    }
+
     db.prepare(
-      `INSERT INTO users (id, email, username, password_hash, name, role, currency, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, 'USD', ?, ?)`
-    ).run(id, email, username || null, password_hash, name, userRole, now, now);
+      `INSERT INTO users (id, email, username, password_hash, name, role, advisor_id, currency, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'USD', ?, ?)`
+    ).run(id, email, username || null, password_hash, name, userRole, advisorId, now, now);
 
     const token = generateToken(id, email, userRole);
 
