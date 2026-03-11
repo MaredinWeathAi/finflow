@@ -942,10 +942,25 @@ function ImportActionsBar({
   onDiscard: () => void
   isImporting: boolean
 }) {
+  // "Import Approved" imports: approved items + pending items that have a category
   const approvedCount = items.filter(
-    (i) => i.status === 'approved' || (i.status === 'pending' && i.matched_category_id)
+    (i) => (i.status === 'approved') || (i.status === 'pending' && i.matched_category_id)
   ).length
+  // "Import All" imports: everything not skipped or already imported
   const importableCount = items.filter((i) => i.status !== 'skipped' && i.status !== 'imported').length
+  // Check if everything is already imported
+  const allImported = items.length > 0 && items.every((i) => i.status === 'imported' || i.status === 'skipped')
+
+  if (allImported) {
+    return (
+      <div className="sticky bottom-0 z-10 bg-card/95 backdrop-blur-sm border-t border-border/50 -mx-1 px-1">
+        <div className="flex items-center justify-center gap-2 py-4">
+          <CheckCircle2 className="w-5 h-5 text-emerald-400" />
+          <span className="text-sm font-medium text-emerald-400">All items have been imported</span>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="sticky bottom-0 z-10 bg-card/95 backdrop-blur-sm border-t border-border/50 -mx-1 px-1">

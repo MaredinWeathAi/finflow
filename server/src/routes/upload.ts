@@ -528,13 +528,23 @@ router.post('/sessions/:id/import', (req: Request, res: Response) => {
       return res.status(404).json({ error: 'Session not found' });
     }
 
-    // Import all non-skipped items
-    const statusFilter = importAll ? "('pending', 'approved')" : "('approved')";
-    const items = db
-      .prepare(
-        `SELECT * FROM pending_items WHERE session_id = ? AND user_id = ? AND status IN ${statusFilter}`
-      )
-      .all(id, userId) as any[];
+    // Import items based on mode:
+    // - importAll: import all non-skipped, non-imported items (pending, approved, duplicate)
+    // - default (Import Approved): import approved items AND pending items that have a category assigned
+    let items: any[];
+    if (importAll) {
+      items = db
+        .prepare(
+          `SELECT * FROM pending_items WHERE session_id = ? AND user_id = ? AND status NOT IN ('skipped', 'imported')`
+        )
+        .all(id, userId) as any[];
+    } else {
+      items = db
+        .prepare(
+          `SELECT * FROM pending_items WHERE session_id = ? AND user_id = ? AND (status = 'approved' OR (status = 'pending' AND matched_category_id IS NOT NULL AND matched_category_id != ''))`
+        )
+        .all(id, userId) as any[];
+    }
 
     if (items.length === 0) {
       return res.json({ message: 'No items to import', imported: 0 });
