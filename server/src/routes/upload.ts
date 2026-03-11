@@ -191,7 +191,7 @@ function ensureDefaultCategories(userId: string): void {
 }
 
 // POST / - upload files, parse, detect duplicates, auto-create accounts
-router.post('/', upload.array('files', 10), async (req: Request, res: Response) => {
+router.post('/', upload.array('files', 50), async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
     const files = req.files as Express.Multer.File[];
