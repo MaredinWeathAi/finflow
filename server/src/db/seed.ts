@@ -7,7 +7,7 @@ import bcrypt from 'bcryptjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const DB_PATH = path.resolve(__dirname, '../../finflow.db');
+const DB_PATH = process.env.DATABASE_PATH || path.resolve(__dirname, '../../finflow.db');
 
 const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
