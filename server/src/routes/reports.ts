@@ -367,4 +367,179 @@ router.get('/summary', (req: Request, res: Response) => {
   }
 });
 
+// GET /dashboard-summary - comprehensive data for improved dashboard
+router.get('/dashboard-summary', (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.id;
+    const month = (req.query.month as string) || new Date().toISOString().substring(0, 7);
+    const monthStart = month + '-01';
+    const [year, mon] = month.split('-').map(Number);
+    const endOfMonth = new Date(year, mon, 0);
+    const monthEnd = `${year}-${String(mon).padStart(2, '0')}-${String(endOfMonth.getDate()).padStart(2, '0')}`;
+
+    // Get Transfer category
+    const transferCategory = db.prepare(
+      `SELECT id FROM categories WHERE user_id = ? AND LOWER(name) = 'transfer'`
+    ).get(userId) as any;
+    const transferCategoryId = transferCategory?.id;
+
+    // Core monthly numbers (excluding transfers)
+    const buildExcludeTransferClause = () => {
+      return transferCategoryId ? `AND (category_id IS NULL OR category_id != ?)` : 'AND 1=1';
+    };
+    const excludeParams = transferCategoryId ? [userId, monthStart, monthEnd, transferCategoryId] : [userId, monthStart, monthEnd];
+
+    const incomeResult = db.prepare(
+      `SELECT COALESCE(SUM(amount), 0) as total FROM transactions
+       WHERE user_id = ? AND amount > 0 AND date >= ? AND date <= ? ${buildExcludeTransferClause()}`
+    ).get(...excludeParams) as any;
+
+    const expenseResult = db.prepare(
+      `SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
+       WHERE user_id = ? AND amount < 0 AND date >= ? AND date <= ? ${buildExcludeTransferClause()}`
+    ).get(...excludeParams) as any;
+
+    const income = Math.round(incomeResult.total * 100) / 100;
+    const expenses = Math.round(expenseResult.total * 100) / 100;
+    const net = Math.round((income - expenses) * 100) / 100;
+    const savingsRate = income > 0 ? Math.round(((income - expenses) / income) * 10000) / 100 : 0;
+
+    // Overspending alert
+    const isOverspending = expenses > income;
+    const overspendAmount = isOverspending ? Math.round((expenses - income) * 100) / 100 : 0;
+
+    // Credit cards (accounts where type = 'credit')
+    const creditCards = db.prepare(
+      `SELECT id, name, balance, institution, icon FROM accounts
+       WHERE user_id = ? AND type = 'credit' AND is_hidden = 0
+       ORDER BY name`
+    ).all(userId) as any[];
+
+    const totalCCDebt = creditCards.reduce((sum, cc) => sum + (cc.balance || 0), 0);
+
+    // CC spending this month (charges on CC accounts)
+    const ccSpendingResult = db.prepare(
+      `SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
+       WHERE user_id = ? AND account_id IN (
+         SELECT id FROM accounts WHERE user_id = ? AND type = 'credit'
+       ) AND amount < 0 AND date >= ? AND date <= ?`
+    ).get(userId, userId, monthStart, monthEnd) as any;
+    const ccSpendingThisMonth = Math.round(ccSpendingResult.total * 100) / 100;
+
+    // CC interest/fees (transactions on CC accounts with names matching patterns)
+    const ccInterestFeesResult = db.prepare(
+      `SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
+       WHERE user_id = ? AND account_id IN (
+         SELECT id FROM accounts WHERE user_id = ? AND type = 'credit'
+       ) AND amount < 0 AND date >= ? AND date <= ?
+       AND (LOWER(name) LIKE '%interest%' OR LOWER(name) LIKE '%finance charge%'
+            OR LOWER(name) LIKE '%late fee%' OR LOWER(name) LIKE '%annual fee%'
+            OR LOWER(name) LIKE '%penalty%')`
+    ).get(userId, userId, monthStart, monthEnd) as any;
+    const ccInterestFees = Math.round(ccInterestFeesResult.total * 100) / 100;
+
+    // Transfers in/out
+    let transfersInResult = { total: 0 };
+    let transfersOutResult = { total: 0 };
+    if (transferCategoryId) {
+      transfersInResult = db.prepare(
+        `SELECT COALESCE(SUM(amount), 0) as total FROM transactions
+         WHERE user_id = ? AND category_id = ? AND amount > 0 AND date >= ? AND date <= ?`
+      ).get(userId, transferCategoryId, monthStart, monthEnd) as any;
+
+      transfersOutResult = db.prepare(
+        `SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
+         WHERE user_id = ? AND category_id = ? AND amount < 0 AND date >= ? AND date <= ?`
+      ).get(userId, transferCategoryId, monthStart, monthEnd) as any;
+    }
+    const transfersIn = Math.round(transfersInResult.total * 100) / 100;
+    const transfersOut = Math.round(transfersOutResult.total * 100) / 100;
+
+    // Cash accounts (checking, savings, etc.)
+    const cashAccounts = db.prepare(
+      `SELECT id, name, balance, type FROM accounts
+       WHERE user_id = ? AND type IN ('checking', 'savings') AND is_hidden = 0
+       ORDER BY name`
+    ).all(userId) as any[];
+
+    const totalCash = cashAccounts.reduce((sum, acc) => sum + (acc.balance || 0), 0);
+
+    // Top expense categories (excluding transfers)
+    const topExpenses = db.prepare(
+      `SELECT c.id, c.name, c.icon, c.color,
+              COALESCE(SUM(ABS(t.amount)), 0) as total,
+              COUNT(t.id) as transaction_count
+       FROM transactions t
+       JOIN categories c ON t.category_id = c.id
+       WHERE t.user_id = ? AND t.amount < 0 AND t.date >= ? AND t.date <= ?
+             ${transferCategoryId ? 'AND c.id != ?' : 'AND 1=1'}
+       GROUP BY c.id
+       ORDER BY total DESC
+       LIMIT 10`
+    ).all(transferCategoryId
+      ? [userId, monthStart, monthEnd, transferCategoryId]
+      : [userId, monthStart, monthEnd]) as any[];
+
+    // Uncategorized transactions
+    const uncategorizedResult = db.prepare(
+      `SELECT COUNT(*) as count, COALESCE(SUM(ABS(amount)), 0) as total
+       FROM transactions
+       WHERE user_id = ? AND date >= ? AND date <= ?
+             AND (category_id IS NULL OR category_id IN (
+               SELECT id FROM categories WHERE user_id = ? AND LOWER(name) LIKE '%uncategorized%'
+             ))`
+    ).get(userId, monthStart, monthEnd, userId) as any;
+
+    const uncategorizedCount = uncategorizedResult.count || 0;
+    const uncategorizedTotal = Math.round(uncategorizedResult.total * 100) / 100;
+
+    // Day of month info
+    const today = new Date();
+    const currentMonth = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
+    const daysInMonth = endOfMonth.getDate();
+    const dayOfMonth = month === currentMonth ? today.getDate() : daysInMonth;
+
+    res.json({
+      income,
+      expenses,
+      net,
+      savingsRate,
+      isOverspending,
+      overspendAmount,
+      creditCards: creditCards.map(cc => ({
+        name: cc.name,
+        balance: cc.balance,
+        institution: cc.institution || 'Unknown',
+        icon: cc.icon || 'credit-card',
+      })),
+      totalCCDebt: Math.round(totalCCDebt * 100) / 100,
+      ccSpendingThisMonth,
+      ccInterestFees,
+      transfersIn,
+      transfersOut,
+      cashAccounts: cashAccounts.map(acc => ({
+        name: acc.name,
+        balance: acc.balance,
+        type: acc.type,
+      })),
+      totalCash: Math.round(totalCash * 100) / 100,
+      topExpenses: topExpenses.map((c: any) => ({
+        name: c.name,
+        icon: c.icon,
+        color: c.color,
+        amount: Math.round(c.total * 100) / 100,
+        count: c.transaction_count,
+      })),
+      uncategorizedCount,
+      uncategorizedTotal,
+      month,
+      daysInMonth,
+      dayOfMonth,
+    });
+  } catch (error) {
+    console.error('Dashboard summary error:', error);
+    res.status(500).json({ error: 'Failed to generate dashboard summary' });
+  }
+});
+
 export default router;

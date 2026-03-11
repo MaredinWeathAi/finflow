@@ -1335,6 +1335,8 @@ export function UploadPage() {
         prev ? { ...prev, status: 'completed', imported_items: result.imported } : null
       )
       await fetchSessions()
+      // Run data quality check in background to improve categorization
+      api.post('/data/quality-check?apply=true').catch(() => {})
     } catch (err) {
       console.error('Import failed:', err)
       toast.error('Failed to import transactions')
@@ -1361,6 +1363,8 @@ export function UploadPage() {
         prev ? { ...prev, status: 'completed', imported_items: result.imported } : null
       )
       await fetchSessions()
+      // Run data quality check in background to improve categorization
+      api.post('/data/quality-check?apply=true').catch(() => {})
     } catch (err) {
       console.error('Import all failed:', err)
       toast.error('Failed to import transactions')

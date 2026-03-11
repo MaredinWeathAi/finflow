@@ -26,11 +26,38 @@ import { SpendingTrendChart } from '@/components/dashboard/SpendingTrendChart'
 import { TrendingCategories } from '@/components/dashboard/TrendingCategories'
 import { RecentTransactions } from '@/components/dashboard/RecentTransactions'
 import { UpcomingRecurring } from '@/components/dashboard/UpcomingRecurring'
+import { FinancialHealthCard } from '@/components/dashboard/FinancialHealthCard'
+import { CreditCardDebtCard } from '@/components/dashboard/CreditCardDebtCard'
+import { DataQualityBanner } from '@/components/dashboard/DataQualityBanner'
 import { OnboardingWizard } from '@/components/shared/OnboardingWizard'
+
+interface DashboardSummary {
+  income: number
+  expenses: number
+  net: number
+  savingsRate: number
+  isOverspending: boolean
+  overspendAmount: number
+  creditCards: { name: string; balance: number; institution: string; icon: string }[]
+  totalCCDebt: number
+  ccSpendingThisMonth: number
+  ccInterestFees: number
+  transfersIn: number
+  transfersOut: number
+  cashAccounts: { name: string; balance: number; type: string }[]
+  totalCash: number
+  topExpenses: { name: string; icon: string; color: string; amount: number; count: number }[]
+  uncategorizedCount: number
+  uncategorizedTotal: number
+  month: string
+  daysInMonth: number
+  dayOfMonth: number
+}
 
 interface DashboardState {
   transactions: Transaction[]
   netWorthHistory: NetWorthSnapshot[]
+  summary: DashboardSummary | null
   isLoading: boolean
 }
 
@@ -109,6 +136,7 @@ export function DashboardPage() {
   const [state, setState] = useState<DashboardState>({
     transactions: [],
     netWorthHistory: [],
+    summary: null,
     isLoading: true,
   })
 
@@ -116,7 +144,6 @@ export function DashboardPage() {
     // Check if onboarding needed
     const onboarded = localStorage.getItem('finflow_onboarded')
     if (!onboarded) {
-      // Delay check to see if user has any data
       const timer = setTimeout(() => {
         if (state.transactions.length === 0 && !state.isLoading) {
           setShowOnboarding(true)
@@ -126,35 +153,30 @@ export function DashboardPage() {
     }
   }, [state.transactions.length, state.isLoading])
 
+  const fetchData = async () => {
+    try {
+      const [txRes, nwRes, summaryRes] = await Promise.all([
+        api.get<{ transactions: Transaction[] }>('/transactions?limit=200&sort=date_desc'),
+        api.get<NetWorthSnapshot[]>('/reports/networth-history').catch(() => [] as NetWorthSnapshot[]),
+        api.get<DashboardSummary>('/reports/dashboard-summary').catch(() => null),
+      ])
+
+      setState({
+        transactions: txRes.transactions || [],
+        netWorthHistory: Array.isArray(nwRes) ? nwRes : [],
+        summary: summaryRes,
+        isLoading: false,
+      })
+    } catch (err) {
+      console.error('Failed to fetch dashboard data:', err)
+      setState((prev) => ({ ...prev, isLoading: false }))
+    }
+  }
+
   useEffect(() => {
     let cancelled = false
-
-    async function fetchDashboardData() {
-      try {
-        const [txRes, nwRes] = await Promise.all([
-          api.get<{ transactions: Transaction[] }>('/transactions?limit=200&sort=date_desc'),
-          api.get<NetWorthSnapshot[]>('/reports/networth-history').catch(() => [] as NetWorthSnapshot[]),
-        ])
-
-        if (!cancelled) {
-          setState({
-            transactions: txRes.transactions || [],
-            netWorthHistory: Array.isArray(nwRes) ? nwRes : [],
-            isLoading: false,
-          })
-        }
-      } catch (err) {
-        console.error('Failed to fetch dashboard data:', err)
-        if (!cancelled) {
-          setState((prev) => ({ ...prev, isLoading: false }))
-        }
-      }
-    }
-
-    fetchDashboardData()
-    return () => {
-      cancelled = true
-    }
+    fetchData().then(() => { if (cancelled) return })
+    return () => { cancelled = true }
   }, [])
 
   const now = new Date()
@@ -173,19 +195,18 @@ export function DashboardPage() {
     currentWeekEnd
   )
 
-  // Monthly income/expenses for savings card
+  // Monthly income/expenses - prefer dashboard-summary (transfer-aware) over raw tx math
+  const summary = state.summary
   const monthStart = startOfMonth(now)
   const monthEnd = endOfMonth(now)
   const thisMonthTx = state.transactions.filter((tx) => {
     const d = parseISO(tx.date)
     return isWithinInterval(d, { start: monthStart, end: monthEnd })
   })
-  const monthlyIncome = thisMonthTx
-    .filter((tx) => tx.amount > 0)
-    .reduce((sum, tx) => sum + tx.amount, 0)
-  const monthlyExpenses = thisMonthTx
-    .filter((tx) => tx.amount < 0)
-    .reduce((sum, tx) => sum + Math.abs(tx.amount), 0)
+
+  // Use summary data (which excludes transfers) if available, else fallback
+  const monthlyIncome = summary?.income ?? thisMonthTx.filter((tx) => tx.amount > 0).reduce((sum, tx) => sum + tx.amount, 0)
+  const monthlyExpenses = summary?.expenses ?? thisMonthTx.filter((tx) => tx.amount < 0).reduce((sum, tx) => sum + Math.abs(tx.amount), 0)
 
   // Previous month savings for comparison
   const prevMonthStart = startOfMonth(subMonths(now, 1))
@@ -202,7 +223,6 @@ export function DashboardPage() {
   const upcomingRecurringTotal = recurring
     .filter((r) => r.is_active)
     .reduce((sum, r) => {
-      // Only count monthly items or pro-rated
       if (r.frequency === 'monthly') return sum + r.amount
       if (r.frequency === 'weekly') return sum + r.amount * 4
       if (r.frequency === 'biweekly') return sum + r.amount * 2
@@ -297,33 +317,76 @@ export function DashboardPage() {
         </p>
       </div>
 
-      {/* Top Row: Safe to Spend (hero) / Net Worth / Monthly Spending */}
+      {/* Data Quality Banner */}
+      {summary && summary.uncategorizedCount > 0 && (
+        <div className="opacity-0 animate-fade-in stagger-2">
+          <DataQualityBanner
+            uncategorizedCount={summary.uncategorizedCount}
+            uncategorizedTotal={summary.uncategorizedTotal}
+            onQualityImproved={fetchData}
+          />
+        </div>
+      )}
+
+      {/* Top Row: Financial Health / Safe to Spend / Net Worth */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
         <div className="opacity-0 animate-fade-in stagger-2">
+          {summary ? (
+            <FinancialHealthCard
+              income={summary.income}
+              expenses={summary.expenses}
+              isOverspending={summary.isOverspending}
+              overspendAmount={summary.overspendAmount}
+              totalCCDebt={summary.totalCCDebt}
+              ccSpendingThisMonth={summary.ccSpendingThisMonth}
+              ccInterestFees={summary.ccInterestFees}
+              transfersIn={summary.transfersIn}
+              transfersOut={summary.transfersOut}
+              savingsRate={summary.savingsRate}
+              dayOfMonth={summary.dayOfMonth}
+              daysInMonth={summary.daysInMonth}
+            />
+          ) : (
+            <SafeToSpendCard
+              income={monthlyIncome}
+              totalBudgeted={totalBudget}
+              totalSpent={monthlyExpenses}
+              upcomingRecurring={upcomingRecurringTotal}
+            />
+          )}
+        </div>
+        <div className="opacity-0 animate-fade-in stagger-3">
           <SafeToSpendCard
             income={monthlyIncome}
             totalBudgeted={totalBudget}
             totalSpent={monthlyExpenses}
             upcomingRecurring={upcomingRecurringTotal}
+            isOverspending={summary?.isOverspending}
+            overspendAmount={summary?.overspendAmount}
           />
         </div>
-        <div className="opacity-0 animate-fade-in stagger-3">
+        <div className="opacity-0 animate-fade-in stagger-4">
           <NetWorthCard
             netWorth={netWorth}
             previousNetWorth={previousNetWorth}
             history={netWorthHistoryData}
           />
         </div>
-        <div className="opacity-0 animate-fade-in stagger-4">
-          <MonthlySpendingCard
-            spent={totalSpent}
-            budget={totalBudget}
-          />
-        </div>
       </div>
 
-      {/* Second Row: Savings Summary + Weekly Spending */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+      {/* Second Row: CC Debt (if any) + Savings + Weekly Spending */}
+      <div className={`grid grid-cols-1 ${summary && summary.totalCCDebt !== 0 ? 'md:grid-cols-3' : 'md:grid-cols-2'} gap-5`}>
+        {summary && summary.totalCCDebt !== 0 && (
+          <div className="opacity-0 animate-fade-in stagger-5">
+            <CreditCardDebtCard
+              creditCards={summary.creditCards}
+              totalCCDebt={summary.totalCCDebt}
+              ccSpendingThisMonth={summary.ccSpendingThisMonth}
+              ccInterestFees={summary.ccInterestFees}
+              income={summary.income}
+            />
+          </div>
+        )}
         <div className="opacity-0 animate-fade-in stagger-5">
           <SavingsSummaryCard
             income={monthlyIncome}
@@ -339,9 +402,17 @@ export function DashboardPage() {
         </div>
       </div>
 
-      {/* Third Row: 6-Month Spending Trend (full width) */}
-      <div className="opacity-0 animate-fade-in stagger-6">
-        <SpendingTrendChart />
+      {/* Monthly Spending + Trend Chart */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+        <div className="opacity-0 animate-fade-in stagger-6">
+          <MonthlySpendingCard
+            spent={totalSpent}
+            budget={totalBudget}
+          />
+        </div>
+        <div className="md:col-span-2 opacity-0 animate-fade-in stagger-6">
+          <SpendingTrendChart />
+        </div>
       </div>
 
       {/* Trending Categories */}

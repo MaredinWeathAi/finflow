@@ -320,4 +320,119 @@ router.delete('/reset', (req: Request, res: Response) => {
   }
 });
 
+// POST /quality-check - analyze and suggest data improvements
+router.post('/quality-check', (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.id;
+    const apply = (req.query.apply as string) === 'true';
+
+    // Dynamic import of categorizer
+    const { categorizeItem } = require('../engine/categorizer.js');
+
+    const improvements = db.transaction(() => {
+      let recategorized = 0;
+      const duplicatesFound: any[] = [];
+      const missingTransferCategory: any[] = [];
+
+      // 1. Find all uncategorized transactions
+      const uncategorized = db.prepare(
+        `SELECT t.id, t.name, t.amount, t.date, t.account_id, a.name as account_name
+         FROM transactions t
+         JOIN accounts a ON t.account_id = a.id
+         WHERE t.user_id = ? AND (t.category_id IS NULL
+           OR t.category_id IN (
+             SELECT id FROM categories WHERE user_id = ? AND LOWER(name) LIKE '%uncategorized%'
+           ))
+         ORDER BY t.date DESC`
+      ).all(userId, userId) as any[];
+
+      // Try to recategorize each uncategorized transaction
+      const updateTxCategory = db.prepare(
+        `UPDATE transactions SET category_id = ?, updated_at = ? WHERE id = ?`
+      );
+
+      for (const tx of uncategorized) {
+        const result = categorizeItem(tx.name, tx.amount, userId);
+        if (result.categoryId) {
+          if (apply) {
+            updateTxCategory.run(result.categoryId, new Date().toISOString(), tx.id);
+          }
+          recategorized++;
+        }
+      }
+
+      // 2. Find cross-account duplicates (same name, amount, date, different accounts)
+      const duplicates = db.prepare(
+        `SELECT t1.id, t1.name, t1.amount, t1.date, t1.account_id, a1.name as account_name,
+                t2.id as duplicate_id, a2.name as duplicate_account
+         FROM transactions t1
+         JOIN accounts a1 ON t1.account_id = a1.id
+         JOIN transactions t2 ON t1.user_id = t2.user_id
+         JOIN accounts a2 ON t2.account_id = a2.id
+         WHERE t1.user_id = ?
+           AND t1.id < t2.id
+           AND LOWER(t1.name) = LOWER(t2.name)
+           AND ABS(t1.amount) = ABS(t2.amount)
+           AND t1.date = t2.date
+           AND t1.account_id != t2.account_id
+         ORDER BY t1.date DESC`
+      ).all(userId) as any[];
+
+      for (const dup of duplicates) {
+        duplicatesFound.push({
+          id: dup.id,
+          name: dup.name,
+          amount: dup.amount,
+          date: dup.date,
+          account_name: dup.account_name,
+          duplicate_id: dup.duplicate_id,
+          duplicate_account: dup.duplicate_account,
+        });
+      }
+
+      // 3. Find CC payments not categorized as transfers
+      const transferCategory = db.prepare(
+        `SELECT id FROM categories WHERE user_id = ? AND LOWER(name) = 'transfer'`
+      ).get(userId) as any;
+      const transferCategoryId = transferCategory?.id;
+
+      if (transferCategoryId) {
+        // Look for transactions from checking/savings to credit card accounts
+        const ccPayments = db.prepare(
+          `SELECT t.id, t.name, t.amount, t.date, a_from.name as from_account, a_to.name as to_account
+           FROM transactions t
+           JOIN accounts a_from ON t.account_id = a_from.id
+           JOIN accounts a_to ON LOWER(a_to.name) LIKE '%' || LOWER(t.name) || '%' OR LOWER(t.name) LIKE '%credit%'
+           WHERE t.user_id = ?
+             AND a_from.user_id = ?
+             AND a_from.type IN ('checking', 'savings')
+             AND a_to.type = 'credit'
+             AND t.amount < 0
+             AND (t.category_id IS NULL OR t.category_id != ?)
+           ORDER BY t.date DESC`
+        ).all(userId, userId, transferCategoryId) as any[];
+
+        for (const payment of ccPayments) {
+          missingTransferCategory.push({
+            id: payment.id,
+            name: payment.name,
+            amount: payment.amount,
+            date: payment.date,
+          });
+        }
+      }
+
+      return { recategorized, duplicatesFound, missingTransferCategory };
+    })();
+
+    res.json({
+      improvements: improvements,
+      applied: apply,
+    });
+  } catch (error) {
+    console.error('Data quality check error:', error);
+    res.status(500).json({ error: 'Failed to run quality check' });
+  }
+});
+
 export default router;
