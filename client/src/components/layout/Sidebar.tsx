@@ -60,9 +60,7 @@ export function Sidebar() {
     >
       {/* Logo */}
       <div className="flex items-center gap-3 px-4 h-16 border-b border-border/50">
-        <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center shrink-0">
-          <span className="text-primary-foreground font-bold text-sm">F</span>
-        </div>
+        <img src="/finbudget-icon.svg" alt="FinBudget" className="w-8 h-8 rounded-lg shrink-0" />
         {!collapsed && (
           <span className="font-bold text-lg tracking-tight">FinBudget</span>
         )}

@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#6366f1"/>
+      <stop offset="50%" style="stop-color:#8b5cf6"/>
+      <stop offset="100%" style="stop-color:#a78bfa"/>
+    </linearGradient>
+    <linearGradient id="shine" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:rgba(255,255,255,0.25)"/>
+      <stop offset="100%" style="stop-color:rgba(255,255,255,0)"/>
+    </linearGradient>
+    <linearGradient id="chartGrad" x1="0%" y1="100%" x2="0%" y2="0%">
+      <stop offset="0%" style="stop-color:#34d399;stop-opacity:0.3"/>
+      <stop offset="100%" style="stop-color:#34d399;stop-opacity:0.9"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Rounded square background -->
+  <rect x="16" y="16" width="480" height="480" rx="96" ry="96" fill="url(#bgGrad)"/>
+
+  <!-- Subtle shine overlay -->
+  <rect x="16" y="16" width="480" height="240" rx="96" ry="96" fill="url(#shine)" opacity="0.4"/>
+
+  <!-- Mini chart bars (bottom-left accent) -->
+  <rect x="88" y="340" width="36" height="60" rx="6" fill="#34d399" opacity="0.6"/>
+  <rect x="136" y="310" width="36" height="90" rx="6" fill="#34d399" opacity="0.7"/>
+  <rect x="184" y="280" width="36" height="120" rx="6" fill="#34d399" opacity="0.8"/>
+
+  <!-- Upward trend line -->
+  <polyline points="106,340 154,310 202,275 280,220" fill="none" stroke="#34d399" stroke-width="6" stroke-linecap="round" stroke-linejoin="round" opacity="0.9"/>
+  <circle cx="280" cy="220" r="8" fill="#34d399" opacity="0.9"/>
+
+  <!-- Stylized "F" letterform -->
+  <g transform="translate(170, 90)">
+    <!-- Main vertical stroke -->
+    <rect x="0" y="0" width="42" height="260" rx="21" fill="white"/>
+    <!-- Top horizontal stroke -->
+    <rect x="0" y="0" width="200" height="42" rx="21" fill="white"/>
+    <!-- Middle horizontal stroke -->
+    <rect x="0" y="110" width="150" height="38" rx="19" fill="white" opacity="0.85"/>
+  </g>
+
+  <!-- Small dollar sign accent (top-right) -->
+  <g transform="translate(380, 80)" opacity="0.5">
+    <text x="0" y="50" font-family="system-ui, -apple-system, sans-serif" font-size="60" font-weight="700" fill="white">$</text>
+  </g>
+</svg>

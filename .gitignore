@@ -6,6 +6,15 @@ server/dist/
 public/
 client/dist/
 
+# But keep Vite public assets (icons, manifest)
+!client/public/
+client/public/*
+!client/public/favicon.ico
+!client/public/finbudget-icon.svg
+!client/public/finbudget-192.png
+!client/public/finbudget-512.png
+!client/public/manifest.json
+
 # Database
 *.db
 *.db-wal
