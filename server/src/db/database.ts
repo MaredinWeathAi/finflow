@@ -15,6 +15,39 @@ if (!fs.existsSync(dbDir)) {
   fs.mkdirSync(dbDir, { recursive: true });
 }
 
+// Auto-backup: create a backup before opening the database if it already exists
+// This protects against data loss during deployments/migrations
+function backupDatabase(): void {
+  if (!fs.existsSync(DB_PATH)) return;
+
+  const backupDir = path.join(dbDir, 'backups');
+  if (!fs.existsSync(backupDir)) {
+    fs.mkdirSync(backupDir, { recursive: true });
+  }
+
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const backupPath = path.join(backupDir, `finflow-${timestamp}.db`);
+
+  try {
+    fs.copyFileSync(DB_PATH, backupPath);
+    console.log(`📦 Database backup created: ${backupPath}`);
+
+    // Keep only the 5 most recent backups
+    const backups = fs.readdirSync(backupDir)
+      .filter(f => f.startsWith('finflow-') && f.endsWith('.db'))
+      .sort()
+      .reverse();
+
+    for (const old of backups.slice(5)) {
+      fs.unlinkSync(path.join(backupDir, old));
+    }
+  } catch (err) {
+    console.warn('⚠️  Database backup failed:', err);
+  }
+}
+
+backupDatabase();
+
 console.log(`Database path: ${DB_PATH}`);
 const db: DatabaseType = new Database(DB_PATH);
 
@@ -268,6 +301,9 @@ function initDb(): void {
     "ALTER TABLE users ADD COLUMN username TEXT",
     "ALTER TABLE users ADD COLUMN phone TEXT",
     "ALTER TABLE users ADD COLUMN advisor_id TEXT REFERENCES users(id)",
+    // Track data source: 'seed' for demo data, 'upload' for user-imported, 'manual' for hand-entered
+    "ALTER TABLE transactions ADD COLUMN source TEXT DEFAULT 'seed'",
+    "ALTER TABLE accounts ADD COLUMN source TEXT DEFAULT 'seed'",
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch { /* column already exists */ }
@@ -295,4 +331,28 @@ function initDb(): void {
   console.log('Database initialized successfully');
 }
 
-export { db, initDb };
+/**
+ * Check if the database has real (non-seed) user data.
+ * This is used to prevent the auto-seed from wiping uploaded transactions.
+ */
+function hasRealUserData(): boolean {
+  try {
+    // Check for upload sessions (only created by real file uploads)
+    const uploadCount = (db.prepare('SELECT COUNT(*) as count FROM upload_sessions').get() as any).count;
+    if (uploadCount > 0) return true;
+
+    // Check for transactions marked as 'upload' or 'manual' source
+    const realTxCount = (db.prepare("SELECT COUNT(*) as count FROM transactions WHERE source IN ('upload', 'manual')").get() as any).count;
+    if (realTxCount > 0) return true;
+
+    // Check for accounts created from uploads
+    const realAcctCount = (db.prepare("SELECT COUNT(*) as count FROM accounts WHERE source = 'upload'").get() as any).count;
+    if (realAcctCount > 0) return true;
+
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+export { db, initDb, hasRealUserData };

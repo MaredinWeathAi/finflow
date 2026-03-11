@@ -26,8 +26,8 @@ router.post('/seed-sample', (req: Request, res: Response) => {
       ];
 
       const insertAccount = db.prepare(
-        `INSERT OR IGNORE INTO accounts (id, user_id, name, type, institution, balance, last_four, icon, is_hidden, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`
+        `INSERT OR IGNORE INTO accounts (id, user_id, name, type, institution, balance, last_four, icon, is_hidden, source, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 'seed', ?, ?)`
       );
 
       for (const a of accounts) {

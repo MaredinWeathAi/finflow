@@ -167,8 +167,8 @@ router.post('/', (req: Request, res: Response) => {
     const now = new Date().toISOString();
 
     db.prepare(
-      `INSERT INTO transactions (id, user_id, account_id, name, amount, category_id, date, notes, is_pending, is_recurring, recurring_id, tags, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO transactions (id, user_id, account_id, name, amount, category_id, date, notes, is_pending, is_recurring, recurring_id, tags, source, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?)`
     ).run(
       id,
       req.user!.id,

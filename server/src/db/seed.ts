@@ -15,22 +15,48 @@ db.pragma('foreign_keys = ON');
 
 const now = new Date().toISOString();
 
+// SAFETY CHECK: Never wipe real user data (uploaded transactions, upload sessions, etc.)
+const realUploadCount = (() => {
+  try {
+    return (db.prepare('SELECT COUNT(*) as count FROM upload_sessions').get() as any).count;
+  } catch { return 0; }
+})();
+const realTxCount = (() => {
+  try {
+    return (db.prepare("SELECT COUNT(*) as count FROM transactions WHERE source = 'upload'").get() as any).count;
+  } catch { return 0; }
+})();
+
+if (realUploadCount > 0 || realTxCount > 0) {
+  console.log('⚠️  SEED ABORTED: Database contains real user data.');
+  console.log(`   Upload sessions: ${realUploadCount}, Uploaded transactions: ${realTxCount}`);
+  console.log('   To re-seed, first back up and manually clear the database.');
+  db.close();
+  process.exit(0);
+}
+
 // Demo user
 const userId = randomUUID();
 const passwordHash = bcrypt.hashSync('demo123', 10);
 
 console.log('🌱 Seeding FinFlow with realistic data...\n');
 
-// Clean existing demo data
-db.exec(`DELETE FROM net_worth_snapshots WHERE user_id IN (SELECT id FROM users WHERE email='demo@finflow.com')`);
-db.exec(`DELETE FROM investments WHERE user_id IN (SELECT id FROM users WHERE email='demo@finflow.com')`);
-db.exec(`DELETE FROM goals WHERE user_id IN (SELECT id FROM users WHERE email='demo@finflow.com')`);
-db.exec(`DELETE FROM recurring_expenses WHERE user_id IN (SELECT id FROM users WHERE email='demo@finflow.com')`);
-db.exec(`DELETE FROM transactions WHERE user_id IN (SELECT id FROM users WHERE email='demo@finflow.com')`);
-db.exec(`DELETE FROM budgets WHERE user_id IN (SELECT id FROM users WHERE email='demo@finflow.com')`);
-db.exec(`DELETE FROM categories WHERE user_id IN (SELECT id FROM users WHERE email='demo@finflow.com')`);
-db.exec(`DELETE FROM accounts WHERE user_id IN (SELECT id FROM users WHERE email='demo@finflow.com')`);
-db.exec(`DELETE FROM users WHERE email='demo@finflow.com'`);
+// Clean existing SEED data only (never touch 'upload' or 'manual' sourced data)
+try {
+  db.exec(`DELETE FROM net_worth_snapshots WHERE user_id IN (SELECT id FROM users WHERE email='demo@finflow.com')`);
+  db.exec(`DELETE FROM investments WHERE user_id IN (SELECT id FROM users WHERE email='demo@finflow.com')`);
+  db.exec(`DELETE FROM goals WHERE user_id IN (SELECT id FROM users WHERE email='demo@finflow.com')`);
+  db.exec(`DELETE FROM recurring_expenses WHERE user_id IN (SELECT id FROM users WHERE email='demo@finflow.com')`);
+  // Only delete seed transactions, preserve uploaded ones
+  db.exec(`DELETE FROM transactions WHERE user_id IN (SELECT id FROM users WHERE email='demo@finflow.com') AND (source = 'seed' OR source IS NULL)`);
+  db.exec(`DELETE FROM budgets WHERE user_id IN (SELECT id FROM users WHERE email='demo@finflow.com')`);
+  db.exec(`DELETE FROM categories WHERE user_id IN (SELECT id FROM users WHERE email='demo@finflow.com')`);
+  // Only delete seed accounts, preserve uploaded ones
+  db.exec(`DELETE FROM accounts WHERE user_id IN (SELECT id FROM users WHERE email='demo@finflow.com') AND (source = 'seed' OR source IS NULL)`);
+  db.exec(`DELETE FROM users WHERE email='demo@finflow.com'`);
+} catch (err) {
+  console.warn('Cleanup warning (safe to ignore on fresh DB):', err);
+}
 
 // 1. Create admin user
 db.prepare(`INSERT INTO users (id, email, username, password_hash, name, role, currency, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
@@ -46,7 +72,7 @@ const acctData = [
   { name: 'Fidelity 401k', type: 'investment', institution: 'Fidelity', balance: 45600.00, last_four: '9912', icon: '📈' },
 ];
 
-const insertAcct = db.prepare(`INSERT INTO accounts (id, user_id, name, type, institution, balance, last_four, icon, is_hidden, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`);
+const insertAcct = db.prepare(`INSERT INTO accounts (id, user_id, name, type, institution, balance, last_four, icon, is_hidden, source, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 'seed', ?, ?)`);
 for (const a of acctData) {
   const id = randomUUID();
   accounts[a.type] = id;
@@ -96,7 +122,7 @@ for (let m = 5; m >= 0; m--) {
 console.log('✅ Created budgets for 6 months');
 
 // 5. Create transactions (6 months of realistic data)
-const insertTx = db.prepare(`INSERT INTO transactions (id, user_id, account_id, name, amount, category_id, date, notes, is_pending, is_recurring, recurring_id, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, 0, NULL, '[]', ?, ?)`);
+const insertTx = db.prepare(`INSERT INTO transactions (id, user_id, account_id, name, amount, category_id, date, notes, is_pending, is_recurring, recurring_id, tags, source, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, 0, NULL, '[]', 'seed', ?, ?)`);
 
 const merchants: Record<string, { minAmt: number; maxAmt: number; acct: string }> = {
   'Food & Dining': { minAmt: 8, maxAmt: 45, acct: 'credit' },
@@ -287,14 +313,14 @@ for (const c of clients) {
     // Create some sample data for each client
     // Add 1 checking account
     const accId = crypto.randomUUID();
-    db.prepare(`INSERT INTO accounts (id, user_id, name, type, institution, balance, created_at, updated_at)
-      VALUES (?, ?, 'Main Checking', 'checking', 'Chase', ?, ?, ?)`)
+    db.prepare(`INSERT INTO accounts (id, user_id, name, type, institution, balance, source, created_at, updated_at)
+      VALUES (?, ?, 'Main Checking', 'checking', 'Chase', ?, 'seed', ?, ?)`)
       .run(accId, cId, Math.round(Math.random() * 15000 + 2000), cNow, cNow);
 
     // Add 1 savings account
     const savId = crypto.randomUUID();
-    db.prepare(`INSERT INTO accounts (id, user_id, name, type, institution, balance, created_at, updated_at)
-      VALUES (?, ?, 'Savings', 'savings', 'Ally', ?, ?, ?)`)
+    db.prepare(`INSERT INTO accounts (id, user_id, name, type, institution, balance, source, created_at, updated_at)
+      VALUES (?, ?, 'Savings', 'savings', 'Ally', ?, 'seed', ?, ?)`)
       .run(savId, cId, Math.round(Math.random() * 30000 + 5000), cNow, cNow);
 
     // Add some default categories
@@ -318,8 +344,8 @@ for (const c of clients) {
 
       // Salary
       const salDate = `${monthStr}-01`;
-      db.prepare(`INSERT INTO transactions (id, user_id, account_id, name, amount, category_id, date, created_at, updated_at)
-        VALUES (?, ?, ?, 'Salary', ?, ?, ?, ?, ?)`)
+      db.prepare(`INSERT INTO transactions (id, user_id, account_id, name, amount, category_id, date, source, created_at, updated_at)
+        VALUES (?, ?, ?, 'Salary', ?, ?, ?, 'seed', ?, ?)`)
         .run(crypto.randomUUID(), cId, accId, 4500 + Math.random() * 1000, catIds[5], salDate, cNow, cNow);
 
       // Expenses
@@ -332,8 +358,8 @@ for (const c of clients) {
       ];
       for (const exp of expenseItems) {
         const expDate = `${monthStr}-${String(Math.floor(Math.random() * 25 + 1)).padStart(2, '0')}`;
-        db.prepare(`INSERT INTO transactions (id, user_id, account_id, name, amount, category_id, date, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        db.prepare(`INSERT INTO transactions (id, user_id, account_id, name, amount, category_id, date, source, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 'seed', ?, ?)`)
           .run(crypto.randomUUID(), cId, accId, exp.name, Math.round(exp.amt * 100) / 100, catIds[exp.cat], expDate, cNow, cNow);
       }
     }

@@ -31,8 +31,8 @@ router.post('/', (req: Request, res: Response) => {
     const now = new Date().toISOString();
 
     db.prepare(
-      `INSERT INTO accounts (id, user_id, name, type, institution, balance, last_four, icon, is_hidden, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO accounts (id, user_id, name, type, institution, balance, last_four, icon, is_hidden, source, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?)`
     ).run(
       id,
       req.user!.id,

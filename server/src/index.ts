@@ -3,7 +3,7 @@ import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import compression from 'compression';
-import { initDb, db } from './db/database.js';
+import { initDb, db, hasRealUserData } from './db/database.js';
 import { authMiddleware, adminMiddleware } from './middleware/auth.js';
 
 // Route imports
@@ -97,18 +97,25 @@ if (!process.env.DATABASE_PATH && process.env.NODE_ENV === 'production') {
   console.warn('⚠️  Set DATABASE_PATH=/data/finflow.db and attach a persistent volume at /data');
 }
 
-// Auto-seed if database is empty (fresh volume or first deploy)
+// Auto-seed if database is truly empty (fresh volume or first deploy)
+// SAFETY: Never seed over real user data (uploaded transactions, etc.)
 try {
   const userCount = (db.prepare('SELECT COUNT(*) as count FROM users').get() as any).count;
   if (userCount === 0) {
-    console.log('Empty database detected, auto-seeding...');
-    import('./db/seed.js').then(() => {
-      console.log('Auto-seed complete');
-    }).catch(err => {
-      console.error('Auto-seed failed:', err);
-    });
+    if (hasRealUserData()) {
+      console.warn('⚠️  WARNING: Database has 0 users but contains real upload data!');
+      console.warn('⚠️  Skipping auto-seed to protect existing data. Check backups/ folder.');
+    } else {
+      console.log('Empty database detected, auto-seeding...');
+      import('./db/seed.js').then(() => {
+        console.log('Auto-seed complete');
+      }).catch(err => {
+        console.error('Auto-seed failed:', err);
+      });
+    }
   } else {
-    console.log(`✅ Database persistent: ${userCount} users found`);
+    const realData = hasRealUserData();
+    console.log(`✅ Database persistent: ${userCount} users found${realData ? ' (contains real user data)' : ' (seed data only)'}`);
   }
 } catch (e) {
   console.error('Seed check failed:', e);

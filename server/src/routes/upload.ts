@@ -138,11 +138,11 @@ function autoCreateAccount(userId: string, statementMeta: any): string {
     return existing.id;
   }
 
-  // Create new account
+  // Create new account (marked as 'upload' source so it's protected from re-seeding)
   const icon = accountType === 'credit' ? '💳' : accountType === 'savings' ? '💰' : accountType === 'investment' ? '📊' : '🏦';
   db.prepare(
-    `INSERT INTO accounts (id, user_id, name, type, institution, balance, last_four, icon, is_hidden, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`
+    `INSERT INTO accounts (id, user_id, name, type, institution, balance, last_four, icon, is_hidden, source, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 'upload', ?, ?)`
   ).run(id, userId, accountName, accountType, institution, balance, lastFour || null, icon, now, now);
 
   console.log(`Auto-created account: ${accountName} (${accountType}) at ${institution} for user ${userId}`);
@@ -601,8 +601,8 @@ router.post('/sessions/:id/import', (req: Request, res: Response) => {
       const accId = crypto.randomUUID();
       const now2 = new Date().toISOString();
       db.prepare(
-        `INSERT INTO accounts (id, user_id, name, type, institution, balance, icon, is_hidden, created_at, updated_at)
-         VALUES (?, ?, 'Main Account', 'checking', 'My Bank', 0, '🏦', 0, ?, ?)`
+        `INSERT INTO accounts (id, user_id, name, type, institution, balance, icon, is_hidden, source, created_at, updated_at)
+         VALUES (?, ?, 'Main Account', 'checking', 'My Bank', 0, '🏦', 0, 'upload', ?, ?)`
       ).run(accId, userId, now2, now2);
       defaultAccount = { id: accId };
     }
@@ -612,8 +612,8 @@ router.post('/sessions/:id/import', (req: Request, res: Response) => {
 
     const importTransaction = db.transaction(() => {
       const insertTx = db.prepare(
-        `INSERT INTO transactions (id, user_id, account_id, name, amount, category_id, date, notes, is_pending, is_recurring, tags, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, '[]', ?, ?)`
+        `INSERT INTO transactions (id, user_id, account_id, name, amount, category_id, date, notes, is_pending, is_recurring, tags, source, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, '[]', 'upload', ?, ?)`
       );
 
       const updateItem = db.prepare(
