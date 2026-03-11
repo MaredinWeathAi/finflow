@@ -159,7 +159,7 @@ function AddClientModal({ onClose, onAdded }: { onClose: () => void; onAdded: ()
   const [email, setEmail] = useState('')
   const [username, setUsername] = useState('')
   const [phone, setPhone] = useState('')
-  const [password, setPassword] = useState('password123')
+  const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
 
   const handleSubmit = async (e: React.FormEvent) => {
