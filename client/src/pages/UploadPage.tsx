@@ -554,6 +554,147 @@ function ReviewSummaryBar({ session, items, fileResults }: { session: UploadSess
   )
 }
 
+function ItemRow({
+  item,
+  categories,
+  accounts,
+  onUpdateItem,
+}: {
+  item: PendingItem
+  categories: Category[]
+  accounts: { id: string; name: string }[]
+  onUpdateItem: (id: string, updates: Partial<PendingItem>) => void
+}) {
+  return (
+    <tr
+      className={cn(
+        'hover:bg-accent/20 transition-colors',
+        item.status === 'skipped' && 'opacity-50',
+        item.status === 'imported' && 'opacity-60'
+      )}
+    >
+      <td className="px-4 py-3">
+        <StatusBadge status={item.status} />
+      </td>
+      <td className="px-4 py-3">
+        <span className="font-medium">{item.parsed_name}</span>
+      </td>
+      <td className="px-4 py-3 text-right">
+        <span
+          className={cn(
+            'font-semibold tabular-nums',
+            item.parsed_amount > 0 ? 'text-emerald-400' : 'text-foreground'
+          )}
+        >
+          {item.parsed_amount > 0 ? '+' : ''}
+          {formatCurrency(item.parsed_amount)}
+        </span>
+      </td>
+      <td className="px-4 py-3 text-muted-foreground">
+        {item.parsed_date ? format(parseISO(item.parsed_date), 'MMM d, yyyy') : '--'}
+      </td>
+      <td className="px-4 py-3">
+        <select
+          value={item.matched_category_id || ''}
+          onChange={(e) =>
+            onUpdateItem(item.id, { matched_category_id: e.target.value || null })
+          }
+          disabled={item.status === 'imported' || item.status === 'skipped'}
+          className="h-8 px-2 rounded-lg border border-input bg-background text-xs focus:outline-none focus:ring-2 focus:ring-primary/50 max-w-[160px]"
+        >
+          <option value="">Uncategorized</option>
+          {categories.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.icon} {c.name}
+            </option>
+          ))}
+        </select>
+      </td>
+      <td className="px-4 py-3">
+        <select
+          value={item.matched_account_id || ''}
+          onChange={(e) =>
+            onUpdateItem(item.id, { matched_account_id: e.target.value || null })
+          }
+          disabled={item.status === 'imported' || item.status === 'skipped'}
+          className="h-8 px-2 rounded-lg border border-input bg-background text-xs focus:outline-none focus:ring-2 focus:ring-primary/50 max-w-[140px]"
+        >
+          <option value="">Select...</option>
+          {accounts.map((a) => (
+            <option key={a.id} value={a.id}>
+              {a.name}
+            </option>
+          ))}
+        </select>
+      </td>
+      <td className="px-4 py-3">
+        <div className="flex items-center justify-end gap-1">
+          {item.status !== 'imported' && (
+            <>
+              <button
+                onClick={() => onUpdateItem(item.id, { status: 'approved' })}
+                disabled={item.status === 'approved'}
+                className={cn(
+                  'p-1.5 rounded-md transition-colors',
+                  item.status === 'approved'
+                    ? 'bg-emerald-500/20 text-emerald-400'
+                    : 'hover:bg-emerald-500/10 text-muted-foreground hover:text-emerald-400'
+                )}
+                title="Approve"
+              >
+                <Check className="w-3.5 h-3.5" />
+              </button>
+              <button
+                onClick={() => onUpdateItem(item.id, { status: 'skipped' })}
+                disabled={item.status === 'skipped'}
+                className={cn(
+                  'p-1.5 rounded-md transition-colors',
+                  item.status === 'skipped'
+                    ? 'bg-red-500/20 text-red-400'
+                    : 'hover:bg-red-500/10 text-muted-foreground hover:text-red-400'
+                )}
+                title="Skip"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </>
+          )}
+        </div>
+      </td>
+    </tr>
+  )
+}
+
+function ItemsTableHeader() {
+  return (
+    <thead>
+      <tr className="border-b border-border/30">
+        <th className="px-4 py-3 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+          Status
+        </th>
+        <th className="px-4 py-3 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+          Name
+        </th>
+        <th className="px-4 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+          Amount
+        </th>
+        <th className="px-4 py-3 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+          Date
+        </th>
+        <th className="px-4 py-3 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+          Category
+        </th>
+        <th className="px-4 py-3 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+          Account
+        </th>
+        <th className="px-4 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+          Actions
+        </th>
+      </tr>
+    </thead>
+  )
+}
+
 function AllItemsTab({
   items,
   categories,
@@ -569,13 +710,19 @@ function AllItemsTab({
   onBulkApprove: () => void
   onBulkSkipDuplicates: () => void
 }) {
+  const [showResolved, setShowResolved] = useState(false)
+
+  // Split items: needs review (pending, duplicate) vs resolved (approved, imported, skipped)
+  const needsReview = items.filter((i) => i.status === 'pending' || i.status === 'duplicate')
+  const resolved = items.filter((i) => i.status === 'approved' || i.status === 'imported' || i.status === 'skipped')
+
   const hasDuplicates = items.some((i) => i.status === 'duplicate')
   const hasPending = items.some((i) => i.status === 'pending')
 
   return (
-    <div>
+    <div className="space-y-4">
       {/* Bulk Actions */}
-      <div className="flex items-center gap-2 mb-4 flex-wrap">
+      <div className="flex items-center gap-2 flex-wrap">
         {hasPending && (
           <button
             onClick={onBulkApprove}
@@ -596,147 +743,84 @@ function AllItemsTab({
         )}
       </div>
 
-      {/* Items Table */}
-      <div className="bg-card rounded-2xl border border-border/50 overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-border/30">
-                <th className="px-4 py-3 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                  Status
-                </th>
-                <th className="px-4 py-3 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                  Name
-                </th>
-                <th className="px-4 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                  Amount
-                </th>
-                <th className="px-4 py-3 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                  Date
-                </th>
-                <th className="px-4 py-3 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                  Category
-                </th>
-                <th className="px-4 py-3 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                  Account
-                </th>
-                <th className="px-4 py-3 text-right text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                  Actions
-                </th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-border/30">
-              {items.length === 0 ? (
-                <tr>
-                  <td colSpan={7} className="px-4 py-8 text-center text-muted-foreground">
-                    No items found
-                  </td>
-                </tr>
-              ) : (
-                items.map((item) => (
-                  <tr
-                    key={item.id}
-                    className={cn(
-                      'hover:bg-accent/20 transition-colors',
-                      item.status === 'skipped' && 'opacity-50',
-                      item.status === 'imported' && 'opacity-60'
-                    )}
-                  >
-                    <td className="px-4 py-3">
-                      <StatusBadge status={item.status} />
-                    </td>
-                    <td className="px-4 py-3">
-                      <span className="font-medium">{item.parsed_name}</span>
-                    </td>
-                    <td className="px-4 py-3 text-right">
-                      <span
-                        className={cn(
-                          'font-semibold tabular-nums',
-                          item.parsed_amount > 0 ? 'text-emerald-400' : 'text-foreground'
-                        )}
-                      >
-                        {item.parsed_amount > 0 ? '+' : ''}
-                        {formatCurrency(item.parsed_amount)}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-muted-foreground">
-                      {item.parsed_date ? format(parseISO(item.parsed_date), 'MMM d, yyyy') : '--'}
-                    </td>
-                    <td className="px-4 py-3">
-                      <select
-                        value={item.matched_category_id || ''}
-                        onChange={(e) =>
-                          onUpdateItem(item.id, { matched_category_id: e.target.value || null })
-                        }
-                        disabled={item.status === 'imported' || item.status === 'skipped'}
-                        className="h-8 px-2 rounded-lg border border-input bg-background text-xs focus:outline-none focus:ring-2 focus:ring-primary/50 max-w-[160px]"
-                      >
-                        <option value="">Uncategorized</option>
-                        {categories.map((c) => (
-                          <option key={c.id} value={c.id}>
-                            {c.icon} {c.name}
-                          </option>
-                        ))}
-                      </select>
-                    </td>
-                    <td className="px-4 py-3">
-                      <select
-                        value={item.matched_account_id || ''}
-                        onChange={(e) =>
-                          onUpdateItem(item.id, { matched_account_id: e.target.value || null })
-                        }
-                        disabled={item.status === 'imported' || item.status === 'skipped'}
-                        className="h-8 px-2 rounded-lg border border-input bg-background text-xs focus:outline-none focus:ring-2 focus:ring-primary/50 max-w-[140px]"
-                      >
-                        <option value="">Select...</option>
-                        {accounts.map((a) => (
-                          <option key={a.id} value={a.id}>
-                            {a.name}
-                          </option>
-                        ))}
-                      </select>
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center justify-end gap-1">
-                        {item.status !== 'imported' && (
-                          <>
-                            <button
-                              onClick={() => onUpdateItem(item.id, { status: 'approved' })}
-                              disabled={item.status === 'approved'}
-                              className={cn(
-                                'p-1.5 rounded-md transition-colors',
-                                item.status === 'approved'
-                                  ? 'bg-emerald-500/20 text-emerald-400'
-                                  : 'hover:bg-emerald-500/10 text-muted-foreground hover:text-emerald-400'
-                              )}
-                              title="Approve"
-                            >
-                              <Check className="w-3.5 h-3.5" />
-                            </button>
-                            <button
-                              onClick={() => onUpdateItem(item.id, { status: 'skipped' })}
-                              disabled={item.status === 'skipped'}
-                              className={cn(
-                                'p-1.5 rounded-md transition-colors',
-                                item.status === 'skipped'
-                                  ? 'bg-red-500/20 text-red-400'
-                                  : 'hover:bg-red-500/10 text-muted-foreground hover:text-red-400'
-                              )}
-                              title="Skip"
-                            >
-                              <X className="w-3.5 h-3.5" />
-                            </button>
-                          </>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
+      {/* Needs Review Table */}
+      {needsReview.length > 0 ? (
+        <div className="bg-card rounded-2xl border border-border/50 overflow-hidden">
+          <div className="px-4 py-3 border-b border-border/30 bg-muted/30">
+            <div className="flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 text-amber-400" />
+              <span className="text-xs font-semibold uppercase tracking-wider text-foreground">
+                Needs Review
+              </span>
+              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-400">
+                {needsReview.length}
+              </span>
+            </div>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <ItemsTableHeader />
+              <tbody className="divide-y divide-border/30">
+                {needsReview.map((item) => (
+                  <ItemRow key={item.id} item={item} categories={categories} accounts={accounts} onUpdateItem={onUpdateItem} />
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
-      </div>
+      ) : (
+        <div className="bg-card rounded-2xl border border-border/50 p-8 text-center">
+          <CheckCircle2 className="w-10 h-10 text-emerald-400 mx-auto mb-3" />
+          <p className="text-sm font-medium">All items reviewed</p>
+          <p className="text-xs text-muted-foreground mt-1">
+            Everything has been approved or resolved. You can import now.
+          </p>
+        </div>
+      )}
+
+      {/* Resolved / Approved Section (collapsible) */}
+      {resolved.length > 0 && (
+        <div className="bg-card rounded-2xl border border-border/50 overflow-hidden">
+          <button
+            onClick={() => setShowResolved(!showResolved)}
+            className="w-full px-4 py-3 flex items-center justify-between hover:bg-accent/20 transition-colors"
+          >
+            <div className="flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+              <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                Approved / Resolved
+              </span>
+              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400">
+                {resolved.length}
+              </span>
+            </div>
+            {showResolved ? (
+              <ChevronDown className="w-4 h-4 text-muted-foreground" />
+            ) : (
+              <ChevronRight className="w-4 h-4 text-muted-foreground" />
+            )}
+          </button>
+          {showResolved && (
+            <div className="overflow-x-auto border-t border-border/30">
+              <table className="w-full text-sm">
+                <ItemsTableHeader />
+                <tbody className="divide-y divide-border/30">
+                  {resolved.map((item) => (
+                    <ItemRow key={item.id} item={item} categories={categories} accounts={accounts} onUpdateItem={onUpdateItem} />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Empty state when no items at all */}
+      {items.length === 0 && (
+        <div className="bg-card rounded-2xl border border-border/50 p-8 text-center">
+          <p className="text-sm text-muted-foreground">No items found</p>
+        </div>
+      )}
     </div>
   )
 }
