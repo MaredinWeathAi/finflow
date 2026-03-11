@@ -17,6 +17,7 @@ import { ReportsPage } from '@/pages/ReportsPage'
 import { SettingsPage } from '@/pages/SettingsPage'
 import { InsightsPage } from '@/pages/InsightsPage'
 import { UploadPage } from '@/pages/UploadPage'
+import { AnalysisPage } from '@/pages/AnalysisPage'
 import { AdminDashboardPage } from '@/pages/AdminDashboardPage'
 import { AdminClientsPage } from '@/pages/AdminClientsPage'
 import { AdminClientDetailPage } from '@/pages/AdminClientDetailPage'
@@ -82,6 +83,7 @@ export default function App() {
         >
           <Route path="/" element={<DashboardPage />} />
           <Route path="/insights" element={<InsightsPage />} />
+          <Route path="/analysis" element={<AnalysisPage />} />
           <Route path="/upload" element={<UploadPage />} />
           <Route path="/transactions" element={<TransactionsPage />} />
           <Route path="/budgets" element={<BudgetsPage />} />

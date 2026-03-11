@@ -1,12 +1,21 @@
 import Database, { type Database as DatabaseType } from 'better-sqlite3';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const DB_PATH = path.resolve(__dirname, '../../finflow.db');
+// Use DATABASE_PATH env var for Railway persistent volume, fallback to local
+const DB_PATH = process.env.DATABASE_PATH || path.resolve(__dirname, '../../finflow.db');
 
+// Ensure the directory exists (for volume mounts)
+const dbDir = path.dirname(DB_PATH);
+if (!fs.existsSync(dbDir)) {
+  fs.mkdirSync(dbDir, { recursive: true });
+}
+
+console.log(`Database path: ${DB_PATH}`);
 const db: DatabaseType = new Database(DB_PATH);
 
 // Enable WAL mode for better concurrent read performance

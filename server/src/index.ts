@@ -90,6 +90,23 @@ app.use(express.static(publicDir, {
 
 initDb();
 
+// Auto-seed if database is empty (fresh volume or first deploy)
+try {
+  const userCount = (db.prepare('SELECT COUNT(*) as count FROM users').get() as any).count;
+  if (userCount === 0) {
+    console.log('Empty database detected, auto-seeding...');
+    import('./db/seed.js').then(() => {
+      console.log('Auto-seed complete');
+    }).catch(err => {
+      console.error('Auto-seed failed:', err);
+    });
+  } else {
+    console.log(`Database has ${userCount} users, skipping seed`);
+  }
+} catch (e) {
+  console.error('Seed check failed:', e);
+}
+
 // ============================================================
 // PUBLIC ROUTES (no auth required)
 // ============================================================

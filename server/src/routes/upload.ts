@@ -187,8 +187,15 @@ router.post('/', upload.array('files', 10), async (req: Request, res: Response) 
 
     // Return session summary
     res.json({
+      id: sessionId,
       sessionId,
       status: 'review',
+      file_count: files.length,
+      total_items: totalItems,
+      imported_items: 0,
+      duplicate_items: duplicateCount,
+      created_at: now,
+      completed_at: null,
       files: fileResults,
       totalItems,
       duplicateItems: duplicateCount,
@@ -209,9 +216,16 @@ router.get('/sessions', (req: Request, res: Response) => {
       .prepare(
         `SELECT * FROM upload_sessions WHERE user_id = ? ORDER BY created_at DESC LIMIT 20`
       )
-      .all(userId);
+      .all(userId) as any[];
 
-    res.json(sessions);
+    // Attach files to each session
+    const getFiles = db.prepare('SELECT * FROM uploaded_files WHERE session_id = ?');
+    const enriched = sessions.map(s => ({
+      ...s,
+      files: getFiles.all(s.id),
+    }));
+
+    res.json(enriched);
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch sessions' });
   }

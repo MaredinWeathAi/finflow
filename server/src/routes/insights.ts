@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { generateInsights } from '../engine/insights.js';
+import { generateFinancialAnalysis } from '../engine/analysis.js';
 
 const router = Router();
 
@@ -24,6 +25,18 @@ router.get('/health-score', (req: Request, res: Response) => {
   } catch (error) {
     console.error('Health score error:', error);
     res.status(500).json({ error: 'Failed to compute health score' });
+  }
+});
+
+// GET /analysis - deep AI-powered financial analysis
+router.get('/analysis', (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.id;
+    const analysis = generateFinancialAnalysis(userId);
+    res.json(analysis);
+  } catch (error) {
+    console.error('Analysis error:', error);
+    res.status(500).json({ error: 'Failed to generate financial analysis' });
   }
 });
 

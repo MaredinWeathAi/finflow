@@ -1141,14 +1141,31 @@ export function UploadPage() {
   // Fetch session details (items + duplicates)
   const fetchSessionDetails = useCallback(async (sessionId: string) => {
     try {
-      const session = await api.get<UploadSession>(`/upload/sessions/${sessionId}`)
+      const session = await api.get<any>(`/upload/sessions/${sessionId}`)
       setCurrentSession(session)
       setPendingItems(session.items || [])
 
+      // Also populate fileResults from session files (for Resume Review)
+      if (session.files && session.files.length > 0) {
+        const dbFileResults: FileResult[] = session.files.map((f: any) => ({
+          id: f.id,
+          filename: f.filename,
+          fileType: f.file_type,
+          rowCount: f.row_count || 0,
+          status: f.status === 'error' ? 'error' as const : 'parsed' as const,
+          error: f.error_message,
+          depositCount: 0,
+          withdrawalCount: 0,
+          transferCount: 0,
+          statementMeta: undefined,
+        }))
+        setFileResults(dbFileResults)
+      }
+
       // Build duplicate matches from items that have duplicate_of set
       const matches: DuplicateMatch[] = (session.items || [])
-        .filter((item) => item.status === 'duplicate' && item.duplicate_of)
-        .map((item) => ({
+        .filter((item: any) => item.status === 'duplicate' && item.duplicate_of)
+        .map((item: any) => ({
           itemId: item.id,
           matchedTransactionId: item.duplicate_of!,
           score: item.confidence || 0.75,
@@ -1316,7 +1333,7 @@ export function UploadPage() {
     if (!currentSession) return
     setIsImporting(true)
     try {
-      const result = await api.post<{ imported: number }>(`/upload/sessions/${currentSession.id}/import-all`)
+      const result = await api.post<{ imported: number }>(`/upload/sessions/${currentSession.id}/import`, { importAll: true })
       toast.success(`${result.imported} transactions imported successfully`)
       setPendingItems((prev) =>
         prev.map((item) =>
