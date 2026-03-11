@@ -83,28 +83,69 @@ function autoCreateAccount(userId: string, statementMeta: any): string {
   if (stmtType.includes('saving')) accountType = 'savings';
   else if (stmtType.includes('credit') || stmtType.includes('card')) accountType = 'credit';
   else if (stmtType.includes('loan') || stmtType.includes('mortgage')) accountType = 'loan';
+  else if (stmtType.includes('invest') || stmtType.includes('brokerage')) accountType = 'investment';
 
-  const accountName = statementMeta.accountNickname || `${statementMeta.institution} ${accountType.charAt(0).toUpperCase() + accountType.slice(1)}`;
   const institution = statementMeta.institution || 'Unknown';
+  const accountNickname = statementMeta.accountNickname || '';
+  const accountName = accountNickname || `${institution} ${accountType.charAt(0).toUpperCase() + accountType.slice(1)}`;
   const balance = statementMeta.endingBalance || 0;
 
-  // Check if similar account already exists
-  const existing = db.prepare(
-    `SELECT id FROM accounts WHERE user_id = ? AND (
-      (institution LIKE ? AND type = ?) OR name = ?
-    )`
-  ).get(userId, `%${institution}%`, accountType, accountName) as any;
+  // Extract last 4 digits from accountNumber or accountNickname
+  let lastFour = '';
+  const acctNum = statementMeta.accountNumber || '';
+  const last4Match = acctNum.match(/(\d{4})\s*$/);
+  if (last4Match) {
+    lastFour = last4Match[1];
+  } else {
+    const nickMatch = accountNickname.match(/(\d{4})\s*$/);
+    if (nickMatch) lastFour = nickMatch[1];
+  }
 
-  if (existing) return existing.id;
+  // Check if similar account already exists (multiple strategies)
+  let existing: any = null;
 
+  // Most specific: same institution + same last 4
+  if (institution && institution !== 'Unknown' && lastFour) {
+    existing = db.prepare(
+      `SELECT id, type FROM accounts WHERE user_id = ? AND institution LIKE ? AND last_four = ?`
+    ).get(userId, `%${institution}%`, lastFour) as any;
+  }
+
+  // Same institution + same type
+  if (!existing && institution && institution !== 'Unknown') {
+    existing = db.prepare(
+      `SELECT id, type FROM accounts WHERE user_id = ? AND institution LIKE ? AND type = ?`
+    ).get(userId, `%${institution}%`, accountType) as any;
+  }
+
+  // Exact name match
+  if (!existing) {
+    existing = db.prepare(
+      `SELECT id, type FROM accounts WHERE user_id = ? AND name = ?`
+    ).get(userId, accountName) as any;
+  }
+
+  if (existing) {
+    // If existing account has wrong type (e.g., was defaulted to 'checking' but should be 'credit'),
+    // update it to the correct type if we have higher confidence now
+    if (existing.type !== accountType && accountType !== 'checking') {
+      const icon = accountType === 'credit' ? '💳' : accountType === 'savings' ? '💰' : accountType === 'investment' ? '📊' : '🏦';
+      db.prepare(
+        `UPDATE accounts SET type = ?, icon = ?, institution = COALESCE(NULLIF(?, 'Unknown'), institution), last_four = COALESCE(NULLIF(?, ''), last_four), updated_at = ? WHERE id = ?`
+      ).run(accountType, icon, institution, lastFour, now, existing.id);
+      console.log(`Updated account ${existing.id} type from ${existing.type} to ${accountType}`);
+    }
+    return existing.id;
+  }
+
+  // Create new account
+  const icon = accountType === 'credit' ? '💳' : accountType === 'savings' ? '💰' : accountType === 'investment' ? '📊' : '🏦';
   db.prepare(
-    `INSERT INTO accounts (id, user_id, name, type, institution, balance, icon, is_hidden, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`
-  ).run(id, userId, accountName, accountType, institution, balance,
-    accountType === 'credit' ? '💳' : accountType === 'savings' ? '💰' : '🏦',
-    now, now);
+    `INSERT INTO accounts (id, user_id, name, type, institution, balance, last_four, icon, is_hidden, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`
+  ).run(id, userId, accountName, accountType, institution, balance, lastFour || null, icon, now, now);
 
-  console.log(`Auto-created account: ${accountName} (${accountType}) for user ${userId}`);
+  console.log(`Auto-created account: ${accountName} (${accountType}) at ${institution} for user ${userId}`);
   return id;
 }
 

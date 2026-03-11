@@ -5,6 +5,7 @@ import {
   normalizeDate as stmtNormalizeDate,
   normalizeAmount as stmtNormalizeAmount,
 } from './statementParser.js';
+import { detectAccount } from './accountDetector.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -71,11 +72,11 @@ export async function parseFile(buffer: Buffer, filename: string): Promise<Parse
     case 'tsv':
     case 'txt': {
       const content = buffer.toString('utf-8');
-      return parseCSV(content);
+      return parseCSV(content, filename);
     }
     case 'xlsx':
     case 'xls':
-      return parseExcel(buffer);
+      return parseExcel(buffer, filename);
     case 'pdf':
       return parsePDF(buffer);
     default:
@@ -93,7 +94,7 @@ export async function parseFile(buffer: Buffer, filename: string): Promise<Parse
 // CSV Parser
 // ---------------------------------------------------------------------------
 
-export function parseCSV(content: string): ParseResult {
+export function parseCSV(content: string, filename?: string): ParseResult {
   const errors: string[] = [];
 
   // Auto-detect delimiter by counting occurrences in the first few lines
@@ -115,8 +116,17 @@ export function parseCSV(content: string): ParseResult {
   const headers = allRows[0].map((h) => h.trim());
   const dataRows = allRows.slice(1);
 
-  // Take up to 5 sample rows for column detection
+  // Build sample rows as objects for detection
   const sampleRows = dataRows.slice(0, 5).map((row) => {
+    const obj: Record<string, string> = {};
+    headers.forEach((h, i) => {
+      obj[h] = row[i] ?? '';
+    });
+    return obj;
+  });
+
+  // Build all data rows for deeper content analysis
+  const allDataRowObjects = dataRows.slice(0, 100).map((row) => {
     const obj: Record<string, string> = {};
     headers.forEach((h, i) => {
       obj[h] = row[i] ?? '';
@@ -143,20 +153,45 @@ export function parseCSV(content: string): ParseResult {
     }
   }
 
-  return {
+  // Detect account/institution from filename, headers, and content
+  const detected = detectAccount(filename || '', headers, sampleRows, allDataRowObjects);
+
+  const result: ParseResult = {
     rows,
     headers,
     fileType: 'csv',
     rowCount: rows.length,
     errors,
   };
+
+  if (detected) {
+    result.statementMeta = {
+      institution: detected.institution,
+      accountType: detected.accountType === 'unknown' ? 'checking' : detected.accountType,
+      accountNickname: detected.accountNickname,
+      period: { start: '', end: '' },
+      beginningBalance: 0,
+      endingBalance: 0,
+      summary: {
+        totalDeposits: rows.filter(r => r.amount > 0).reduce((sum, r) => sum + r.amount, 0),
+        totalWithdrawals: rows.filter(r => r.amount < 0).reduce((sum, r) => sum + Math.abs(r.amount), 0),
+        totalTransfers: 0,
+        totalFees: 0,
+        transactionCount: rows.length,
+        transferCount: 0,
+      },
+    };
+    console.log(`Account detected from CSV: ${detected.institution} ${detected.accountType} (confidence: ${detected.confidence}, source: ${detected.source})`);
+  }
+
+  return result;
 }
 
 // ---------------------------------------------------------------------------
 // Excel Parser
 // ---------------------------------------------------------------------------
 
-export function parseExcel(buffer: Buffer): ParseResult {
+export function parseExcel(buffer: Buffer, filename?: string): ParseResult {
   const errors: string[] = [];
 
   let workbook: XLSX.WorkBook;
@@ -193,6 +228,14 @@ export function parseExcel(buffer: Buffer): ParseResult {
     return obj;
   });
 
+  const allDataRowObjects = jsonData.slice(0, 100).map((row) => {
+    const obj: Record<string, string> = {};
+    for (const key of headers) {
+      obj[key] = String(row[key] ?? '');
+    }
+    return obj;
+  });
+
   const columnMap = detectColumns(headers, sampleRows);
 
   const rows: ParsedRow[] = [];
@@ -212,13 +255,38 @@ export function parseExcel(buffer: Buffer): ParseResult {
     }
   }
 
-  return {
+  // Detect account/institution from filename, headers, and content
+  const detected = detectAccount(filename || '', headers, sampleRows, allDataRowObjects);
+
+  const result: ParseResult = {
     rows,
     headers,
     fileType: 'excel',
     rowCount: rows.length,
     errors,
   };
+
+  if (detected) {
+    result.statementMeta = {
+      institution: detected.institution,
+      accountType: detected.accountType === 'unknown' ? 'checking' : detected.accountType,
+      accountNickname: detected.accountNickname,
+      period: { start: '', end: '' },
+      beginningBalance: 0,
+      endingBalance: 0,
+      summary: {
+        totalDeposits: rows.filter(r => r.amount > 0).reduce((sum, r) => sum + r.amount, 0),
+        totalWithdrawals: rows.filter(r => r.amount < 0).reduce((sum, r) => sum + Math.abs(r.amount), 0),
+        totalTransfers: 0,
+        totalFees: 0,
+        transactionCount: rows.length,
+        transferCount: 0,
+      },
+    };
+    console.log(`Account detected from Excel: ${detected.institution} ${detected.accountType} (confidence: ${detected.confidence}, source: ${detected.source})`);
+  }
+
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -251,7 +319,33 @@ export async function parsePDF(buffer: Buffer): Promise<ParseResult> {
   }
 
   // Fall back to generic PDF parsing
-  return parseGenericPDF(text);
+  const genericResult = parseGenericPDF(text);
+
+  // Even for generic PDFs, try to detect the institution and account type from the text
+  if (!genericResult.statementMeta) {
+    const textDetected = detectAccountFromPDFText(text);
+    if (textDetected) {
+      genericResult.statementMeta = {
+        institution: textDetected.institution,
+        accountType: textDetected.accountType === 'unknown' ? 'checking' : textDetected.accountType,
+        accountNickname: textDetected.accountNickname,
+        period: { start: '', end: '' },
+        beginningBalance: 0,
+        endingBalance: 0,
+        summary: {
+          totalDeposits: genericResult.rows.filter(r => r.amount > 0).reduce((sum, r) => sum + r.amount, 0),
+          totalWithdrawals: genericResult.rows.filter(r => r.amount < 0).reduce((sum, r) => sum + Math.abs(r.amount), 0),
+          totalTransfers: 0,
+          totalFees: 0,
+          transactionCount: genericResult.rows.length,
+          transferCount: 0,
+        },
+      };
+      console.log(`Account detected from PDF text: ${textDetected.institution} ${textDetected.accountType}`);
+    }
+  }
+
+  return genericResult;
 }
 
 function convertStatementToParseResult(result: StatementParseResult): ParseResult {
@@ -807,4 +901,112 @@ function parseMonthName(name: string): number | null {
     july: 7, august: 8, september: 9, october: 10, november: 11, december: 12,
   };
   return months[name.toLowerCase()] ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// PDF Text Account Detection (for generic PDFs that don't match specific parsers)
+// ---------------------------------------------------------------------------
+
+interface PDFDetectedAccount {
+  institution: string;
+  accountType: 'checking' | 'savings' | 'credit_card' | 'loan' | 'investment' | 'unknown';
+  accountNickname: string;
+}
+
+function detectAccountFromPDFText(text: string): PDFDetectedAccount | null {
+  const institutions: { pattern: RegExp; name: string }[] = [
+    { pattern: /American Express|Amex/i, name: 'American Express' },
+    { pattern: /Chase|JPMorgan/i, name: 'Chase' },
+    { pattern: /Bank of America|BofA/i, name: 'Bank of America' },
+    { pattern: /Wells?\s*Fargo/i, name: 'Wells Fargo' },
+    { pattern: /Capital\s*One/i, name: 'Capital One' },
+    { pattern: /Citi(?:bank|group)?/i, name: 'Citi' },
+    { pattern: /Discover/i, name: 'Discover' },
+    { pattern: /US\s*Bank/i, name: 'US Bank' },
+    { pattern: /TD\s*Bank/i, name: 'TD Bank' },
+    { pattern: /PNC/i, name: 'PNC' },
+    { pattern: /USAA/i, name: 'USAA' },
+    { pattern: /Navy\s*Federal/i, name: 'Navy Federal' },
+    { pattern: /Ally/i, name: 'Ally Bank' },
+    { pattern: /Marcus/i, name: 'Marcus' },
+    { pattern: /Fidelity/i, name: 'Fidelity' },
+    { pattern: /Schwab/i, name: 'Charles Schwab' },
+    { pattern: /Barclays/i, name: 'Barclays' },
+    { pattern: /Synchrony/i, name: 'Synchrony' },
+  ];
+
+  let detectedInstitution = '';
+  for (const inst of institutions) {
+    if (inst.pattern.test(text)) {
+      detectedInstitution = inst.name;
+      break;
+    }
+  }
+
+  if (!detectedInstitution) return null;
+
+  // Determine account type from content
+  let accountType: PDFDetectedAccount['accountType'] = 'unknown';
+
+  // Credit card indicators (strongest signal)
+  const ccIndicators = [
+    /credit\s*card/i, /credit\s*limit/i, /available\s*credit/i,
+    /minimum\s*payment/i, /payment\s*due\s*date/i,
+    /new\s*balance/i, /previous\s*balance/i,
+    /interest\s*charged/i, /finance\s*charge/i,
+    /annual\s*(?:percentage|fee)/i, /apr/i,
+    /purchases?\s*(?:and|&)\s*adjustments/i,
+    /payments?\s*(?:and|&)\s*credits/i,
+    /membership\s*rewards/i, /cash\s*back/i,
+    /card\s*member/i, /cardholder/i,
+  ];
+  const ccScore = ccIndicators.filter(p => p.test(text)).length;
+
+  // Checking/savings indicators
+  const checkingIndicators = [
+    /checking\s*(?:account|statement)/i, /savings\s*(?:account|statement)/i,
+    /beginning\s*balance/i, /ending\s*balance/i,
+    /deposits?\s*(?:and|&)/i, /withdrawals?\s*(?:and|&)/i,
+    /direct\s*deposit/i, /payroll/i,
+    /atm\s*withdrawal/i, /overdraft/i,
+  ];
+  const checkingScore = checkingIndicators.filter(p => p.test(text)).length;
+
+  if (ccScore >= 2) {
+    accountType = 'credit_card';
+  } else if (checkingScore >= 2) {
+    accountType = /savings/i.test(text) ? 'savings' : 'checking';
+  } else if (ccScore > checkingScore) {
+    accountType = 'credit_card';
+  } else if (checkingScore > ccScore) {
+    accountType = 'checking';
+  }
+
+  // Some institutions are almost always credit cards
+  if (accountType === 'unknown') {
+    const ccOnlyInstitutions = ['American Express', 'Discover', 'Synchrony', 'Barclays'];
+    if (ccOnlyInstitutions.includes(detectedInstitution)) {
+      accountType = 'credit_card';
+    } else {
+      accountType = 'checking'; // default
+    }
+  }
+
+  const typeLabel = accountType === 'credit_card' ? 'CC' : accountType === 'savings' ? 'SAV' : 'CHK';
+
+  // Try to find account number
+  let last4 = '';
+  const acctMatch = text.match(/account\s*(?:ending|number|#)[:\s]*([\d\s*X-]+)/i);
+  if (acctMatch) {
+    const l4 = acctMatch[1].match(/(\d{4})\s*$/);
+    if (l4) last4 = l4[1];
+  }
+
+  return {
+    institution: detectedInstitution,
+    accountType,
+    accountNickname: last4
+      ? `${detectedInstitution} ${typeLabel} ${last4}`
+      : `${detectedInstitution} ${accountType === 'credit_card' ? 'Credit Card' : accountType === 'savings' ? 'Savings' : 'Checking'}`,
+  };
 }

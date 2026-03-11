@@ -58,11 +58,23 @@ export function parseStatement(text: string): StatementParseResult | null {
     return null;
   }
 
+  console.log(`Detected statement type: ${statementType.type} (${statementType.title})`);
+
   // Parse based on detected type
   if (statementType.type === 'bofa_checking') {
     return parseBofaChecking(text, lines);
   } else if (statementType.type === 'bofa_credit_card') {
     return parseBofaCreditCard(text, lines);
+  } else if (statementType.type === 'amex_credit_card') {
+    return parseAmexCreditCard(text, lines);
+  } else if (statementType.type === 'chase_credit_card') {
+    return parseGenericCreditCardStatement(text, lines, 'Chase');
+  } else if (statementType.type === 'chase_checking') {
+    return parseGenericCheckingStatement(text, lines, 'Chase');
+  } else if (statementType.type === 'generic_credit_card') {
+    return parseGenericCreditCardStatement(text, lines, extractInstitutionName(text));
+  } else if (statementType.type === 'generic_checking') {
+    return parseGenericCheckingStatement(text, lines, extractInstitutionName(text));
   }
 
   return null;
@@ -73,7 +85,7 @@ export function parseStatement(text: string): StatementParseResult | null {
 // ---------------------------------------------------------------------------
 
 interface DetectedStatement {
-  type: 'bofa_checking' | 'bofa_credit_card';
+  type: 'bofa_checking' | 'bofa_credit_card' | 'amex_credit_card' | 'chase_credit_card' | 'chase_checking' | 'generic_credit_card' | 'generic_checking';
   title: string;
 }
 
@@ -84,8 +96,39 @@ function detectStatementType(text: string): DetectedStatement | null {
   }
 
   // Bank of America Credit Card patterns
-  if (/Visa Signature|American Express|MasterCard/i.test(text) && /Account#\s*\d{4}\s*\d{4}\s*\d{4}\s*\d{4}/i.test(text)) {
+  if ((/Visa Signature|MasterCard/i.test(text) || (/American Express/i.test(text) && /Bank of America/i.test(text))) && /Account#\s*\d{4}\s*\d{4}\s*\d{4}\s*\d{4}/i.test(text)) {
     return { type: 'bofa_credit_card', title: 'Bank of America Credit Card' };
+  }
+
+  // American Express statement patterns
+  if (/American Express/i.test(text) && (/Member Since|Membership Rewards|Payment Due Date|New Charges|Total Balance/i.test(text))) {
+    return { type: 'amex_credit_card', title: 'American Express Credit Card' };
+  }
+  // Amex alternate detection: account ending pattern + Amex branding
+  if (/amex|american express/i.test(text) && /account ending/i.test(text)) {
+    return { type: 'amex_credit_card', title: 'American Express Credit Card' };
+  }
+
+  // Chase credit card
+  if (/Chase|JPMorgan/i.test(text) && (/Sapphire|Freedom|Ink|credit card/i.test(text) || /Previous Balance.*New Balance/is.test(text))) {
+    return { type: 'chase_credit_card', title: 'Chase Credit Card' };
+  }
+
+  // Chase checking
+  if (/Chase|JPMorgan/i.test(text) && /checking|savings/i.test(text) && /Beginning Balance|Ending Balance/i.test(text)) {
+    return { type: 'chase_checking', title: 'Chase Checking' };
+  }
+
+  // Generic credit card detection: look for common CC statement patterns
+  if (/Previous Balance|New Balance|Minimum Payment|Payment Due Date|Credit Limit|Available Credit/i.test(text) &&
+      /Payments.*Credits|Purchases|Interest Charged|Finance Charge/i.test(text)) {
+    return { type: 'generic_credit_card', title: 'Credit Card Statement' };
+  }
+
+  // Generic checking: look for checking/savings statement patterns
+  if (/Beginning Balance|Ending Balance/i.test(text) &&
+      (/Deposits|Withdrawals|Checks/i.test(text))) {
+    return { type: 'generic_checking', title: 'Bank Statement' };
   }
 
   return null;
@@ -1017,4 +1060,603 @@ export function normalizeAmount(raw: string): number {
   // Round to 2 decimal places
   return Math.round(result * 100) / 100;
 }
-// Build trigger: 1773180579
+// ---------------------------------------------------------------------------
+// American Express Credit Card Parser
+// ---------------------------------------------------------------------------
+
+function parseAmexCreditCard(fullText: string, lines: string[]): StatementParseResult {
+  const errors: string[] = [];
+  const transactions: ParsedTransaction[] = [];
+
+  // Extract metadata
+  const metadata = extractAmexMetadata(fullText, lines, errors);
+
+  // Amex PDFs typically have transactions in sections:
+  // - "New Charges" or "Recent Charges" or just listed by date
+  // - "Payments and Credits"
+  // - "Fees" or "Interest"
+  // Transaction format varies but commonly:
+  //   MM/DD/YY[*]  Description  $Amount
+  //   or MM/DD  Description  $Amount
+  //   or Date field followed by description and amount on same/next line
+
+  let currentSection = 'charges';
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    // Detect section headers
+    if (/^Payments?\s*(and|&)\s*Credits?/i.test(line) || /^Payments\s*Received/i.test(line)) {
+      currentSection = 'payments';
+      continue;
+    }
+    if (/^New\s*Charges|^Recent\s*Activity|^Recent\s*Charges|^Transactions?/i.test(line)) {
+      currentSection = 'charges';
+      continue;
+    }
+    if (/^Fees?\s*$/i.test(line) || /^Interest\s*Charge/i.test(line)) {
+      currentSection = 'interest';
+      continue;
+    }
+    if (/^Total\s+/i.test(line) || /^TOTAL\s+/i.test(line)) {
+      continue;
+    }
+
+    // Try to parse transaction lines
+    // Amex pattern 1: MM/DD/YY[*]  DESCRIPTION  $AMOUNT or AMOUNT
+    const amexLine1 = line.match(/^(\d{1,2}\/\d{1,2}\/?\d{0,4})\*?\s+(.+?)\s+\$?([\d,]+\.\d{2})\s*$/);
+    if (amexLine1) {
+      const [, rawDate, description, rawAmount] = amexLine1;
+      try {
+        const periodYear = metadata.statementPeriod.end ? parseInt(metadata.statementPeriod.end.split('-')[0], 10) : new Date().getFullYear();
+        const date = normalizeDate(rawDate, periodYear);
+        let amount = normalizeAmount(rawAmount);
+
+        // Amex: charges are positive in the statement but should be negative (expenses)
+        // Payments are negative in statement but should be positive (credits to card)
+        if (currentSection === 'charges' || currentSection === 'interest') {
+          amount = -Math.abs(amount);
+        } else if (currentSection === 'payments') {
+          amount = Math.abs(amount);
+        }
+
+        const { isTransfer, transferType, transferAccountRef } = detectTransfer(description);
+        const merchantName = cleanMerchantName(description);
+        const category = autoCategorize(description, isTransfer);
+        const flags = extractFlags(description);
+
+        if (currentSection === 'interest') {
+          flags.push('fee');
+        }
+
+        transactions.push({
+          date,
+          description,
+          amount,
+          section: currentSection,
+          isTransfer,
+          transferType,
+          transferAccountRef,
+          merchantName,
+          category,
+          flags,
+          rawLine: line,
+        });
+      } catch (err: any) {
+        errors.push(`Amex parse error: ${err.message} — "${line}"`);
+      }
+      continue;
+    }
+
+    // Amex pattern 2: MM/DD  DESCRIPTION  AMOUNT (tab or multi-space separated)
+    const amexLine2 = line.match(/^(\d{1,2}\/\d{1,2})\s{2,}(.+?)\s{2,}\$?([\d,]+\.\d{2})\s*$/);
+    if (amexLine2) {
+      const [, rawDate, description, rawAmount] = amexLine2;
+      try {
+        const periodYear = metadata.statementPeriod.end ? parseInt(metadata.statementPeriod.end.split('-')[0], 10) : new Date().getFullYear();
+        const date = normalizeDate(rawDate, periodYear);
+        let amount = normalizeAmount(rawAmount);
+
+        if (currentSection === 'charges' || currentSection === 'interest') {
+          amount = -Math.abs(amount);
+        } else if (currentSection === 'payments') {
+          amount = Math.abs(amount);
+        }
+
+        const { isTransfer, transferType, transferAccountRef } = detectTransfer(description);
+        const merchantName = cleanMerchantName(description);
+        const category = autoCategorize(description, isTransfer);
+        const flags = extractFlags(description);
+
+        transactions.push({
+          date,
+          description,
+          amount,
+          section: currentSection,
+          isTransfer,
+          transferType,
+          transferAccountRef,
+          merchantName,
+          category,
+          flags,
+          rawLine: line,
+        });
+      } catch (err: any) {
+        errors.push(`Amex parse error: ${err.message} — "${line}"`);
+      }
+      continue;
+    }
+
+    // Amex pattern 3: tab-delimited — Date\tDescription\tAmount
+    const tabFields = line.split('\t').map(f => f.trim()).filter(f => f);
+    if (tabFields.length >= 3) {
+      const possibleDate = tabFields[0];
+      if (/^\d{1,2}\/\d{1,2}(\/\d{2,4})?$/.test(possibleDate)) {
+        // Find amount from the end
+        let rawAmount = '';
+        let descParts: string[] = [];
+        for (let ti = tabFields.length - 1; ti >= 1; ti--) {
+          if (/^-?\$?[\d,]+\.\d{2}$/.test(tabFields[ti].replace(/[$]/g, ''))) {
+            rawAmount = tabFields[ti].replace(/[$]/g, '');
+            descParts = tabFields.slice(1, ti);
+            break;
+          }
+        }
+        if (!rawAmount && tabFields.length >= 2) {
+          // Try last field
+          const lastClean = tabFields[tabFields.length - 1].replace(/[$]/g, '');
+          if (/^-?[\d,]+\.\d{2}$/.test(lastClean)) {
+            rawAmount = lastClean;
+            descParts = tabFields.slice(1, tabFields.length - 1);
+          }
+        }
+
+        if (rawAmount && descParts.length > 0) {
+          const description = descParts.join(' ').trim();
+          try {
+            const periodYear = metadata.statementPeriod.end ? parseInt(metadata.statementPeriod.end.split('-')[0], 10) : new Date().getFullYear();
+            const date = normalizeDate(possibleDate, periodYear);
+            let amount = normalizeAmount(rawAmount);
+
+            if (currentSection === 'charges' || currentSection === 'interest') {
+              amount = -Math.abs(amount);
+            } else if (currentSection === 'payments') {
+              amount = Math.abs(amount);
+            }
+
+            const { isTransfer, transferType, transferAccountRef } = detectTransfer(description);
+            const merchantName = cleanMerchantName(description);
+            const category = autoCategorize(description, isTransfer);
+            const flags = extractFlags(description);
+
+            transactions.push({
+              date,
+              description,
+              amount,
+              section: currentSection,
+              isTransfer,
+              transferType,
+              transferAccountRef,
+              merchantName,
+              category,
+              flags,
+              rawLine: line,
+            });
+          } catch (err: any) {
+            errors.push(`Amex tab parse error: ${err.message}`);
+          }
+        }
+      }
+    }
+  }
+
+  const summary = calculateSummary(transactions);
+
+  return { metadata, transactions, summary, errors };
+}
+
+function extractAmexMetadata(
+  fullText: string,
+  lines: string[],
+  errors: string[]
+): StatementMetadata {
+  let accountNumber = '';
+  let accountNickname = '';
+  let ownerName = '';
+  let statementStart = '';
+  let statementEnd = '';
+  let beginningBalance = 0;
+  let endingBalance = 0;
+
+  // Account number patterns for Amex
+  // "Account Ending: 1-12345" or "Account Ending 1-12345" or "XXXX-XXXXXX-12345"
+  let match = fullText.match(/Account\s+Ending[:\s]*(\S+)/i);
+  if (match) {
+    accountNumber = match[1].replace(/[^0-9-]/g, '');
+    const last4or5 = accountNumber.match(/(\d{4,5})$/);
+    accountNickname = last4or5 ? `Amex ${last4or5[1]}` : 'American Express';
+  }
+
+  // Alternate: "Account Number: XXXX-XXXXXX-12345"
+  if (!accountNumber) {
+    match = fullText.match(/Account\s+Number[:\s]*[\dX*-]+?(\d{4,5})\s/i);
+    if (match) {
+      accountNumber = match[1];
+      accountNickname = `Amex ${match[1]}`;
+    }
+  }
+
+  // Alternate: just find "x-xxxxx" or similar near "account"
+  if (!accountNumber) {
+    match = fullText.match(/\d-\d{4,5}(?:\s|$)/);
+    if (match) {
+      accountNumber = match[0].trim();
+      const last = accountNumber.match(/(\d{4,5})$/);
+      accountNickname = last ? `Amex ${last[1]}` : 'American Express';
+    }
+  }
+
+  if (!accountNickname) accountNickname = 'American Express';
+
+  // Owner name
+  match = fullText.match(/Card\s*Member[:\s]*([A-Z][A-Za-z\s]+?)(?:\n|$)/);
+  if (match) {
+    ownerName = match[1].trim();
+  }
+
+  // Statement period
+  // "Closing Date: 01/15/2025" or "Statement Closing Date January 15, 2025"
+  match = fullText.match(/Closing\s+Date[:\s]*(\d{1,2}\/\d{1,2}\/\d{2,4})/i);
+  if (match) {
+    statementEnd = normalizeDate(match[1]);
+  }
+  match = fullText.match(/Opening\s+Date[:\s]*(\d{1,2}\/\d{1,2}\/\d{2,4})/i);
+  if (match) {
+    statementStart = normalizeDate(match[1]);
+  }
+
+  // Try text date format: "December 15 - January 14, 2025"
+  if (!statementEnd) {
+    match = fullText.match(/(\w+)\s+(\d{1,2})\s*[-–]\s*(\w+)\s+(\d{1,2}),?\s*(\d{4})/);
+    if (match) {
+      const [, sm, sd, em, ed, year] = match;
+      const smn = monthNameToNumber(sm);
+      const emn = monthNameToNumber(em);
+      if (smn && emn) {
+        statementStart = `${year}-${String(smn).padStart(2, '0')}-${sd.padStart(2, '0')}`;
+        statementEnd = `${year}-${String(emn).padStart(2, '0')}-${ed.padStart(2, '0')}`;
+      }
+    }
+  }
+
+  // Previous/New Balance
+  match = fullText.match(/Previous\s+Balance[:\s]*\$?([\d,]+\.\d{2})/i);
+  if (match) beginningBalance = normalizeAmount(match[1]);
+
+  match = fullText.match(/New\s+Balance[:\s]*\$?([\d,]+\.\d{2})/i);
+  if (!match) match = fullText.match(/Total\s+Balance[:\s]*\$?([\d,]+\.\d{2})/i);
+  if (!match) match = fullText.match(/Amount\s+Due[:\s]*\$?([\d,]+\.\d{2})/i);
+  if (match) endingBalance = normalizeAmount(match[1]);
+
+  return {
+    institution: 'American Express',
+    accountType: 'credit_card',
+    accountNumber,
+    accountNickname,
+    statementPeriod: { start: statementStart, end: statementEnd },
+    beginningBalance,
+    endingBalance,
+    ownerName,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Generic Credit Card Statement Parser
+// ---------------------------------------------------------------------------
+
+function parseGenericCreditCardStatement(
+  fullText: string,
+  lines: string[],
+  institution: string
+): StatementParseResult {
+  const errors: string[] = [];
+  const transactions: ParsedTransaction[] = [];
+
+  const metadata = extractGenericCCMetadata(fullText, lines, institution, errors);
+
+  let currentSection = 'charges';
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    // Detect sections
+    if (/Payments?\s*(and|&)\s*Credits?|Payments?\s*Received/i.test(line)) {
+      currentSection = 'payments';
+      continue;
+    }
+    if (/New\s*Charges|Purchases?\s*(and|&)?|Transactions?/i.test(line)) {
+      currentSection = 'charges';
+      continue;
+    }
+    if (/Interest\s*Charge|Fees?\s*$/i.test(line)) {
+      currentSection = 'interest';
+      continue;
+    }
+    if (/^TOTAL|^Total\s+/i.test(line)) continue;
+
+    // Try to extract date + description + amount
+    const txMatch = line.match(/^(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\s+(.+?)\s+\$?([\d,]+\.\d{2})\s*$/);
+    if (txMatch) {
+      const [, rawDate, description, rawAmount] = txMatch;
+      try {
+        const periodYear = metadata.statementPeriod.end ? parseInt(metadata.statementPeriod.end.split('-')[0], 10) : new Date().getFullYear();
+        const date = normalizeDate(rawDate, periodYear);
+        let amount = normalizeAmount(rawAmount);
+
+        if (currentSection === 'charges' || currentSection === 'interest') {
+          amount = -Math.abs(amount);
+        } else if (currentSection === 'payments') {
+          amount = Math.abs(amount);
+        }
+
+        const { isTransfer, transferType, transferAccountRef } = detectTransfer(description);
+        const merchantName = cleanMerchantName(description);
+        const category = autoCategorize(description, isTransfer);
+        const flags = extractFlags(description);
+
+        transactions.push({
+          date, description, amount, section: currentSection,
+          isTransfer, transferType, transferAccountRef,
+          merchantName, category, flags, rawLine: line,
+        });
+      } catch (err: any) {
+        errors.push(`CC parse error: ${err.message}`);
+      }
+      continue;
+    }
+
+    // Tab-separated variant
+    const tabFields = line.split('\t').map(f => f.trim()).filter(f => f);
+    if (tabFields.length >= 3 && /^\d{1,2}\/\d{1,2}/.test(tabFields[0])) {
+      let rawAmount = '';
+      let descParts: string[] = [];
+      for (let ti = tabFields.length - 1; ti >= 1; ti--) {
+        if (/^-?\$?[\d,]+\.\d{2}$/.test(tabFields[ti].replace(/[$]/g, ''))) {
+          rawAmount = tabFields[ti].replace(/[$]/g, '');
+          descParts = tabFields.slice(1, ti);
+          break;
+        }
+      }
+      if (rawAmount && descParts.length > 0) {
+        try {
+          const periodYear = metadata.statementPeriod.end ? parseInt(metadata.statementPeriod.end.split('-')[0], 10) : new Date().getFullYear();
+          const date = normalizeDate(tabFields[0], periodYear);
+          let amount = normalizeAmount(rawAmount);
+
+          if (currentSection === 'charges' || currentSection === 'interest') {
+            amount = -Math.abs(amount);
+          } else if (currentSection === 'payments') {
+            amount = Math.abs(amount);
+          }
+
+          const description = descParts.filter(f => !/^\d{4}$/.test(f)).join(' ').trim();
+          const { isTransfer, transferType, transferAccountRef } = detectTransfer(description);
+          const merchantName = cleanMerchantName(description);
+          const category = autoCategorize(description, isTransfer);
+          const flags = extractFlags(description);
+
+          transactions.push({
+            date, description, amount, section: currentSection,
+            isTransfer, transferType, transferAccountRef,
+            merchantName, category, flags, rawLine: line,
+          });
+        } catch (err: any) {
+          errors.push(`CC tab parse error: ${err.message}`);
+        }
+      }
+    }
+  }
+
+  return { metadata, transactions, summary: calculateSummary(transactions), errors };
+}
+
+function extractGenericCCMetadata(
+  fullText: string,
+  lines: string[],
+  institution: string,
+  errors: string[]
+): StatementMetadata {
+  let accountNumber = '';
+  let accountNickname = '';
+  let ownerName = '';
+  let statementStart = '';
+  let statementEnd = '';
+  let beginningBalance = 0;
+  let endingBalance = 0;
+
+  // Account number
+  let match = fullText.match(/Account\s*(?:#|Number|Ending)[:\s]*([\d\s*X-]+)/i);
+  if (match) {
+    accountNumber = match[1].trim();
+    const last4 = accountNumber.match(/(\d{4})$/);
+    accountNickname = last4 ? `${institution} CC ${last4[1]}` : `${institution} Credit Card`;
+  } else {
+    accountNickname = `${institution} Credit Card`;
+  }
+
+  // Statement period
+  match = fullText.match(/Statement\s+(?:Period|Date).*?(\d{1,2}\/\d{1,2}\/\d{2,4})\s+(?:to|through|-|–)\s*(\d{1,2}\/\d{1,2}\/\d{2,4})/i);
+  if (match) {
+    statementStart = normalizeDate(match[1]);
+    statementEnd = normalizeDate(match[2]);
+  }
+
+  if (!statementEnd) {
+    match = fullText.match(/(\w+)\s+(\d{1,2})\s*[-–]\s*(\w+)\s+(\d{1,2}),?\s*(\d{4})/);
+    if (match) {
+      const [, sm, sd, em, ed, year] = match;
+      const smn = monthNameToNumber(sm);
+      const emn = monthNameToNumber(em);
+      if (smn && emn) {
+        statementStart = `${year}-${String(smn).padStart(2, '0')}-${sd.padStart(2, '0')}`;
+        statementEnd = `${year}-${String(emn).padStart(2, '0')}-${ed.padStart(2, '0')}`;
+      }
+    }
+  }
+
+  match = fullText.match(/Previous\s+Balance[:\s]*\$?([\d,]+\.\d{2})/i);
+  if (match) beginningBalance = normalizeAmount(match[1]);
+
+  match = fullText.match(/New\s+Balance[:\s]*\$?([\d,]+\.\d{2})/i);
+  if (match) endingBalance = normalizeAmount(match[1]);
+
+  return {
+    institution,
+    accountType: 'credit_card',
+    accountNumber,
+    accountNickname,
+    statementPeriod: { start: statementStart, end: statementEnd },
+    beginningBalance,
+    endingBalance,
+    ownerName,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Generic Checking/Savings Statement Parser
+// ---------------------------------------------------------------------------
+
+function parseGenericCheckingStatement(
+  fullText: string,
+  lines: string[],
+  institution: string
+): StatementParseResult {
+  const errors: string[] = [];
+  const transactions: ParsedTransaction[] = [];
+
+  let accountNumber = '';
+  let accountNickname = '';
+  let statementStart = '';
+  let statementEnd = '';
+  let beginningBalance = 0;
+  let endingBalance = 0;
+
+  // Extract metadata
+  let match = fullText.match(/Account\s*(?:#|Number)[:\s]*([\d\s]+)/i);
+  if (match) {
+    accountNumber = match[1].trim();
+    const last4 = accountNumber.match(/(\d{4})$/);
+    accountNickname = last4 ? `${institution} CHK ${last4[1]}` : `${institution} Checking`;
+  } else {
+    accountNickname = `${institution} Checking`;
+  }
+
+  match = fullText.match(/Beginning\s+(?:Balance|Bal)[:\s]*\$?([\d,]+\.\d{2})/i);
+  if (match) beginningBalance = normalizeAmount(match[1]);
+
+  match = fullText.match(/Ending\s+(?:Balance|Bal)[:\s]*\$?([\d,]+\.\d{2})/i);
+  if (match) endingBalance = normalizeAmount(match[1]);
+
+  // Parse statement period
+  match = fullText.match(/(\w+)\s+(\d{1,2}),?\s+(\d{4})\s+(?:to|through|-|–)\s+(\w+)\s+(\d{1,2}),?\s+(\d{4})/i);
+  if (match) {
+    const smn = monthNameToNumber(match[1]);
+    const emn = monthNameToNumber(match[4]);
+    if (smn && emn) {
+      statementStart = `${match[3]}-${String(smn).padStart(2, '0')}-${match[2].padStart(2, '0')}`;
+      statementEnd = `${match[6]}-${String(emn).padStart(2, '0')}-${match[5].padStart(2, '0')}`;
+    }
+  }
+
+  let currentSection = 'deposits';
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    if (/Deposits?\s*(and|&)/i.test(line)) { currentSection = 'deposits'; continue; }
+    if (/Withdrawals?\s*(and|&)/i.test(line)) { currentSection = 'withdrawals'; continue; }
+    if (/Service\s+Fees?/i.test(line)) { currentSection = 'fees'; continue; }
+    if (/Checks?\s*$/i.test(line)) { currentSection = 'checks'; continue; }
+
+    // Try to parse: Date Description Amount
+    const txMatch = line.match(/^(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\s+(.+?)\s+\$?([\d,]+\.\d{2})\s*$/);
+    if (txMatch) {
+      const [, rawDate, description, rawAmount] = txMatch;
+      try {
+        const periodYear = statementEnd ? parseInt(statementEnd.split('-')[0], 10) : new Date().getFullYear();
+        const date = normalizeDate(rawDate, periodYear);
+        let amount = normalizeAmount(rawAmount);
+
+        if (currentSection === 'withdrawals' || currentSection === 'fees' || currentSection === 'checks') {
+          if (amount > 0) amount = -amount;
+        } else {
+          amount = Math.abs(amount);
+        }
+
+        const { isTransfer, transferType, transferAccountRef } = detectTransfer(description);
+        const merchantName = cleanMerchantName(description);
+        const category = autoCategorize(description, isTransfer);
+        const flags = extractFlags(description);
+
+        transactions.push({
+          date, description, amount, section: currentSection,
+          isTransfer, transferType, transferAccountRef,
+          merchantName, category, flags, rawLine: line,
+        });
+      } catch (err: any) {
+        errors.push(`Checking parse error: ${err.message}`);
+      }
+    }
+  }
+
+  const metadata: StatementMetadata = {
+    institution,
+    accountType: 'checking',
+    accountNumber,
+    accountNickname,
+    statementPeriod: { start: statementStart, end: statementEnd },
+    beginningBalance,
+    endingBalance,
+    ownerName: '',
+  };
+
+  return { metadata, transactions, summary: calculateSummary(transactions), errors };
+}
+
+// ---------------------------------------------------------------------------
+// Institution Name Extraction (for generic statements)
+// ---------------------------------------------------------------------------
+
+function extractInstitutionName(text: string): string {
+  const institutions = [
+    { pattern: /Chase|JPMorgan/i, name: 'Chase' },
+    { pattern: /Bank of America|BofA/i, name: 'Bank of America' },
+    { pattern: /Wells?\s*Fargo/i, name: 'Wells Fargo' },
+    { pattern: /Citi(?:bank|group)?/i, name: 'Citi' },
+    { pattern: /Capital\s*One/i, name: 'Capital One' },
+    { pattern: /US\s*Bank/i, name: 'US Bank' },
+    { pattern: /TD\s*Bank/i, name: 'TD Bank' },
+    { pattern: /PNC/i, name: 'PNC' },
+    { pattern: /USAA/i, name: 'USAA' },
+    { pattern: /Navy\s*Federal/i, name: 'Navy Federal' },
+    { pattern: /Discover/i, name: 'Discover' },
+    { pattern: /American Express|Amex/i, name: 'American Express' },
+    { pattern: /Ally/i, name: 'Ally Bank' },
+    { pattern: /Marcus/i, name: 'Marcus by Goldman Sachs' },
+    { pattern: /Synchrony/i, name: 'Synchrony' },
+    { pattern: /Barclays/i, name: 'Barclays' },
+    { pattern: /Fifth\s*Third/i, name: 'Fifth Third Bank' },
+    { pattern: /Regions/i, name: 'Regions Bank' },
+    { pattern: /KeyBank/i, name: 'KeyBank' },
+    { pattern: /Huntington/i, name: 'Huntington Bank' },
+  ];
+
+  for (const inst of institutions) {
+    if (inst.pattern.test(text)) {
+      return inst.name;
+    }
+  }
+
+  return 'Unknown Bank';
+}
+// Build trigger: 1773180580
