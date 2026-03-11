@@ -132,9 +132,9 @@ function UploadDropZone({
     }
     setFiles((prev) => {
       const combined = [...prev, ...droppedFiles]
-      if (combined.length > 10) {
-        toast.error('Maximum 10 files allowed')
-        return combined.slice(0, 10)
+      if (combined.length > 50) {
+        toast.error('Maximum 50 files allowed')
+        return combined.slice(0, 50)
       }
       return combined
     })
@@ -147,9 +147,9 @@ function UploadDropZone({
     )
     setFiles((prev) => {
       const combined = [...prev, ...selected]
-      if (combined.length > 10) {
-        toast.error('Maximum 10 files allowed')
-        return combined.slice(0, 10)
+      if (combined.length > 50) {
+        toast.error('Maximum 50 files allowed')
+        return combined.slice(0, 50)
       }
       return combined
     })
@@ -214,7 +214,7 @@ function UploadDropZone({
               Excel
             </div>
           </div>
-          <p className="text-[11px] text-muted-foreground mt-1">Up to 10 files, 10MB each</p>
+          <p className="text-[11px] text-muted-foreground mt-1">Up to 50 files, 20MB each</p>
         </div>
       </div>
 
