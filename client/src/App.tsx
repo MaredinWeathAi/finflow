@@ -11,13 +11,11 @@ import { BudgetsPage } from '@/pages/BudgetsPage'
 import { AccountsPage } from '@/pages/AccountsPage'
 import { RecurringPage } from '@/pages/RecurringPage'
 import { CashFlowPage } from '@/pages/CashFlowPage'
-import { InvestmentsPage } from '@/pages/InvestmentsPage'
 import { GoalsPage } from '@/pages/GoalsPage'
 import { ReportsPage } from '@/pages/ReportsPage'
 import { SettingsPage } from '@/pages/SettingsPage'
 import { InsightsPage } from '@/pages/InsightsPage'
 import { UploadPage } from '@/pages/UploadPage'
-import { AnalysisPage } from '@/pages/AnalysisPage'
 import { AdminDashboardPage } from '@/pages/AdminDashboardPage'
 import { AdminClientsPage } from '@/pages/AdminClientsPage'
 import { AdminClientDetailPage } from '@/pages/AdminClientDetailPage'
@@ -83,14 +81,12 @@ export default function App() {
         >
           <Route path="/" element={<DashboardPage />} />
           <Route path="/insights" element={<InsightsPage />} />
-          <Route path="/analysis" element={<AnalysisPage />} />
           <Route path="/upload" element={<UploadPage />} />
           <Route path="/transactions" element={<TransactionsPage />} />
           <Route path="/budgets" element={<BudgetsPage />} />
           <Route path="/accounts" element={<AccountsPage />} />
           <Route path="/recurring" element={<RecurringPage />} />
           <Route path="/cashflow" element={<CashFlowPage />} />
-          <Route path="/investments" element={<InvestmentsPage />} />
           <Route path="/goals" element={<GoalsPage />} />
           <Route path="/reports" element={<ReportsPage />} />
           <Route path="/settings" element={<SettingsPage />} />

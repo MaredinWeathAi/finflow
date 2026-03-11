@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Plus, X, Target, PartyPopper } from 'lucide-react'
 import { differenceInDays, parseISO, format } from 'date-fns'
 import { cn, formatCurrency } from '@/lib/utils'
@@ -119,13 +119,27 @@ function AddGoalModal({ open, onClose, goal, onSave }: {
   open: boolean; onClose: () => void; goal: Goal | null; onSave: () => void
 }) {
   const [form, setForm] = useState({
-    name: goal?.name || '',
-    target_amount: goal?.target_amount?.toString() || '',
-    current_amount: goal?.current_amount?.toString() || '0',
-    target_date: goal?.target_date || '',
-    icon: goal?.icon || '🎯',
-    color: goal?.color || '#A78BFA',
+    name: '',
+    target_amount: '',
+    current_amount: '0',
+    target_date: '',
+    icon: '🎯',
+    color: '#A78BFA',
   })
+
+  // Reset form when modal opens or goal changes
+  useEffect(() => {
+    if (open) {
+      setForm({
+        name: goal?.name || '',
+        target_amount: goal?.target_amount?.toString() || '',
+        current_amount: goal?.current_amount?.toString() || '0',
+        target_date: goal?.target_date || '',
+        icon: goal?.icon || '🎯',
+        color: goal?.color || '#A78BFA',
+      })
+    }
+  }, [open, goal])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()

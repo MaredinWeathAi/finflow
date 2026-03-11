@@ -7,7 +7,6 @@ import {
   PieChart,
   Wallet,
   TrendingUp,
-  LineChart,
   Target,
   FileText,
   Settings,
@@ -16,7 +15,6 @@ import {
   ChevronRight,
   Users,
   Shield,
-  Brain,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/authStore'
@@ -25,12 +23,10 @@ import { useState } from 'react'
 const clientNavItems = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
   { to: '/insights', icon: Lightbulb, label: 'Insights' },
-  { to: '/analysis', icon: Brain, label: 'AI Analysis' },
   { to: '/goals', icon: Target, label: 'Goals' },
   { to: '/budgets', icon: PieChart, label: 'Budgets' },
-  { to: '/accounts', icon: Wallet, label: 'Accounts' },
   { to: '/cashflow', icon: TrendingUp, label: 'Cash Flow' },
-  { to: '/investments', icon: LineChart, label: 'Investments' },
+  { to: '/accounts', icon: Wallet, label: 'Accounts' },
   { to: '/transactions', icon: ArrowLeftRight, label: 'Transactions' },
   { to: '/upload', icon: Upload, label: 'Upload' },
   { to: '/reports', icon: FileText, label: 'Reports' },

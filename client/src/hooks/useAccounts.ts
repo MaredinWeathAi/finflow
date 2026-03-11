@@ -22,12 +22,15 @@ export function useAccounts() {
     fetchAccounts()
   }, [fetchAccounts])
 
+  // Determine assets vs liabilities by account TYPE, not balance sign
+  const liabilityTypes = ['credit', 'loan', 'mortgage']
+
   const totalAssets = accounts
-    .filter(a => a.balance > 0 && !a.is_hidden)
+    .filter(a => !a.is_hidden && !liabilityTypes.includes(a.type))
     .reduce((sum, a) => sum + a.balance, 0)
 
   const totalLiabilities = accounts
-    .filter(a => a.balance < 0 && !a.is_hidden)
+    .filter(a => !a.is_hidden && liabilityTypes.includes(a.type))
     .reduce((sum, a) => sum + Math.abs(a.balance), 0)
 
   const netWorth = totalAssets - totalLiabilities

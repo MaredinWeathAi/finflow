@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { Plus, X, Eye, EyeOff, CreditCard, Building, Landmark, TrendingUp, Bitcoin, Car, Home } from 'lucide-react'
+import { useState, useEffect } from 'react'
+import { Plus, X, Eye, EyeOff, CreditCard, Building, Landmark, Bitcoin, Car, Home } from 'lucide-react'
 import { cn, formatCurrency } from '@/lib/utils'
 import { useAccounts } from '@/hooks/useAccounts'
 import { PageHeader } from '@/components/shared/PageHeader'
@@ -11,7 +11,6 @@ const typeIcons: Record<string, React.ReactNode> = {
   checking: <Building className="w-5 h-5" />,
   savings: <Landmark className="w-5 h-5" />,
   credit: <CreditCard className="w-5 h-5" />,
-  investment: <TrendingUp className="w-5 h-5" />,
   crypto: <Bitcoin className="w-5 h-5" />,
   loan: <Car className="w-5 h-5" />,
   mortgage: <Home className="w-5 h-5" />,
@@ -22,7 +21,6 @@ const typeLabels: Record<string, string> = {
   checking: 'Checking',
   savings: 'Savings',
   credit: 'Credit Cards',
-  investment: 'Investments',
   crypto: 'Crypto',
   loan: 'Loans',
   mortgage: 'Mortgage',
@@ -32,7 +30,6 @@ const typeLabels: Record<string, string> = {
 const typeGroups = [
   { types: ['checking', 'savings'], label: 'Cash' },
   { types: ['credit'], label: 'Credit Cards' },
-  { types: ['investment'], label: 'Investments' },
   { types: ['crypto'], label: 'Crypto' },
   { types: ['loan', 'mortgage'], label: 'Loans & Debts' },
   { types: ['property'], label: 'Property & Assets' },
@@ -63,13 +60,27 @@ function AddAccountModal({ open, onClose, account, onSave }: {
   open: boolean; onClose: () => void; account: Account | null; onSave: () => void
 }) {
   const [form, setForm] = useState({
-    name: account?.name || '',
-    type: account?.type || 'checking',
-    institution: account?.institution || '',
-    balance: account?.balance?.toString() || '0',
-    last_four: account?.last_four || '',
-    icon: account?.icon || '',
+    name: '',
+    type: 'checking',
+    institution: '',
+    balance: '0',
+    last_four: '',
+    icon: '',
   })
+
+  // Reset form when modal opens or account changes
+  useEffect(() => {
+    if (open) {
+      setForm({
+        name: account?.name || '',
+        type: account?.type || 'checking',
+        institution: account?.institution || '',
+        balance: account?.balance?.toString() || '0',
+        last_four: account?.last_four || '',
+        icon: account?.icon || '',
+      })
+    }
+  }, [open, account])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
