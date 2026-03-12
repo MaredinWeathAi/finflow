@@ -619,7 +619,7 @@ router.get('/comprehensive', (req: Request, res: Response) => {
     // 6. Investments
     const investments = db
       .prepare(
-        `SELECT i.id, i.symbol, i.name, i.type, i.shares, i.cost_basis, i.current_price, i.last_updated,
+        `SELECT i.id, i.account_id, i.symbol, i.name, i.type, i.shares, i.cost_basis, i.current_price, i.last_updated,
                 a.name as account_name
          FROM investments i
          LEFT JOIN accounts a ON i.account_id = a.id
