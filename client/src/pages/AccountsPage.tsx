@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
-import { Plus, X, Eye, EyeOff, CreditCard, Building, Landmark, Bitcoin, Car, Home } from 'lucide-react'
+import { Plus, X, Eye, EyeOff, CreditCard, Building, Landmark, Bitcoin, Car, Home, LineChart } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
 import { cn, formatCurrency } from '@/lib/utils'
 import { useAccounts } from '@/hooks/useAccounts'
 import { PageHeader } from '@/components/shared/PageHeader'
@@ -148,9 +149,10 @@ function AddAccountModal({ open, onClose, account, onSave }: {
 }
 
 export function AccountsPage() {
-  const { accounts, isLoading, totalAssets, totalLiabilities, netWorth, refetch } = useAccounts()
+  const { accounts, isLoading, totalAssets, totalAccountAssets, totalLiabilities, investmentPortfolioValue, netWorth, refetch } = useAccounts()
   const [showModal, setShowModal] = useState(false)
   const [editAccount, setEditAccount] = useState<Account | null>(null)
+  const navigate = useNavigate()
 
   return (
     <div>
@@ -168,10 +170,20 @@ export function AccountsPage() {
       />
 
       {/* Net Worth Summary */}
-      <div className="grid grid-cols-3 gap-3 mb-6">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
         <div className="bg-card rounded-xl border border-border/50 p-4">
-          <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Total Assets</p>
-          <p className="text-xl font-bold text-success mt-1">{formatCurrency(totalAssets)}</p>
+          <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Account Assets</p>
+          <p className="text-xl font-bold text-success mt-1">{formatCurrency(totalAccountAssets)}</p>
+        </div>
+        <div
+          className="bg-card rounded-xl border border-border/50 p-4 cursor-pointer hover:bg-accent/20 transition-colors"
+          onClick={() => navigate('/investments')}
+        >
+          <div className="flex items-center gap-1.5">
+            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Investments</p>
+            <LineChart className="w-3 h-3 text-muted-foreground" />
+          </div>
+          <p className="text-xl font-bold text-success mt-1">{formatCurrency(investmentPortfolioValue)}</p>
         </div>
         <div className="bg-card rounded-xl border border-border/50 p-4">
           <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Total Liabilities</p>
@@ -180,6 +192,7 @@ export function AccountsPage() {
         <div className="bg-card rounded-xl border border-border/50 p-4">
           <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Net Worth</p>
           <p className="text-xl font-bold mt-1">{formatCurrency(netWorth)}</p>
+          <p className="text-[10px] text-muted-foreground mt-0.5">Accounts + Investments - Liabilities</p>
         </div>
       </div>
 

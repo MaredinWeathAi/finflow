@@ -493,6 +493,15 @@ router.get('/dashboard-summary', (req: Request, res: Response) => {
     const uncategorizedCount = uncategorizedResult.count || 0;
     const uncategorizedTotal = Math.round(uncategorizedResult.total * 100) / 100;
 
+    // Investment portfolio value
+    const investments = db.prepare(
+      `SELECT shares, current_price FROM investments WHERE user_id = ?`
+    ).all(userId) as any[];
+
+    const investmentPortfolioValue = investments.reduce(
+      (sum: number, inv: any) => sum + (inv.shares * inv.current_price), 0
+    );
+
     // Day of month info
     const today = new Date();
     const currentMonth = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
@@ -523,6 +532,8 @@ router.get('/dashboard-summary', (req: Request, res: Response) => {
         type: acc.type,
       })),
       totalCash: Math.round(totalCash * 100) / 100,
+      investmentPortfolioValue: Math.round(investmentPortfolioValue * 100) / 100,
+      investmentCount: investments.length,
       topExpenses: topExpenses.map((c: any) => ({
         name: c.name,
         icon: c.icon,

@@ -758,4 +758,342 @@ router.get('/comprehensive', (req: Request, res: Response) => {
   }
 });
 
+// ============================================================
+// API SYNC ENDPOINTS — For connecting with external Financial Planning portal
+// These allow bidirectional sync of investment data when a client
+// has accounts set up in both the Budget app and the Planning portal.
+// ============================================================
+
+// POST /sync/investments — Receive investment data from the Financial Planning portal
+router.post('/sync/investments', (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.id;
+    const { investments: incomingInvestments, source } = req.body;
+
+    if (!incomingInvestments || !Array.isArray(incomingInvestments)) {
+      res.status(400).json({ error: 'investments array is required' });
+      return;
+    }
+
+    const results = {
+      created: 0,
+      updated: 0,
+      skipped: 0,
+      errors: [] as string[],
+    };
+
+    // Get existing investments for this user
+    const existingInvestments = db
+      .prepare('SELECT id, symbol, account_id FROM investments WHERE user_id = ?')
+      .all(userId) as any[];
+
+    const existingBySymbol = new Map(
+      existingInvestments.map((inv: any) => [inv.symbol, inv])
+    );
+
+    // Get user's first investment-type account, or create one
+    let investmentAccount = db
+      .prepare(
+        `SELECT id FROM accounts WHERE user_id = ? AND type = 'investment' LIMIT 1`
+      )
+      .get(userId) as any;
+
+    if (!investmentAccount) {
+      const accountId = crypto.randomUUID();
+      const now = new Date().toISOString();
+      db.prepare(
+        `INSERT INTO accounts (id, user_id, name, type, institution, balance, last_four, icon, is_hidden, created_at, updated_at)
+         VALUES (?, ?, ?, 'investment', ?, 0, '', '', 0, ?, ?)`
+      ).run(accountId, userId, 'Synced Investments', source || 'Financial Planning Portal', now, now);
+      investmentAccount = { id: accountId };
+    }
+
+    const now = new Date().toISOString();
+
+    for (const inv of incomingInvestments) {
+      try {
+        if (!inv.symbol || !inv.name) {
+          results.errors.push(`Missing symbol or name for investment`);
+          results.skipped++;
+          continue;
+        }
+
+        const existing = existingBySymbol.get(inv.symbol.toUpperCase());
+
+        if (existing) {
+          db.prepare(
+            `UPDATE investments SET
+              shares = COALESCE(?, shares),
+              cost_basis = COALESCE(?, cost_basis),
+              current_price = COALESCE(?, current_price),
+              name = COALESCE(?, name),
+              type = COALESCE(?, type),
+              last_updated = ?
+             WHERE id = ? AND user_id = ?`
+          ).run(
+            inv.shares ?? null,
+            inv.cost_basis ?? null,
+            inv.current_price ?? null,
+            inv.name ?? null,
+            inv.type ?? null,
+            now,
+            existing.id,
+            userId
+          );
+          results.updated++;
+        } else {
+          const id = crypto.randomUUID();
+          db.prepare(
+            `INSERT INTO investments (id, user_id, account_id, symbol, name, type, shares, cost_basis, current_price, last_updated)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          ).run(
+            id,
+            userId,
+            inv.account_id || investmentAccount.id,
+            inv.symbol.toUpperCase(),
+            inv.name,
+            inv.type || 'stock',
+            inv.shares || 0,
+            inv.cost_basis || 0,
+            inv.current_price || 0,
+            now
+          );
+          results.created++;
+        }
+      } catch (err: any) {
+        results.errors.push(`Error processing ${inv.symbol}: ${err.message}`);
+        results.skipped++;
+      }
+    }
+
+    // Recalculate investment account balance
+    const portfolioValue = db
+      .prepare(
+        `SELECT COALESCE(SUM(shares * current_price), 0) as total
+         FROM investments WHERE user_id = ? AND account_id = ?`
+      )
+      .get(userId, investmentAccount.id) as any;
+
+    db.prepare('UPDATE accounts SET balance = ?, updated_at = ? WHERE id = ?').run(
+      portfolioValue.total, now, investmentAccount.id
+    );
+
+    res.json({
+      message: 'Investment sync completed',
+      results,
+      portfolioValue: portfolioValue.total,
+    });
+  } catch (error) {
+    console.error('Sync investments error:', error);
+    res.status(500).json({ error: 'Failed to sync investments' });
+  }
+});
+
+// GET /sync/investments — Export investment data for the Financial Planning portal to pull
+router.get('/sync/investments', (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.id;
+
+    const investments = db
+      .prepare(
+        `SELECT i.id, i.symbol, i.name, i.type, i.shares, i.cost_basis, i.current_price, i.last_updated,
+                a.name as account_name, a.institution as account_institution
+         FROM investments i
+         LEFT JOIN accounts a ON i.account_id = a.id
+         WHERE i.user_id = ?
+         ORDER BY i.name ASC`
+      )
+      .all(userId) as any[];
+
+    const holdings = investments.map((inv: any) => {
+      const currentValue = inv.shares * inv.current_price;
+      const totalCost = inv.shares * inv.cost_basis;
+      const gainLoss = currentValue - totalCost;
+
+      return {
+        id: inv.id,
+        symbol: inv.symbol,
+        name: inv.name,
+        type: inv.type,
+        shares: inv.shares,
+        costBasis: inv.cost_basis,
+        currentPrice: inv.current_price,
+        currentValue,
+        totalCost,
+        gainLoss,
+        gainLossPercent: totalCost > 0 ? (gainLoss / totalCost) * 100 : 0,
+        lastUpdated: inv.last_updated,
+        account: inv.account_name,
+        institution: inv.account_institution,
+      };
+    });
+
+    const totalValue = holdings.reduce((sum: number, h: any) => sum + h.currentValue, 0);
+    const totalCost = holdings.reduce((sum: number, h: any) => sum + h.totalCost, 0);
+
+    res.json({
+      clientId: userId,
+      lastSyncedAt: new Date().toISOString(),
+      portfolio: {
+        totalValue,
+        totalCost,
+        totalGainLoss: totalValue - totalCost,
+        totalGainLossPercent: totalCost > 0 ? ((totalValue - totalCost) / totalCost) * 100 : 0,
+        holdingCount: holdings.length,
+      },
+      holdings,
+    });
+  } catch (error) {
+    console.error('Export investments error:', error);
+    res.status(500).json({ error: 'Failed to export investments' });
+  }
+});
+
+// POST /sync/accounts — Receive account data from the Financial Planning portal
+router.post('/sync/accounts', (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.id;
+    const { accounts: incomingAccounts } = req.body;
+
+    if (!incomingAccounts || !Array.isArray(incomingAccounts)) {
+      res.status(400).json({ error: 'accounts array is required' });
+      return;
+    }
+
+    const results = { created: 0, updated: 0, skipped: 0, errors: [] as string[] };
+    const now = new Date().toISOString();
+
+    for (const acc of incomingAccounts) {
+      try {
+        if (!acc.name || !acc.type) {
+          results.errors.push(`Missing name or type for account`);
+          results.skipped++;
+          continue;
+        }
+
+        const existing = db
+          .prepare(
+            `SELECT id FROM accounts WHERE user_id = ? AND LOWER(name) = LOWER(?) AND LOWER(COALESCE(institution, '')) = LOWER(?)`
+          )
+          .get(userId, acc.name, acc.institution || '') as any;
+
+        if (existing) {
+          db.prepare(
+            `UPDATE accounts SET balance = COALESCE(?, balance), updated_at = ? WHERE id = ?`
+          ).run(acc.balance ?? null, now, existing.id);
+          results.updated++;
+        } else {
+          const id = crypto.randomUUID();
+          db.prepare(
+            `INSERT INTO accounts (id, user_id, name, type, institution, balance, last_four, icon, is_hidden, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`
+          ).run(id, userId, acc.name, acc.type, acc.institution || '', acc.balance || 0, acc.last_four || '', acc.icon || '', now, now);
+          results.created++;
+        }
+      } catch (err: any) {
+        results.errors.push(`Error processing ${acc.name}: ${err.message}`);
+        results.skipped++;
+      }
+    }
+
+    res.json({ message: 'Account sync completed', results });
+  } catch (error) {
+    console.error('Sync accounts error:', error);
+    res.status(500).json({ error: 'Failed to sync accounts' });
+  }
+});
+
+// GET /sync/status — Check if client has data in both systems
+router.get('/sync/status', (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.id;
+
+    const accountCount = (db.prepare('SELECT COUNT(*) as count FROM accounts WHERE user_id = ?').get(userId) as any).count;
+    const investmentCount = (db.prepare('SELECT COUNT(*) as count FROM investments WHERE user_id = ?').get(userId) as any).count;
+    const transactionCount = (db.prepare('SELECT COUNT(*) as count FROM transactions WHERE user_id = ?').get(userId) as any).count;
+    const budgetCount = (db.prepare('SELECT COUNT(*) as count FROM budgets WHERE user_id = ?').get(userId) as any).count;
+    const goalCount = (db.prepare('SELECT COUNT(*) as count FROM goals WHERE user_id = ?').get(userId) as any).count;
+
+    const portfolioResult = db
+      .prepare(`SELECT COALESCE(SUM(shares * current_price), 0) as total FROM investments WHERE user_id = ?`)
+      .get(userId) as any;
+
+    const accounts = db.prepare('SELECT type, balance FROM accounts WHERE user_id = ?').all(userId) as any[];
+    let totalAssets = 0;
+    let totalLiabilities = 0;
+    const liabilityTypes = ['credit', 'loan', 'mortgage'];
+
+    for (const acc of accounts) {
+      if (liabilityTypes.includes(acc.type)) {
+        totalLiabilities += Math.abs(acc.balance);
+      } else {
+        totalAssets += acc.balance;
+      }
+    }
+    totalAssets += portfolioResult.total;
+
+    res.json({
+      clientId: userId,
+      hasBudgetData: transactionCount > 0 || budgetCount > 0,
+      hasInvestmentData: investmentCount > 0,
+      hasAccountData: accountCount > 0,
+      hasGoalData: goalCount > 0,
+      syncReady: accountCount > 0 && investmentCount > 0,
+      counts: { accounts: accountCount, investments: investmentCount, transactions: transactionCount, budgets: budgetCount, goals: goalCount },
+      netWorth: {
+        total: totalAssets - totalLiabilities,
+        totalAssets,
+        totalLiabilities,
+        investmentPortfolioValue: portfolioResult.total,
+      },
+    });
+  } catch (error) {
+    console.error('Sync status error:', error);
+    res.status(500).json({ error: 'Failed to get sync status' });
+  }
+});
+
+// POST /sync/price-update — Bulk update current prices for investments
+router.post('/sync/price-update', (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.id;
+    const { prices } = req.body;
+
+    if (!prices || !Array.isArray(prices)) {
+      res.status(400).json({ error: 'prices array is required (each with symbol and current_price)' });
+      return;
+    }
+
+    const now = new Date().toISOString();
+    let updated = 0;
+    let notFound = 0;
+
+    for (const { symbol, current_price } of prices) {
+      if (!symbol || current_price === undefined) continue;
+      const result = db
+        .prepare(`UPDATE investments SET current_price = ?, last_updated = ? WHERE user_id = ? AND symbol = ?`)
+        .run(current_price, now, userId, symbol.toUpperCase());
+      if (result.changes > 0) updated++;
+      else notFound++;
+    }
+
+    // Update investment account balances
+    const investmentAccounts = db
+      .prepare(`SELECT DISTINCT account_id FROM investments WHERE user_id = ?`)
+      .all(userId) as any[];
+
+    for (const { account_id } of investmentAccounts) {
+      const total = db
+        .prepare(`SELECT COALESCE(SUM(shares * current_price), 0) as total FROM investments WHERE user_id = ? AND account_id = ?`)
+        .get(userId, account_id) as any;
+      db.prepare('UPDATE accounts SET balance = ?, updated_at = ? WHERE id = ?').run(total.total, now, account_id);
+    }
+
+    res.json({ message: 'Price update completed', updated, notFound, timestamp: now });
+  } catch (error) {
+    console.error('Price update error:', error);
+    res.status(500).json({ error: 'Failed to update prices' });
+  }
+});
+
 export default router;
