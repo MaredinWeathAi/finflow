@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { format, parseISO, differenceInDays } from 'date-fns'
-import { Plus, X, TrendingUp, TrendingDown, Minus, AlertTriangle } from 'lucide-react'
+import { Plus, X, TrendingUp, TrendingDown, Minus, AlertTriangle, Zap, Loader2, Check, Clock } from 'lucide-react'
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts'
 import { cn, formatCurrency } from '@/lib/utils'
 import { useRecurring } from '@/hooks/useRecurring'
@@ -31,9 +31,23 @@ function PriceChangeBadge({ expense }: { expense: RecurringExpense }) {
 
 function RecurringRow({ expense, onEdit }: { expense: RecurringExpense; onEdit: () => void }) {
   const daysUntil = differenceInDays(parseISO(expense.next_date), new Date())
+  const isOverdue = daysUntil < 0
+  const isDueToday = daysUntil === 0
+  const isDueSoon = daysUntil > 0 && daysUntil <= 3
   const hasPriceIncrease = (() => {
     const h = expense.price_history || []
     return h.length >= 2 && h[h.length - 1].amount > h[h.length - 2].amount
+  })()
+
+  // Determine the due day of month for display (like Copilot's "1st", "5th", etc.)
+  const dueDay = (() => {
+    try {
+      const d = parseISO(expense.next_date).getDate()
+      if (d === 1 || d === 21 || d === 31) return `${d}st`
+      if (d === 2 || d === 22) return `${d}nd`
+      if (d === 3 || d === 23) return `${d}rd`
+      return `${d}th`
+    } catch { return '' }
   })()
 
   return (
@@ -41,15 +55,26 @@ function RecurringRow({ expense, onEdit }: { expense: RecurringExpense; onEdit: 
       onClick={onEdit}
       className={cn(
         'flex items-center gap-4 px-5 py-4 hover:bg-accent/30 transition-colors cursor-pointer',
-        hasPriceIncrease && 'bg-danger/5'
+        hasPriceIncrease && 'bg-danger/5',
+        isOverdue && 'bg-amber-500/5'
       )}
     >
-      <div className="w-9 h-9 rounded-xl bg-muted flex items-center justify-center text-base shrink-0">
-        {expense.category_icon || '🔄'}
+      {/* Icon with status overlay */}
+      <div className="relative w-9 h-9 shrink-0">
+        <div className="w-9 h-9 rounded-xl bg-muted flex items-center justify-center text-base">
+          {expense.category_icon || '🔄'}
+        </div>
+        {/* Status indicator - top-right corner */}
+        {expense.is_active && !isOverdue && daysUntil > 3 && (
+          <div className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-emerald-500 flex items-center justify-center">
+            <Check className="w-2.5 h-2.5 text-white" />
+          </div>
+        )}
       </div>
+
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
-          <span className="text-sm font-medium">{expense.name}</span>
+          <span className="text-sm font-medium truncate">{expense.name}</span>
           {hasPriceIncrease && (
             <span className="text-[10px] font-medium uppercase tracking-wider px-1.5 py-0.5 rounded-full bg-danger/10 text-danger flex items-center gap-0.5">
               <AlertTriangle className="w-3 h-3" /> Price up
@@ -57,24 +82,31 @@ function RecurringRow({ expense, onEdit }: { expense: RecurringExpense; onEdit: 
           )}
         </div>
         <p className="text-xs text-muted-foreground mt-0.5">
-          {freqLabels[expense.frequency]} &middot; {expense.category_name}
+          {freqLabels[expense.frequency]} &middot; {expense.category_name || 'Uncategorized'}
         </p>
       </div>
+
       <div className="flex items-center gap-3 shrink-0">
         <PriceChangeBadge expense={expense} />
         <div className="text-right">
           <p className="text-sm font-bold tabular-nums">{formatCurrency(expense.amount)}</p>
-          <p className={cn(
-            'text-[11px]',
-            daysUntil <= 3 ? 'text-warning font-medium' : 'text-muted-foreground'
-          )}>
-            {daysUntil <= 0 ? 'Due today' : daysUntil === 1 ? 'Tomorrow' : `In ${daysUntil} days`}
-          </p>
+          {isOverdue ? (
+            <p className="text-[11px] text-red-400 font-semibold">Overdue</p>
+          ) : isDueToday ? (
+            <p className="text-[11px] text-amber-400 font-semibold">Due today</p>
+          ) : isDueSoon ? (
+            <p className="text-[11px] text-amber-400 font-medium">In {daysUntil} day{daysUntil > 1 ? 's' : ''}</p>
+          ) : (
+            <p className="text-[11px] text-muted-foreground">{dueDay}</p>
+          )}
         </div>
         <div
           className={cn(
             'w-2 h-2 rounded-full shrink-0',
-            expense.is_active ? 'bg-success' : 'bg-muted-foreground'
+            !expense.is_active ? 'bg-muted-foreground' :
+            isOverdue ? 'bg-red-400' :
+            isDueSoon || isDueToday ? 'bg-amber-400' :
+            'bg-success'
           )}
         />
       </div>
@@ -172,12 +204,36 @@ export function RecurringPage() {
   const { categories } = useCategories()
   const [showModal, setShowModal] = useState(false)
   const [editExpense, setEditExpense] = useState<RecurringExpense | null>(null)
+  const [isDetecting, setIsDetecting] = useState(false)
 
   const activeCount = recurring.filter(r => r.is_active).length
   const priceIncreases = recurring.filter(r => {
     const h = r.price_history || []
     return h.length >= 2 && h[h.length - 1].amount > h[h.length - 2].amount
   }).length
+
+  const handleAutoDetect = async () => {
+    setIsDetecting(true)
+    try {
+      const result = await api.post<{
+        detected: number; created: number; createdNames: string[];
+        deactivated: number; deactivatedNames: string[]
+      }>('/recurring/detect')
+      if (result.created > 0) {
+        toast.success(`Found ${result.created} new recurring expense${result.created > 1 ? 's' : ''}: ${result.createdNames.join(', ')}`)
+      } else {
+        toast.info('No new recurring patterns detected')
+      }
+      if (result.deactivated > 0) {
+        toast(`${result.deactivated} stale recurring${result.deactivated > 1 ? 's' : ''} deactivated`)
+      }
+      refetch()
+    } catch {
+      toast.error('Failed to auto-detect recurring expenses')
+    } finally {
+      setIsDetecting(false)
+    }
+  }
 
   const categoryBreakdown = recurring.reduce((acc, r) => {
     if (!r.is_active) return acc
@@ -195,18 +251,43 @@ export function RecurringPage() {
     return dA - dB
   })
 
+  // Split into this month (overdue + due this month) and future
+  const now = new Date()
+  const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0)
+  const thisMonth = sorted.filter(r => r.is_active && new Date(r.next_date) <= endOfMonth)
+  const upcoming = sorted.filter(r => r.is_active && new Date(r.next_date) > endOfMonth)
+  const inactive = sorted.filter(r => !r.is_active)
+
+  // Summary: left to pay vs paid so far this month
+  const leftToPay = thisMonth
+    .filter(r => differenceInDays(parseISO(r.next_date), now) >= 0)
+    .reduce((s, r) => s + r.amount, 0)
+  const paidSoFar = thisMonth
+    .filter(r => differenceInDays(parseISO(r.next_date), now) < 0)
+    .reduce((s, r) => s + r.amount, 0)
+
   return (
     <div>
       <PageHeader
         title="Recurring Expenses"
-        description="Track subscriptions and fixed costs"
+        description="Track subscriptions, bills, and fixed costs"
         action={
-          <button
-            onClick={() => { setEditExpense(null); setShowModal(true) }}
-            className="flex items-center gap-2 h-9 px-4 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
-          >
-            <Plus className="w-4 h-4" /> Add Recurring
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleAutoDetect}
+              disabled={isDetecting}
+              className="flex items-center gap-2 h-9 px-4 rounded-lg bg-amber-500/10 text-amber-400 text-sm font-medium hover:bg-amber-500/20 transition-colors disabled:opacity-50"
+            >
+              {isDetecting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
+              Auto-Detect
+            </button>
+            <button
+              onClick={() => { setEditExpense(null); setShowModal(true) }}
+              className="flex items-center gap-2 h-9 px-4 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
+            >
+              <Plus className="w-4 h-4" /> Add
+            </button>
+          </div>
         }
       />
 
@@ -230,32 +311,91 @@ export function RecurringPage() {
         </div>
       </div>
 
-      <div className="grid lg:grid-cols-3 gap-6">
-        {/* List */}
-        <div className="lg:col-span-2">
-          <div className="bg-card rounded-2xl border border-border/50 overflow-hidden">
-            <div className="px-5 py-3 border-b border-border/30">
-              <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">All Recurring Expenses</p>
+      {/* Monthly Progress Bar (like Copilot) */}
+      {thisMonth.length > 0 && (
+        <div className="bg-card rounded-2xl border border-border/50 p-5 mb-6">
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <p className="text-2xl font-bold">{formatCurrency(leftToPay)}</p>
+              <p className="text-xs text-muted-foreground">left to pay</p>
             </div>
-            {isLoading ? (
-              <div className="p-8 text-center text-muted-foreground">Loading...</div>
-            ) : sorted.length === 0 ? (
-              <div className="p-8 text-center text-muted-foreground">No recurring expenses</div>
-            ) : (
-              <div className="divide-y divide-border/30">
-                {sorted.map(r => (
-                  <RecurringRow
-                    key={r.id}
-                    expense={r}
-                    onEdit={() => { setEditExpense(r); setShowModal(true) }}
-                  />
-                ))}
-              </div>
-            )}
+            <div className="w-24 h-24 relative">
+              <svg viewBox="0 0 100 100" className="w-full h-full -rotate-90">
+                <circle cx="50" cy="50" r="40" fill="none" stroke="currentColor" className="text-muted/30" strokeWidth="8" />
+                <circle cx="50" cy="50" r="40" fill="none" stroke="currentColor" className="text-primary"
+                  strokeWidth="8" strokeDasharray={`${(paidSoFar / (paidSoFar + leftToPay || 1)) * 251.2} 251.2`}
+                  strokeLinecap="round" />
+              </svg>
+            </div>
+            <div className="text-right">
+              <p className="text-2xl font-bold">{formatCurrency(paidSoFar)}</p>
+              <p className="text-xs text-muted-foreground">paid so far</p>
+            </div>
           </div>
         </div>
+      )}
 
-        {/* Pie Chart */}
+      <div className="grid lg:grid-cols-3 gap-6">
+        {/* Main Content */}
+        <div className="lg:col-span-2 space-y-6">
+          {/* This Month */}
+          {isLoading ? (
+            <div className="bg-card rounded-2xl border border-border/50 p-8 text-center text-muted-foreground">
+              <Loader2 className="w-6 h-6 animate-spin mx-auto mb-2" /> Loading...
+            </div>
+          ) : sorted.length === 0 ? (
+            <div className="bg-card rounded-2xl border border-border/50 p-8 text-center">
+              <Clock className="w-10 h-10 text-muted-foreground mx-auto mb-3" />
+              <p className="text-sm font-medium">No recurring expenses yet</p>
+              <p className="text-xs text-muted-foreground mt-1">
+                Click "Auto-Detect" to scan your transactions, or add one manually.
+              </p>
+            </div>
+          ) : (
+            <>
+              {thisMonth.length > 0 && (
+                <div className="bg-card rounded-2xl border border-border/50 overflow-hidden">
+                  <div className="px-5 py-3 border-b border-border/30">
+                    <p className="text-xs font-semibold uppercase tracking-wider text-primary">This Month</p>
+                  </div>
+                  <div className="divide-y divide-border/30">
+                    {thisMonth.map(r => (
+                      <RecurringRow key={r.id} expense={r} onEdit={() => { setEditExpense(r); setShowModal(true) }} />
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {upcoming.length > 0 && (
+                <div className="bg-card rounded-2xl border border-border/50 overflow-hidden">
+                  <div className="px-5 py-3 border-b border-border/30">
+                    <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Upcoming</p>
+                  </div>
+                  <div className="divide-y divide-border/30">
+                    {upcoming.map(r => (
+                      <RecurringRow key={r.id} expense={r} onEdit={() => { setEditExpense(r); setShowModal(true) }} />
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {inactive.length > 0 && (
+                <div className="bg-card rounded-2xl border border-border/50 overflow-hidden opacity-60">
+                  <div className="px-5 py-3 border-b border-border/30">
+                    <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Inactive</p>
+                  </div>
+                  <div className="divide-y divide-border/30">
+                    {inactive.map(r => (
+                      <RecurringRow key={r.id} expense={r} onEdit={() => { setEditExpense(r); setShowModal(true) }} />
+                    ))}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
+        {/* Pie Chart Sidebar */}
         <div>
           <div className="bg-card rounded-2xl border border-border/50 p-6">
             <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-4">By Category</p>

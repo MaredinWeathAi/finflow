@@ -16,6 +16,7 @@ import {
   Users,
   Shield,
   Tag,
+  Repeat,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/authStore'
@@ -28,6 +29,7 @@ const clientNavItems = [
   { to: '/budgets', icon: PieChart, label: 'Budgets' },
   { to: '/cashflow', icon: TrendingUp, label: 'Cash Flow' },
   { to: '/accounts', icon: Wallet, label: 'Accounts' },
+  { to: '/recurring', icon: Repeat, label: 'Recurrings' },
   { to: '/transactions', icon: ArrowLeftRight, label: 'Transactions' },
   { to: '/categories', icon: Tag, label: 'Categories' },
   { to: '/upload', icon: Upload, label: 'Upload' },

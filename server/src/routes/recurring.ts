@@ -3,6 +3,26 @@ import { db } from '../db/database.js';
 
 const router = Router();
 
+// ---------------------------------------------------------------------------
+// Helper: extract a "core name" for grouping similar transactions
+// ---------------------------------------------------------------------------
+function recurringCoreName(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[#\-_:\/\\*]+/g, ' ')
+    .replace(/\b\d+\b/g, '')           // drop standalone numbers
+    .replace(/\d+\.\d+/g, '')          // drop decimal numbers
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// ---------------------------------------------------------------------------
+// Helper: determine which calendar month a date falls in (YYYY-MM)
+// ---------------------------------------------------------------------------
+function monthKey(dateStr: string): string {
+  return dateStr.slice(0, 7); // "2026-03-11" → "2026-03"
+}
+
 // GET / - list recurring expenses with joined category info
 router.get('/', (req: Request, res: Response) => {
   try {
@@ -200,6 +220,185 @@ router.delete('/:id', (req: Request, res: Response) => {
   } catch (error) {
     console.error('Delete recurring error:', error);
     res.status(500).json({ error: 'Failed to delete recurring expense' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /detect - Auto-detect recurring transactions from history
+// Scans the last 6 months of transactions, groups by core name,
+// and promotes any that appear in 2+ distinct calendar months.
+// Also deactivates stale recurrings not seen in 4+ months.
+// ---------------------------------------------------------------------------
+router.post('/detect', (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.id;
+    const now = new Date();
+    const sixMonthsAgo = new Date(now);
+    sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+    const cutoff = sixMonthsAgo.toISOString().slice(0, 10);
+
+    // 1. Fetch all transactions in the last 6 months
+    const transactions = db
+      .prepare(
+        `SELECT t.name, t.amount, t.date, t.category_id,
+                c.name as category_name, c.icon as category_icon, c.color as category_color
+         FROM transactions t
+         LEFT JOIN categories c ON t.category_id = c.id
+         WHERE t.user_id = ? AND t.date >= ?
+         ORDER BY t.date DESC`
+      )
+      .all(userId, cutoff) as Array<{
+        name: string; amount: number; date: string; category_id: string | null;
+        category_name: string | null; category_icon: string | null; category_color: string | null;
+      }>;
+
+    // 2. Group transactions by core name
+    const groups = new Map<string, {
+      names: Map<string, number>; // original name → count
+      months: Set<string>;
+      amounts: number[];
+      category_id: string | null;
+      category_name: string | null;
+      category_icon: string | null;
+      category_color: string | null;
+      latestDate: string;
+    }>();
+
+    for (const tx of transactions) {
+      const core = recurringCoreName(tx.name);
+      if (core.length < 3) continue;
+
+      if (!groups.has(core)) {
+        groups.set(core, {
+          names: new Map(),
+          months: new Set(),
+          amounts: [],
+          category_id: tx.category_id,
+          category_name: tx.category_name,
+          category_icon: tx.category_icon,
+          category_color: tx.category_color,
+          latestDate: tx.date,
+        });
+      }
+
+      const g = groups.get(core)!;
+      g.months.add(monthKey(tx.date));
+      g.amounts.push(Math.abs(tx.amount));
+      g.names.set(tx.name, (g.names.get(tx.name) || 0) + 1);
+      if (tx.date > g.latestDate) g.latestDate = tx.date;
+      // Use the most common category
+      if (tx.category_id && !g.category_id) {
+        g.category_id = tx.category_id;
+        g.category_name = tx.category_name;
+        g.category_icon = tx.category_icon;
+        g.category_color = tx.category_color;
+      }
+    }
+
+    // 3. Filter: keep only groups that appear in 2+ distinct months
+    const candidates: Array<{
+      name: string;
+      amount: number;
+      monthCount: number;
+      category_id: string | null;
+      category_name: string | null;
+      latestDate: string;
+    }> = [];
+
+    for (const [_core, g] of groups) {
+      if (g.months.size >= 2) {
+        // Pick the most common original name
+        let bestName = '';
+        let bestCount = 0;
+        for (const [n, count] of g.names) {
+          if (count > bestCount) { bestName = n; bestCount = count; }
+        }
+        // Use median amount
+        const sorted = [...g.amounts].sort((a, b) => a - b);
+        const median = sorted[Math.floor(sorted.length / 2)];
+
+        candidates.push({
+          name: bestName,
+          amount: median,
+          monthCount: g.months.size,
+          category_id: g.category_id,
+          category_name: g.category_name,
+          latestDate: g.latestDate,
+        });
+      }
+    }
+
+    // 4. Check which candidates are already tracked as recurring
+    const existing = db
+      .prepare('SELECT id, name, amount, is_active FROM recurring_expenses WHERE user_id = ?')
+      .all(userId) as Array<{ id: string; name: string; amount: number; is_active: number }>;
+
+    const existingCores = new Set(existing.map(e => recurringCoreName(e.name)));
+
+    // 5. Auto-create new recurring expenses for untracked patterns
+    const created: string[] = [];
+    const insertStmt = db.prepare(
+      `INSERT INTO recurring_expenses (id, user_id, name, amount, category_id, frequency, next_date, is_active, notes, price_history, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 'monthly', ?, 1, 'Auto-detected from transaction history', ?, ?, ?)`
+    );
+
+    const createBatch = db.transaction(() => {
+      for (const c of candidates) {
+        const core = recurringCoreName(c.name);
+        if (existingCores.has(core)) continue;
+
+        const id = crypto.randomUUID();
+        const nowStr = new Date().toISOString();
+        // Estimate next date: same day next month from latest transaction
+        const latest = new Date(c.latestDate);
+        latest.setMonth(latest.getMonth() + 1);
+        const nextDate = latest.toISOString().slice(0, 10);
+        const priceHistory = JSON.stringify([{ date: nowStr, amount: c.amount }]);
+
+        insertStmt.run(id, userId, c.name, c.amount, c.category_id, nextDate, priceHistory, nowStr, nowStr);
+        created.push(c.name);
+        existingCores.add(core); // prevent duplicates within batch
+      }
+    });
+    createBatch();
+
+    // 6. Deactivate stale recurrings not seen in 4+ months
+    const fourMonthsAgo = new Date(now);
+    fourMonthsAgo.setMonth(fourMonthsAgo.getMonth() - 4);
+    const staleCutoff = fourMonthsAgo.toISOString().slice(0, 10);
+
+    // For each active recurring, check if any matching transaction exists in last 4 months
+    const activeRecurrings = db
+      .prepare('SELECT id, name FROM recurring_expenses WHERE user_id = ? AND is_active = 1')
+      .all(userId) as Array<{ id: string; name: string }>;
+
+    const deactivated: string[] = [];
+    const deactivateStmt = db.prepare(
+      `UPDATE recurring_expenses SET is_active = 0, updated_at = ? WHERE id = ?`
+    );
+
+    for (const rec of activeRecurrings) {
+      const core = recurringCoreName(rec.name);
+      // Check if any transaction with this core name exists in the last 4 months
+      const recentMatch = transactions.find(
+        tx => recurringCoreName(tx.name) === core && tx.date >= staleCutoff
+      );
+      if (!recentMatch) {
+        deactivateStmt.run(new Date().toISOString(), rec.id);
+        deactivated.push(rec.name);
+      }
+    }
+
+    res.json({
+      detected: candidates.length,
+      created: created.length,
+      createdNames: created,
+      deactivated: deactivated.length,
+      deactivatedNames: deactivated,
+    });
+  } catch (error) {
+    console.error('Detect recurring error:', error);
+    res.status(500).json({ error: 'Failed to detect recurring transactions' });
   }
 });
 
