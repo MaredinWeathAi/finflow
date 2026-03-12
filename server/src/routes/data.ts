@@ -301,6 +301,13 @@ router.delete('/reset', (req: Request, res: Response) => {
     const userId = req.user!.id;
 
     const resetData = db.transaction(() => {
+      // Clear upload/processing tables first (foreign key dependencies)
+      db.prepare('DELETE FROM pending_items WHERE user_id = ?').run(userId);
+      db.prepare('DELETE FROM uploaded_files WHERE user_id = ?').run(userId);
+      db.prepare('DELETE FROM upload_sessions WHERE user_id = ?').run(userId);
+      db.prepare('DELETE FROM clarifications WHERE user_id = ?').run(userId);
+      db.prepare('DELETE FROM category_rules WHERE user_id = ?').run(userId);
+      // Clear financial data
       db.prepare('DELETE FROM net_worth_snapshots WHERE user_id = ?').run(userId);
       db.prepare('DELETE FROM investments WHERE user_id = ?').run(userId);
       db.prepare('DELETE FROM recurring_expenses WHERE user_id = ?').run(userId);
