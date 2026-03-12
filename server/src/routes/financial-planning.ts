@@ -572,7 +572,7 @@ router.get('/comprehensive', (req: Request, res: Response) => {
     // 4. Recurring expenses
     const recurring = db
       .prepare(
-        `SELECT id, name, amount, category_id, frequency, next_date, is_active,
+        `SELECT r.id, r.name, r.amount, r.category_id, r.frequency, r.next_date, r.is_active,
                 c.name as category_name, c.icon as category_icon, c.color as category_color
          FROM recurring_expenses r
          LEFT JOIN categories c ON r.category_id = c.id
