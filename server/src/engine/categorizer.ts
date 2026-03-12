@@ -1,5 +1,6 @@
 import { db } from '../db/database.js';
 import crypto from 'crypto';
+import { lookupMerchant, getMerchantDbStats } from './merchant-db.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -259,19 +260,25 @@ export function categorizeItem(
 ): CategorizationResult {
   const lowerName = name.toLowerCase().trim();
 
-  // 1. Check user's custom category_rules table
+  // 1. Check user's custom category_rules table (highest priority — user overrides)
   const userRuleResult = matchUserRules(lowerName, userId);
   if (userRuleResult) {
     return userRuleResult;
   }
 
-  // 2. Fall back to built-in keyword map
+  // 2. Smart Merchant Recognition — 1500+ known US merchants & brands
+  const merchantResult = matchMerchantDb(lowerName, userId);
+  if (merchantResult) {
+    return merchantResult;
+  }
+
+  // 3. Fall back to built-in keyword map (generic terms like "restaurant", "gas")
   const keywordResult = matchKeywordMap(lowerName, userId);
   if (keywordResult) {
     return keywordResult;
   }
 
-  // 3. No match found
+  // 4. No match found
   return { categoryId: null, confidence: 0 };
 }
 
@@ -332,6 +339,24 @@ function matchUserRules(lowerName: string, userId: string): CategorizationResult
   }
 
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// Smart Merchant Database matching (1500+ known US merchants)
+// ---------------------------------------------------------------------------
+
+function matchMerchantDb(lowerName: string, userId: string): CategorizationResult | null {
+  const merchant = lookupMerchant(lowerName);
+  if (!merchant) return null;
+
+  // Map the merchant's category name to the user's category ID
+  const categoryId = getCategoryByKeyword(merchant.category, userId);
+
+  return {
+    categoryId,
+    confidence: merchant.confidence,
+    categoryName: merchant.category,
+  };
 }
 
 // ---------------------------------------------------------------------------

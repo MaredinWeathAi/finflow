@@ -1,8 +1,42 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../db/database.js';
 import bcrypt from 'bcryptjs';
+import { getMerchantDbStats } from '../engine/merchant-db.js';
+import { lookupMerchant } from '../engine/merchant-db.js';
 
 const router = Router();
+
+// GET /merchant-lookup?name=... - test merchant recognition
+router.get('/merchant-lookup', (req: Request, res: Response) => {
+  try {
+    const name = req.query.name as string;
+    if (!name) {
+      res.status(400).json({ error: 'name query parameter required' });
+      return;
+    }
+    const result = lookupMerchant(name);
+    const stats = getMerchantDbStats();
+    res.json({
+      query: name,
+      match: result,
+      merchantDbSize: stats.totalEntries,
+    });
+  } catch (error) {
+    console.error('Merchant lookup error:', error);
+    res.status(500).json({ error: 'Failed to lookup merchant' });
+  }
+});
+
+// GET /merchant-stats - get merchant DB statistics
+router.get('/merchant-stats', (_req: Request, res: Response) => {
+  try {
+    const stats = getMerchantDbStats();
+    res.json(stats);
+  } catch (error) {
+    console.error('Merchant stats error:', error);
+    res.status(500).json({ error: 'Failed to get stats' });
+  }
+});
 
 // POST /seed-sample - seed sample data for the authenticated user
 router.post('/seed-sample', (req: Request, res: Response) => {
