@@ -22,6 +22,7 @@ import insightsRoutes from './routes/insights.js';
 import uploadRoutes from './routes/upload.js';
 import clarificationsRoutes from './routes/clarifications.js';
 import adminRoutes from './routes/admin.js';
+import financialPlanningRoutes from './routes/financial-planning.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -145,6 +146,7 @@ app.use('/api/insights', authMiddleware, insightsRoutes);
 app.use('/api/upload', authMiddleware, uploadRoutes);
 app.use('/api/clarifications', authMiddleware, clarificationsRoutes);
 app.use('/api/admin', authMiddleware, adminMiddleware, adminRoutes);
+app.use('/api/financial-planning', authMiddleware, financialPlanningRoutes);
 
 // ============================================================
 // ERROR HANDLING

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Plus, X, Target, PartyPopper } from 'lucide-react'
+import { Plus, X, Target, PartyPopper, Lightbulb } from 'lucide-react'
 import { differenceInDays, parseISO, format } from 'date-fns'
 import { cn, formatCurrency } from '@/lib/utils'
 import { useGoals } from '@/hooks/useGoals'
@@ -7,6 +7,14 @@ import { PageHeader } from '@/components/shared/PageHeader'
 import { api } from '@/lib/api'
 import { toast } from 'sonner'
 import type { Goal } from '@/types'
+
+interface Recommendation {
+  name: string;
+  suggested_amount: number;
+  icon: string;
+  color: string;
+  reason: string;
+}
 
 function GoalCard({ goal, onContribute, onEdit }: {
   goal: Goal; onContribute: () => void; onEdit: () => void
@@ -76,6 +84,44 @@ function GoalCard({ goal, onContribute, onEdit }: {
   )
 }
 
+function RecommendationCard({ recommendation, onSelect }: {
+  recommendation: Recommendation;
+  onSelect: (rec: Recommendation) => void;
+}) {
+  return (
+    <div
+      className="bg-card rounded-2xl border border-border/50 p-5 hover:border-border transition-colors cursor-pointer"
+      onClick={() => onSelect(recommendation)}
+    >
+      <div className="flex items-start justify-between mb-3">
+        <div className="flex items-center gap-3">
+          <div className="w-11 h-11 rounded-xl flex items-center justify-center text-xl" style={{ backgroundColor: `${recommendation.color}20` }}>
+            {recommendation.icon}
+          </div>
+          <h3 className="text-sm font-semibold">{recommendation.name}</h3>
+        </div>
+      </div>
+
+      <p className="text-xs text-muted-foreground mb-4 leading-relaxed">
+        {recommendation.reason}
+      </p>
+
+      <div className="flex items-center justify-between">
+        <span className="text-sm font-medium" style={{ color: recommendation.color }}>
+          {formatCurrency(recommendation.suggested_amount)}
+        </span>
+        <button
+          onClick={e => { e.stopPropagation(); onSelect(recommendation) }}
+          className="text-xs font-medium px-3 py-1.5 rounded-lg hover:bg-accent transition-colors"
+          style={{ color: recommendation.color }}
+        >
+          Create Goal
+        </button>
+      </div>
+    </div>
+  )
+}
+
 function ContributeModal({ open, onClose, goal, onSave }: {
   open: boolean; onClose: () => void; goal: Goal | null; onSave: () => void
 }) {
@@ -115,8 +161,8 @@ function ContributeModal({ open, onClose, goal, onSave }: {
   )
 }
 
-function AddGoalModal({ open, onClose, goal, onSave }: {
-  open: boolean; onClose: () => void; goal: Goal | null; onSave: () => void
+function AddGoalModal({ open, onClose, goal, recommendation, onSave }: {
+  open: boolean; onClose: () => void; goal: Goal | null; recommendation?: Recommendation | null; onSave: () => void
 }) {
   const [form, setForm] = useState({
     name: '',
@@ -127,19 +173,42 @@ function AddGoalModal({ open, onClose, goal, onSave }: {
     color: '#A78BFA',
   })
 
-  // Reset form when modal opens or goal changes
+  // Reset form when modal opens or goal/recommendation changes
   useEffect(() => {
     if (open) {
-      setForm({
-        name: goal?.name || '',
-        target_amount: goal?.target_amount?.toString() || '',
-        current_amount: goal?.current_amount?.toString() || '0',
-        target_date: goal?.target_date || '',
-        icon: goal?.icon || '🎯',
-        color: goal?.color || '#A78BFA',
-      })
+      if (goal) {
+        // Editing existing goal
+        setForm({
+          name: goal.name || '',
+          target_amount: goal.target_amount?.toString() || '',
+          current_amount: goal.current_amount?.toString() || '0',
+          target_date: goal.target_date || '',
+          icon: goal.icon || '🎯',
+          color: goal.color || '#A78BFA',
+        })
+      } else if (recommendation) {
+        // Pre-fill from recommendation
+        setForm({
+          name: recommendation.name,
+          target_amount: recommendation.suggested_amount.toString(),
+          current_amount: '0',
+          target_date: '',
+          icon: recommendation.icon,
+          color: recommendation.color,
+        })
+      } else {
+        // New goal from scratch
+        setForm({
+          name: '',
+          target_amount: '',
+          current_amount: '0',
+          target_date: '',
+          icon: '🎯',
+          color: '#A78BFA',
+        })
+      }
     }
-  }, [open, goal])
+  }, [open, goal, recommendation])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -219,9 +288,36 @@ export function GoalsPage() {
   const [showAdd, setShowAdd] = useState(false)
   const [editGoal, setEditGoal] = useState<Goal | null>(null)
   const [contributeGoal, setContributeGoal] = useState<Goal | null>(null)
+  const [recommendations, setRecommendations] = useState<Recommendation[]>([])
+  const [loadingRecommendations, setLoadingRecommendations] = useState(false)
 
   const active = goals.filter(g => !g.is_completed)
   const completed = goals.filter(g => g.is_completed)
+
+  // Fetch recommendations when component mounts or when active goals change
+  useEffect(() => {
+    if (active.length < 3) {
+      setLoadingRecommendations(true)
+      api
+        .get('/goals/recommendations')
+        .then((res: any) => setRecommendations(Array.isArray(res) ? res : (res?.recommendations || [])))
+        .catch(err => {
+          console.error('Failed to fetch recommendations:', err)
+          setRecommendations([])
+        })
+        .finally(() => setLoadingRecommendations(false))
+    } else {
+      setRecommendations([])
+    }
+  }, [active.length])
+
+  const handleSelectRecommendation = (recommendation: Recommendation) => {
+    setEditGoal(null)
+    // Pass recommendation to modal
+    const modal = { ...editGoal, _recommendation: recommendation } as Goal & { _recommendation: Recommendation }
+    // We'll use a different approach - just set a flag and use recommendation prop
+    setShowAdd(true)
+  }
 
   return (
     <div>
@@ -256,6 +352,37 @@ export function GoalsPage() {
         </div>
       ) : (
         <>
+          {/* Smart Suggestions - show when < 3 active goals */}
+          {active.length < 3 && recommendations.length > 0 && (
+            <div className="mb-8">
+              <div className="flex items-center gap-2 mb-4">
+                <Lightbulb className="w-5 h-5 text-primary" />
+                <h2 className="text-sm font-semibold">Smart Suggestions</h2>
+              </div>
+              <div
+                className="rounded-2xl border border-border/50 p-6 mb-6"
+                style={{
+                  background: `linear-gradient(135deg, rgba(167,139,250,0.05) 0%, transparent 100%)`,
+                }}
+              >
+                <div className="grid sm:grid-cols-2 lg:grid-cols-2 gap-4">
+                  {recommendations.map((rec, idx) => (
+                    <RecommendationCard
+                      key={idx}
+                      recommendation={rec}
+                      onSelect={() => {
+                        // Store the recommendation and open modal
+                        localStorage.setItem('_pendingRecommendation', JSON.stringify(rec))
+                        setEditGoal(null)
+                        setShowAdd(true)
+                      }}
+                    />
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Active Goals */}
           <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
             {active.map(g => (
@@ -287,7 +414,27 @@ export function GoalsPage() {
         </>
       )}
 
-      <AddGoalModal open={showAdd} onClose={() => { setShowAdd(false); setEditGoal(null) }} goal={editGoal} onSave={refetch} />
+      <AddGoalModal
+        open={showAdd}
+        onClose={() => {
+          setShowAdd(false)
+          setEditGoal(null)
+          localStorage.removeItem('_pendingRecommendation')
+        }}
+        goal={editGoal}
+        recommendation={editGoal ? undefined : (() => {
+          try {
+            const stored = localStorage.getItem('_pendingRecommendation')
+            return stored ? JSON.parse(stored) : null
+          } catch {
+            return null
+          }
+        })()}
+        onSave={() => {
+          localStorage.removeItem('_pendingRecommendation')
+          refetch()
+        }}
+      />
       <ContributeModal open={!!contributeGoal} onClose={() => setContributeGoal(null)} goal={contributeGoal} onSave={refetch} />
     </div>
   )

@@ -231,16 +231,27 @@ export function InvestmentsPage() {
                 </ResponsiveContainer>
               </div>
             ) : null}
-            <div className="mt-4 space-y-2">
+            <div className="mt-4 space-y-3">
               {pieData.map(d => {
-                const pct = totalValue > 0 ? (d.value / totalValue * 100).toFixed(1) : '0'
+                const pct = totalValue > 0 ? (d.value / totalValue * 100) : 0
                 return (
-                  <div key={d.name} className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <div className="w-3 h-3 rounded-full" style={{ backgroundColor: d.color }} />
-                      <span className="text-xs">{d.name}</span>
+                  <div key={d.name}>
+                    <div className="flex items-center justify-between mb-1">
+                      <div className="flex items-center gap-2">
+                        <div className="w-3 h-3 rounded-full" style={{ backgroundColor: d.color }} />
+                        <span className="text-xs font-medium">{d.name}</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-muted-foreground">{formatCurrency(d.value)}</span>
+                        <span className="text-xs font-semibold tabular-nums w-12 text-right">{pct.toFixed(1)}%</span>
+                      </div>
                     </div>
-                    <span className="text-xs font-medium tabular-nums">{pct}%</span>
+                    <div className="h-1.5 rounded-full bg-muted overflow-hidden">
+                      <div
+                        className="h-full rounded-full transition-all duration-700"
+                        style={{ width: `${pct}%`, backgroundColor: d.color }}
+                      />
+                    </div>
                   </div>
                 )
               })}

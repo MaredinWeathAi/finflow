@@ -29,6 +29,7 @@ import { UpcomingRecurring } from '@/components/dashboard/UpcomingRecurring'
 import { FinancialHealthCard } from '@/components/dashboard/FinancialHealthCard'
 import { CreditCardDebtCard } from '@/components/dashboard/CreditCardDebtCard'
 import { DataQualityBanner } from '@/components/dashboard/DataQualityBanner'
+import { BudgetBurnRate } from '@/components/dashboard/BudgetBurnRate'
 import { OnboardingWizard } from '@/components/shared/OnboardingWizard'
 
 interface DashboardSummary {
@@ -414,6 +415,26 @@ export function DashboardPage() {
           <SpendingTrendChart />
         </div>
       </div>
+
+      {/* Budget Burn Rate */}
+      {budgets.length > 0 && (
+        <div className="opacity-0 animate-fade-in stagger-7">
+          <BudgetBurnRate
+            budgets={budgets
+              .filter(b => b.category_name && b.amount > 0)
+              .map(b => ({
+                category_name: b.category_name!,
+                category_icon: b.category_icon || '📁',
+                category_color: b.category_color || '#A78BFA',
+                amount: b.amount,
+                spent: b.spent || 0,
+                transaction_count: b.transaction_count || 0,
+              }))}
+            dayOfMonth={summary?.dayOfMonth || new Date().getDate()}
+            daysInMonth={summary?.daysInMonth || new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).getDate()}
+          />
+        </div>
+      )}
 
       {/* Trending Categories */}
       <div className="opacity-0 animate-fade-in stagger-7">
