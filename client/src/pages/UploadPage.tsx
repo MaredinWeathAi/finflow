@@ -1605,14 +1605,8 @@ export function UploadPage() {
     try {
       const result = await api.post<{ imported: number }>(`/upload/sessions/${currentSession.id}/import`)
       toast.success(`${result.imported} transactions imported successfully`)
-      setPendingItems((prev) =>
-        prev.map((item) =>
-          item.status === 'approved' ? { ...item, status: 'imported' as const } : item
-        )
-      )
-      setCurrentSession((prev) =>
-        prev ? { ...prev, status: 'completed', imported_items: result.imported } : null
-      )
+      // Re-fetch session details so frontend state matches the backend exactly
+      await fetchSessionDetails(currentSession.id)
       await fetchSessions()
       // Run data quality check in background to improve categorization
       api.post('/data/quality-check?apply=true').catch(() => {})
@@ -1631,16 +1625,8 @@ export function UploadPage() {
     try {
       const result = await api.post<{ imported: number }>(`/upload/sessions/${currentSession.id}/import`, { importAll: true })
       toast.success(`${result.imported} transactions imported successfully`)
-      setPendingItems((prev) =>
-        prev.map((item) =>
-          item.status !== 'skipped'
-            ? { ...item, status: 'imported' as const }
-            : item
-        )
-      )
-      setCurrentSession((prev) =>
-        prev ? { ...prev, status: 'completed', imported_items: result.imported } : null
-      )
+      // Re-fetch session details so frontend state matches the backend exactly
+      await fetchSessionDetails(currentSession.id)
       await fetchSessions()
       // Run data quality check in background to improve categorization
       api.post('/data/quality-check?apply=true').catch(() => {})
