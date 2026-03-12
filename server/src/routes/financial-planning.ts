@@ -3,6 +3,92 @@ import { db } from '../db/database.js';
 
 const router = Router();
 
+const LIABILITY_TYPES = ['credit', 'loan', 'mortgage'];
+
+/**
+ * Round to 2 decimal places to avoid floating-point artifacts
+ * like 112791.15999999999 in monetary values.
+ */
+function round2(n: number): number {
+  return Math.round((n + Number.EPSILON) * 100) / 100;
+}
+
+/**
+ * Calculate net worth correctly, avoiding double-counting.
+ *
+ * Investment-type accounts whose balance mirrors linked holdings
+ * must NOT be counted separately from the investment portfolio.
+ * We detect this by checking which account IDs have linked investments.
+ */
+function calculateNetWorth(
+  accounts: any[],
+  investments: any[]
+): {
+  netWorth: number;
+  totalAssets: number;
+  totalLiabilities: number;
+  investmentPortfolioValue: number;
+  cashAssets: number;
+  assetsByType: Record<string, number>;
+  liabilitiesByType: Record<string, number>;
+} {
+  // Build set of account IDs that have linked investment holdings
+  const investmentAccountIds = new Set<string>();
+  for (const inv of investments) {
+    if (inv.account_id) investmentAccountIds.add(inv.account_id);
+  }
+
+  // Assets: include all non-liability, non-investment-linked accounts
+  let cashAssets = 0;
+  const assetsByType: Record<string, number> = {};
+
+  for (const account of accounts) {
+    if (LIABILITY_TYPES.includes(account.type)) continue;
+    if (investmentAccountIds.has(account.id)) continue; // skip — value comes from holdings
+    if (account.balance <= 0) continue;
+
+    cashAssets += account.balance;
+    assetsByType[account.type] = (assetsByType[account.type] || 0) + account.balance;
+  }
+
+  // Investment portfolio value from individual holdings (single source of truth)
+  let investmentPortfolioValue = 0;
+  for (const inv of investments) {
+    investmentPortfolioValue += inv.shares * inv.current_price;
+  }
+
+  if (investmentPortfolioValue > 0) {
+    assetsByType['investment_portfolio'] = round2(investmentPortfolioValue);
+  }
+
+  const totalAssets = round2(cashAssets + investmentPortfolioValue);
+
+  // Liabilities
+  let totalLiabilities = 0;
+  const liabilitiesByType: Record<string, number> = {};
+
+  for (const account of accounts) {
+    if (account.type === 'credit' || (LIABILITY_TYPES.includes(account.type) && account.balance !== 0)) {
+      const liabilityAmount = Math.abs(account.balance);
+      totalLiabilities += liabilityAmount;
+      liabilitiesByType[account.type] = (liabilitiesByType[account.type] || 0) + liabilityAmount;
+    }
+  }
+
+  totalLiabilities = round2(totalLiabilities);
+  const netWorth = round2(totalAssets - totalLiabilities);
+
+  return {
+    netWorth,
+    totalAssets,
+    totalLiabilities,
+    investmentPortfolioValue: round2(investmentPortfolioValue),
+    cashAssets: round2(cashAssets),
+    assetsByType,
+    liabilitiesByType,
+  };
+}
+
 // Helper: Get current month in YYYY-MM format
 function getCurrentMonth(): string {
   const now = new Date();
@@ -359,68 +445,56 @@ router.get('/liabilities', (req: Request, res: Response) => {
   }
 });
 
-// GET /assets - Returns all positive-balance accounts plus investment portfolio value
+// GET /assets - Returns all positive-balance accounts plus investment portfolio value (no double-counting)
 router.get('/assets', (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
 
-    // Get bank accounts with positive balances
+    // Get all non-liability accounts with positive balances
     const accounts = db
       .prepare(
         `SELECT id, name, type, institution, balance, last_four, icon
          FROM accounts
-         WHERE user_id = ? AND type IN ('checking', 'savings', 'investment') AND balance > 0
+         WHERE user_id = ? AND type NOT IN ('credit', 'loan', 'mortgage') AND balance > 0
          ORDER BY type ASC, name ASC`
       )
       .all(userId) as any[];
 
-    // Get investments
+    // Get investments with account linkage
     const investments = db
       .prepare(
-        `SELECT i.id, i.symbol, i.name, i.shares, i.current_price
+        `SELECT i.id, i.symbol, i.name, i.shares, i.current_price, i.account_id
          FROM investments i
          WHERE i.user_id = ?`
       )
       .all(userId) as any[];
 
-    // Calculate investment portfolio value
-    const investmentPortfolioValue = investments.reduce((sum: number, inv: any) => {
-      return sum + inv.shares * inv.current_price;
-    }, 0);
-
-    // Prepare account assets
-    const accountAssets = accounts.map((account: any) => ({
-      ...account,
-      assetValue: account.balance,
-      assetType: 'account',
-    }));
-
-    // Total assets
-    const totalAccountBalance = accounts.reduce((sum: number, acc: any) => sum + acc.balance, 0);
-    const totalAssets = totalAccountBalance + investmentPortfolioValue;
-
-    // Summary by type
-    const summary = {
-      totalAssets,
-      accountBalance: totalAccountBalance,
-      investmentValue: investmentPortfolioValue,
-      byType: {} as any,
-    };
-
-    for (const account of accounts) {
-      if (!summary.byType[account.type]) {
-        summary.byType[account.type] = {
-          type: account.type,
-          total: 0,
-          count: 0,
-        };
-      }
-      summary.byType[account.type].total += account.balance;
-      summary.byType[account.type].count++;
+    // Build set of account IDs that have linked investment holdings
+    const investmentAccountIds = new Set<string>();
+    for (const inv of investments) {
+      if (inv.account_id) investmentAccountIds.add(inv.account_id);
     }
 
+    const investmentPortfolioValue = round2(
+      investments.reduce((sum: number, inv: any) => sum + inv.shares * inv.current_price, 0)
+    );
+
+    // Separate cash accounts from investment-linked accounts
+    const cashAccounts = accounts.filter(a => !investmentAccountIds.has(a.id));
+    const totalCashBalance = round2(cashAccounts.reduce((sum: number, acc: any) => sum + acc.balance, 0));
+    const totalAssets = round2(totalCashBalance + investmentPortfolioValue);
+
+    // Summary by type (cash accounts only — investments shown separately)
+    const byType: any = {};
+    for (const account of cashAccounts) {
+      if (!byType[account.type]) {
+        byType[account.type] = { type: account.type, total: 0, count: 0 };
+      }
+      byType[account.type].total += account.balance;
+      byType[account.type].count++;
+    }
     if (investmentPortfolioValue > 0) {
-      summary.byType['investment_portfolio'] = {
+      byType['investment_portfolio'] = {
         type: 'investment_portfolio',
         total: investmentPortfolioValue,
         count: investments.length,
@@ -428,13 +502,22 @@ router.get('/assets', (req: Request, res: Response) => {
     }
 
     res.json({
-      accounts: accountAssets,
+      accounts: cashAccounts.map((account: any) => ({
+        ...account,
+        assetValue: account.balance,
+        assetType: 'account',
+      })),
       investments: {
         count: investments.length,
         totalValue: investmentPortfolioValue,
         investments,
       },
-      summary,
+      summary: {
+        totalAssets,
+        cashBalance: totalCashBalance,
+        investmentValue: investmentPortfolioValue,
+        byType,
+      },
     });
   } catch (error) {
     console.error('Get assets error:', error);
@@ -442,91 +525,35 @@ router.get('/assets', (req: Request, res: Response) => {
   }
 });
 
-// GET /net-worth - Comprehensive net worth calculation
+// GET /net-worth - Comprehensive net worth calculation (no double-counting)
 router.get('/net-worth', (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
 
-    // Get all accounts
     const accounts = db
-      .prepare(
-        `SELECT id, name, type, balance
-         FROM accounts
-         WHERE user_id = ?`
-      )
+      .prepare('SELECT id, name, type, balance FROM accounts WHERE user_id = ?')
       .all(userId) as any[];
 
-    // Get all investments
     const investments = db
-      .prepare(
-        `SELECT shares, current_price
-         FROM investments
-         WHERE user_id = ?`
-      )
+      .prepare('SELECT account_id, shares, current_price FROM investments WHERE user_id = ?')
       .all(userId) as any[];
 
-    // Calculate assets
-    let totalAssets = 0;
-    const assetsByType: any = {};
-
-    for (const account of accounts) {
-      if (account.type === 'checking' || account.type === 'savings') {
-        if (account.balance > 0) {
-          totalAssets += account.balance;
-          if (!assetsByType[account.type]) {
-            assetsByType[account.type] = 0;
-          }
-          assetsByType[account.type] += account.balance;
-        }
-      } else if (account.type === 'investment' && account.balance > 0) {
-        totalAssets += account.balance;
-        if (!assetsByType['investment_accounts']) {
-          assetsByType['investment_accounts'] = 0;
-        }
-        assetsByType['investment_accounts'] += account.balance;
-      }
-    }
-
-    // Add investment portfolio value
-    let investmentPortfolioValue = 0;
-    for (const inv of investments) {
-      investmentPortfolioValue += inv.shares * inv.current_price;
-    }
-    totalAssets += investmentPortfolioValue;
-    if (investmentPortfolioValue > 0) {
-      assetsByType['investment_portfolio'] = investmentPortfolioValue;
-    }
-
-    // Calculate liabilities
-    let totalLiabilities = 0;
-    const liabilitiesByType: any = {};
-
-    for (const account of accounts) {
-      if (account.type === 'credit' || account.balance < 0) {
-        const liabilityAmount = Math.abs(account.balance);
-        totalLiabilities += liabilityAmount;
-        if (!liabilitiesByType[account.type]) {
-          liabilitiesByType[account.type] = 0;
-        }
-        liabilitiesByType[account.type] += liabilityAmount;
-      }
-    }
-
-    // Calculate net worth
-    const netWorth = totalAssets - totalLiabilities;
+    const nw = calculateNetWorth(accounts, investments);
 
     res.json({
-      netWorth,
-      totalAssets,
-      totalLiabilities,
+      netWorth: nw.netWorth,
+      totalAssets: nw.totalAssets,
+      totalLiabilities: nw.totalLiabilities,
+      investmentPortfolioValue: nw.investmentPortfolioValue,
+      cashAssets: nw.cashAssets,
       breakdown: {
         assets: {
-          total: totalAssets,
-          byType: assetsByType,
+          total: nw.totalAssets,
+          byType: nw.assetsByType,
         },
         liabilities: {
-          total: totalLiabilities,
-          byType: liabilitiesByType,
+          total: nw.totalLiabilities,
+          byType: nw.liabilitiesByType,
         },
       },
     });
@@ -622,40 +649,8 @@ router.get('/comprehensive', (req: Request, res: Response) => {
       totalRecurring += Math.abs(rec.amount);
     }
 
-    // Assets calculation
-    let totalAssets = 0;
-    const assetsByType: any = {};
-    for (const account of accounts) {
-      if (
-        (account.type === 'checking' || account.type === 'savings' || account.type === 'investment') &&
-        account.balance > 0
-      ) {
-        totalAssets += account.balance;
-        assetsByType[account.type] = (assetsByType[account.type] || 0) + account.balance;
-      }
-    }
-
-    // Investment portfolio value
-    let investmentPortfolioValue = 0;
-    for (const inv of investments) {
-      investmentPortfolioValue += inv.shares * inv.current_price;
-    }
-    totalAssets += investmentPortfolioValue;
-    assetsByType['investment_portfolio'] = investmentPortfolioValue;
-
-    // Liabilities calculation
-    let totalLiabilities = 0;
-    const liabilitiesByType: any = {};
-    for (const account of accounts) {
-      if (account.type === 'credit' || account.balance < 0) {
-        const liabilityAmount = Math.abs(account.balance);
-        totalLiabilities += liabilityAmount;
-        liabilitiesByType[account.type] = (liabilitiesByType[account.type] || 0) + liabilityAmount;
-      }
-    }
-
-    // Net worth
-    const netWorth = totalAssets - totalLiabilities;
+    // Net worth calculation using shared helper (avoids double-counting investments)
+    const nw = calculateNetWorth(accounts, investments);
 
     // Goals progress
     const goalStats = {
@@ -726,26 +721,29 @@ router.get('/comprehensive', (req: Request, res: Response) => {
         }),
       },
       assets: {
-        total: totalAssets,
-        byType: assetsByType,
+        total: nw.totalAssets,
+        byType: nw.assetsByType,
       },
       liabilities: {
-        total: totalLiabilities,
-        byType: liabilitiesByType,
+        total: nw.totalLiabilities,
+        byType: nw.liabilitiesByType,
       },
       netWorth: {
-        total: netWorth,
-        assets: totalAssets,
-        liabilities: totalLiabilities,
+        total: nw.netWorth,
+        assets: nw.totalAssets,
+        liabilities: nw.totalLiabilities,
+        investmentPortfolioValue: nw.investmentPortfolioValue,
+        cashAssets: nw.cashAssets,
         breakdown: {
-          assets: assetsByType,
-          liabilities: liabilitiesByType,
+          assets: nw.assetsByType,
+          liabilities: nw.liabilitiesByType,
         },
       },
       summary: {
-        netWorth,
-        totalAssets,
-        totalLiabilities,
+        netWorth: nw.netWorth,
+        totalAssets: nw.totalAssets,
+        totalLiabilities: nw.totalLiabilities,
+        investmentPortfolioValue: nw.investmentPortfolioValue,
         monthlyExpenses: totalExpenses,
         recurringExpenses: totalRecurring,
         activeGoals: goalStats.active,
@@ -1014,23 +1012,9 @@ router.get('/sync/status', (req: Request, res: Response) => {
     const budgetCount = (db.prepare('SELECT COUNT(*) as count FROM budgets WHERE user_id = ?').get(userId) as any).count;
     const goalCount = (db.prepare('SELECT COUNT(*) as count FROM goals WHERE user_id = ?').get(userId) as any).count;
 
-    const portfolioResult = db
-      .prepare(`SELECT COALESCE(SUM(shares * current_price), 0) as total FROM investments WHERE user_id = ?`)
-      .get(userId) as any;
-
-    const accounts = db.prepare('SELECT type, balance FROM accounts WHERE user_id = ?').all(userId) as any[];
-    let totalAssets = 0;
-    let totalLiabilities = 0;
-    const liabilityTypes = ['credit', 'loan', 'mortgage'];
-
-    for (const acc of accounts) {
-      if (liabilityTypes.includes(acc.type)) {
-        totalLiabilities += Math.abs(acc.balance);
-      } else {
-        totalAssets += acc.balance;
-      }
-    }
-    totalAssets += portfolioResult.total;
+    const accounts = db.prepare('SELECT id, type, balance FROM accounts WHERE user_id = ?').all(userId) as any[];
+    const investments = db.prepare('SELECT account_id, shares, current_price FROM investments WHERE user_id = ?').all(userId) as any[];
+    const nw = calculateNetWorth(accounts, investments);
 
     res.json({
       clientId: userId,
@@ -1041,10 +1025,11 @@ router.get('/sync/status', (req: Request, res: Response) => {
       syncReady: accountCount > 0 && investmentCount > 0,
       counts: { accounts: accountCount, investments: investmentCount, transactions: transactionCount, budgets: budgetCount, goals: goalCount },
       netWorth: {
-        total: totalAssets - totalLiabilities,
-        totalAssets,
-        totalLiabilities,
-        investmentPortfolioValue: portfolioResult.total,
+        total: nw.netWorth,
+        totalAssets: nw.totalAssets,
+        totalLiabilities: nw.totalLiabilities,
+        investmentPortfolioValue: nw.investmentPortfolioValue,
+        cashAssets: nw.cashAssets,
       },
     });
   } catch (error) {

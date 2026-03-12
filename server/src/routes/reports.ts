@@ -415,7 +415,9 @@ router.get('/dashboard-summary', (req: Request, res: Response) => {
        ORDER BY name`
     ).all(userId) as any[];
 
-    const totalCCDebt = creditCards.reduce((sum, cc) => sum + (cc.balance || 0), 0);
+    // CC debt should be a positive number representing how much is owed.
+    // Credit card balances are stored as negative values in the DB.
+    const totalCCDebt = creditCards.reduce((sum, cc) => sum + Math.abs(cc.balance || 0), 0);
 
     // CC spending this month (charges on CC accounts)
     const ccSpendingResult = db.prepare(
