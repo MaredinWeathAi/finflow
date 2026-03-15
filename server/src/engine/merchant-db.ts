@@ -216,12 +216,19 @@ const SHOPPING: MerchantEntry[] = [
 // TRANSPORTATION — Gas, Rideshare, Auto, Transit
 // ---------------------------------------------------------------------------
 const TRANSPORTATION: MerchantEntry[] = [
-  // Gas stations
+  // Gas stations & convenience stores
   'shell', 'chevron', 'exxon', 'exxonmobil', 'bp ',
   'sunoco', 'marathon', 'valero', 'citgo', 'phillips 66',
   'conoco', 'conocophillips', 'arco', 'speedway',
   'circle k', 'quiktrip', 'qt ', 'wawa', 'sheetz',
   'racetrac', 'raceway', 'murphy usa', 'murphy oil',
+  '7-eleven', '7 eleven', '7-11', 'seven eleven', 'seven-eleven',
+  'casey\'s', 'caseys', 'casey general', 'kwik trip', 'kwiktrip',
+  'pilot flying j', 'pilot travel', 'flying j', 'loves travel',
+  'love\'s travel', 'ta travel', 'petro stopping',
+  'cumberland farms', 'cumby', 'kum & go', 'kum and go',
+  'maverick', 'mapco', 'thorntons', 'royal farms', 'rofo',
+  'quick check', 'quickchek', 'plaid pantry', 'ampm', 'am pm',
   'buc-ee', 'bucee', 'kum & go', 'kum and go',
   'casey\'s', 'caseys', 'pilot flying', 'pilot travel',
   'flying j', 'love\'s travel', 'loves travel',
@@ -691,12 +698,56 @@ const SORTED_MERCHANTS = [...MERCHANT_DATABASE].sort(
  * Look up a transaction name against the merchant knowledge base.
  * Returns the best (longest / most specific) match, or null.
  */
+// Common POS / payment processor prefixes that appear on bank statements.
+// Stripping these reveals the actual merchant name underneath.
+const POS_PREFIXES = [
+  'sq *', 'sq*', 'sqc*', 'sqi*',             // Square
+  'tst*', 'tst ',                              // Toast (restaurant POS)
+  'sp ', 'sp *', 'sp*',                        // Shopify
+  'pos ', 'pos debit ',                         // Generic POS
+  'purchase ', 'purchase authorized on ',       // Generic purchase
+  'checkcard ', 'chkcard ',                     // Debit card
+  'visa ', 'visa debit ',                       // Visa
+  'mc ', 'mastercard ',                         // Mastercard
+  'debit card purchase ',                       // Generic debit
+  'recurring payment ',                         // Recurring
+  'pre-auth ', 'preauth ',                      // Pre-authorization
+  'ach ', 'ach debit ',                         // ACH
+  'dd ', 'dd*',                                 // DoorDash merchant prefix
+  'grubhub+ ', 'gh+ ',                         // Grubhub merchant prefix
+  'pp*', 'pp *', 'paypal *', 'paypal*',        // PayPal
+  'goo*', 'google *',                           // Google
+  'appl*', 'apple.com/bill',                    // Apple
+  'amzn mktp us*', 'amzn mktp ',               // Amazon Marketplace
+  'zelle ',                                     // Zelle
+  'venmo *', 'venmo*',                          // Venmo merchants
+  'cko*',                                       // Checkout.com
+];
+
 export function lookupMerchant(transactionName: string): MerchantEntry | null {
   const lower = transactionName.toLowerCase().trim();
 
+  // Try matching directly first
   for (const entry of SORTED_MERCHANTS) {
     if (lower.includes(entry.pattern)) {
       return entry;
+    }
+  }
+
+  // Strip POS prefixes and try again
+  let stripped = lower;
+  for (const prefix of POS_PREFIXES) {
+    if (stripped.startsWith(prefix)) {
+      stripped = stripped.slice(prefix.length).trim();
+      break;
+    }
+  }
+
+  if (stripped !== lower && stripped.length >= 3) {
+    for (const entry of SORTED_MERCHANTS) {
+      if (stripped.includes(entry.pattern)) {
+        return entry;
+      }
     }
   }
 

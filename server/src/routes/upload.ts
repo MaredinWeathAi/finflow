@@ -500,23 +500,27 @@ router.put('/items/bulk-update', (req: Request, res: Response) => {
       return res.status(400).json({ error: 'itemIds array is required' });
     }
 
-    const updateStmt = db.prepare(
-      `UPDATE pending_items SET
-        status = COALESCE(?, status),
-        matched_category_id = COALESCE(?, matched_category_id),
-        matched_account_id = COALESCE(?, matched_account_id)
-       WHERE id = ? AND user_id = ?`
-    );
+    // Build dynamic SET clause — same fix as PUT /items/:id to avoid COALESCE bug
+    const fields: string[] = [];
+    const vals: any[] = [];
+    const bulkAllowed = ['status', 'matched_category_id', 'matched_account_id'];
+    for (const field of bulkAllowed) {
+      if (field in updates) {
+        fields.push(`${field} = ?`);
+        vals.push(updates[field]);
+      }
+    }
+
+    if (fields.length === 0) {
+      return res.status(400).json({ error: 'No valid fields to update' });
+    }
 
     const bulkUpdate = db.transaction((ids: string[]) => {
       let updated = 0;
       for (const id of ids) {
-        const result = updateStmt.run(
-          updates.status || null,
-          updates.matched_category_id || null,
-          updates.matched_account_id || null,
-          id, userId
-        );
+        const result = db.prepare(
+          `UPDATE pending_items SET ${fields.join(', ')} WHERE id = ? AND user_id = ?`
+        ).run(...vals, id, userId);
         updated += result.changes;
       }
       return updated;
@@ -534,7 +538,7 @@ router.put('/items/:id', (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
     const { id } = req.params;
-    const { status, parsed_name, parsed_amount, parsed_date, matched_category_id, matched_account_id } = req.body;
+    const body = req.body;
 
     const existing = db
       .prepare('SELECT * FROM pending_items WHERE id = ? AND user_id = ?')
@@ -544,16 +548,32 @@ router.put('/items/:id', (req: Request, res: Response) => {
       return res.status(404).json({ error: 'Item not found' });
     }
 
-    db.prepare(
-      `UPDATE pending_items SET
-        status = COALESCE(?, status),
-        parsed_name = COALESCE(?, parsed_name),
-        parsed_amount = COALESCE(?, parsed_amount),
-        parsed_date = COALESCE(?, parsed_date),
-        matched_category_id = COALESCE(?, matched_category_id),
-        matched_account_id = COALESCE(?, matched_account_id)
-       WHERE id = ?`
-    ).run(status, parsed_name, parsed_amount, parsed_date, matched_category_id, matched_account_id, id);
+    // Build dynamic UPDATE — only set fields that were explicitly sent in the request.
+    // This fixes the COALESCE bug where sending null for matched_category_id or
+    // matched_account_id was silently ignored (COALESCE treats null as "keep old value").
+    const fields: string[] = [];
+    const values: any[] = [];
+
+    const allowedFields = ['status', 'parsed_name', 'parsed_amount', 'parsed_date', 'matched_category_id', 'matched_account_id'];
+    for (const field of allowedFields) {
+      if (field in body) {
+        fields.push(`${field} = ?`);
+        values.push(body[field]);
+      }
+    }
+
+    if (fields.length > 0) {
+      values.push(id, userId);
+      db.prepare(
+        `UPDATE pending_items SET ${fields.join(', ')} WHERE id = ? AND user_id = ?`
+      ).run(...values);
+    }
+
+    // Re-read for smart learn-and-apply below
+    const { matched_category_id, matched_account_id, status } = {
+      ...existing,
+      ...Object.fromEntries(allowedFields.filter(f => f in body).map(f => [f, body[f]])),
+    };
 
     // ── Smart learn-and-apply ──────────────────────────────────────────
     // When a user assigns a category, learn the rule AND auto-apply it

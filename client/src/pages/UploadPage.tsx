@@ -1086,10 +1086,12 @@ function DuplicatesTab({
 function ClarificationsTab({
   items,
   categories,
+  accounts,
   onUpdateItem,
 }: {
   items: PendingItem[]
   categories: Category[]
+  accounts: { id: string; name: string }[]
   onUpdateItem: (id: string, updates: Partial<PendingItem>) => void
 }) {
   const uncategorized = items.filter((i) => !i.matched_category_id && i.status === 'pending')
@@ -1132,32 +1134,56 @@ function ClarificationsTab({
             </div>
           </div>
 
-          <div>
-            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-              Assign Category
-            </label>
-            <select
-              value={item.matched_category_id || ''}
-              onChange={(e) => {
-                const categoryId = e.target.value || null
-                onUpdateItem(item.id, {
-                  matched_category_id: categoryId,
-                  status: categoryId ? 'approved' : 'pending',
-                })
-              }}
-              className="mt-1 w-full h-10 rounded-lg border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-            >
-              <option value="">Select a category...</option>
-              {categories.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.icon} {c.name}
-                </option>
-              ))}
-            </select>
-            <p className="text-[10px] text-muted-foreground mt-1.5 flex items-center gap-1">
-              <Info className="w-3 h-3" />
-              The system will learn from your choice
-            </p>
+          <div className="space-y-3">
+            <div>
+              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                Assign Category
+              </label>
+              <select
+                value={item.matched_category_id || ''}
+                onChange={(e) => {
+                  const categoryId = e.target.value || null
+                  onUpdateItem(item.id, {
+                    matched_category_id: categoryId,
+                    status: categoryId ? 'approved' : 'pending',
+                  })
+                }}
+                className="mt-1 w-full h-10 rounded-lg border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+              >
+                <option value="">Select a category...</option>
+                {categories.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.icon} {c.name}
+                  </option>
+                ))}
+              </select>
+              <p className="text-[10px] text-muted-foreground mt-1.5 flex items-center gap-1">
+                <Info className="w-3 h-3" />
+                The system will learn from your choice
+              </p>
+            </div>
+
+            <div>
+              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                Assign Account
+              </label>
+              <select
+                value={item.matched_account_id || ''}
+                onChange={(e) => {
+                  onUpdateItem(item.id, {
+                    matched_account_id: e.target.value || null,
+                  })
+                }}
+                className="mt-1 w-full h-10 rounded-lg border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+              >
+                <option value="">Select an account...</option>
+                {accounts.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
         </div>
       ))}
@@ -1814,6 +1840,7 @@ export function UploadPage() {
             <ClarificationsTab
               items={pendingItems}
               categories={categories}
+              accounts={accounts}
               onUpdateItem={handleUpdateItem}
             />
           )}
