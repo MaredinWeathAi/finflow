@@ -97,11 +97,18 @@ router.get('/', (req: Request, res: Response) => {
         break;
     }
 
-    // Get total count
+    // Get total count + aggregate income/expenses across ALL matching rows (not just page)
     const countResult = db
-      .prepare(`SELECT COUNT(*) as total FROM transactions t WHERE ${whereClause}`)
+      .prepare(
+        `SELECT COUNT(*) as total,
+                COALESCE(SUM(CASE WHEN t.amount > 0 THEN t.amount ELSE 0 END), 0) as totalIncome,
+                COALESCE(SUM(CASE WHEN t.amount < 0 THEN ABS(t.amount) ELSE 0 END), 0) as totalExpenses
+         FROM transactions t WHERE ${whereClause}`
+      )
       .get(...params) as any;
     const total = countResult.total;
+    const totalIncome = Math.round(countResult.totalIncome * 100) / 100;
+    const totalExpenses = Math.round(countResult.totalExpenses * 100) / 100;
     const totalPages = Math.ceil(total / limit);
 
     // Get paginated results with joined names
@@ -123,7 +130,7 @@ router.get('/', (req: Request, res: Response) => {
         tags: JSON.parse(t.tags || '[]'),
       }));
 
-    res.json({ transactions, total, page, totalPages });
+    res.json({ transactions, total, page, totalPages, totalIncome, totalExpenses });
   } catch (error) {
     console.error('List transactions error:', error);
     res.status(500).json({ error: 'Failed to list transactions' });

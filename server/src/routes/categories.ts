@@ -36,6 +36,7 @@ router.post('/ensure-defaults', (req: Request, res: Response) => {
       { name: 'Groceries', icon: '🛒', color: '#22C55E', isIncome: false },
       { name: 'Food & Dining', icon: '🍔', color: '#F59E0B', isIncome: false },
       { name: 'Transportation', icon: '🚗', color: '#3B82F6', isIncome: false },
+      { name: 'Gas', icon: '⛽', color: '#F97316', isIncome: false },
       { name: 'Shopping', icon: '🛍️', color: '#8B5CF6', isIncome: false },
       { name: 'Utilities', icon: '💡', color: '#14B8A6', isIncome: false },
       { name: 'Healthcare', icon: '🏥', color: '#EF4444', isIncome: false },
@@ -52,6 +53,7 @@ router.post('/ensure-defaults', (req: Request, res: Response) => {
       { name: 'Salary', icon: '💵', color: '#10B981', isIncome: true },
       { name: 'Freelance', icon: '💼', color: '#22D3EE', isIncome: true },
       { name: 'Other Income', icon: '💰', color: '#34D399', isIncome: true },
+      { name: 'CC PMT', icon: '💳', color: '#64748B', isIncome: false },
       { name: 'Transfer', icon: '🔄', color: '#94A3B8', isIncome: false },
       { name: 'Uncategorized', icon: '❓', color: '#64748B', isIncome: false },
     ];

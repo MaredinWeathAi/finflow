@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { format, parseISO, differenceInDays } from 'date-fns'
 import { Plus, X, TrendingUp, TrendingDown, Minus, AlertTriangle, Zap, Loader2, Check, Clock } from 'lucide-react'
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts'
@@ -205,6 +205,27 @@ export function RecurringPage() {
   const [showModal, setShowModal] = useState(false)
   const [editExpense, setEditExpense] = useState<RecurringExpense | null>(null)
   const [isDetecting, setIsDetecting] = useState(false)
+  const [hasAutoDetected, setHasAutoDetected] = useState(false)
+
+  // Auto-detect recurring expenses on page load (once per session)
+  useEffect(() => {
+    if (!isLoading && !hasAutoDetected) {
+      setHasAutoDetected(true)
+      // Run detection silently in background
+      api.post<{
+        detected: number; created: number; createdNames: string[];
+        deactivated: number; deactivatedNames: string[]
+      }>('/recurring/detect').then(result => {
+        if (result.created > 0) {
+          toast.success(`Auto-detected ${result.created} new recurring expense${result.created > 1 ? 's' : ''}: ${result.createdNames.join(', ')}`)
+          refetch()
+        }
+        if (result.deactivated > 0) {
+          refetch()
+        }
+      }).catch(() => { /* silent */ })
+    }
+  }, [isLoading, hasAutoDetected])
 
   const activeCount = recurring.filter(r => r.is_active).length
   const priceIncreases = recurring.filter(r => {

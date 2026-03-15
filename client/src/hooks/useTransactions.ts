@@ -22,6 +22,8 @@ interface TransactionResponse {
   total: number
   page: number
   totalPages: number
+  totalIncome: number
+  totalExpenses: number
 }
 
 export function useTransactions(filters: TransactionFilters = {}) {
@@ -30,6 +32,8 @@ export function useTransactions(filters: TransactionFilters = {}) {
     total: 0,
     page: 1,
     totalPages: 1,
+    totalIncome: 0,
+    totalExpenses: 0,
   })
   const [isLoading, setIsLoading] = useState(true)
 

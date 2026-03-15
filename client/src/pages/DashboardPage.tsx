@@ -20,7 +20,7 @@ import type { Transaction, NetWorthSnapshot } from '@/types'
 import { NetWorthCard } from '@/components/dashboard/NetWorthCard'
 import { MonthlySpendingCard } from '@/components/dashboard/MonthlySpendingCard'
 import { WeeklySpendingCard } from '@/components/dashboard/WeeklySpendingCard'
-import { SafeToSpendCard } from '@/components/dashboard/SafeToSpendCard'
+// SafeToSpendCard removed — not useful without real-time data
 import { SavingsSummaryCard } from '@/components/dashboard/SavingsSummaryCard'
 import { SpendingTrendChart } from '@/components/dashboard/SpendingTrendChart'
 import { TrendingCategories } from '@/components/dashboard/TrendingCategories'
@@ -220,18 +220,6 @@ export function DashboardPage() {
   const prevExpenses = prevMonthTx.filter((tx) => tx.amount < 0).reduce((sum, tx) => sum + Math.abs(tx.amount), 0)
   const previousSavings = prevIncome - prevExpenses
 
-  // Upcoming recurring total for safe-to-spend
-  const upcomingRecurringTotal = recurring
-    .filter((r) => r.is_active)
-    .reduce((sum, r) => {
-      if (r.frequency === 'monthly') return sum + r.amount
-      if (r.frequency === 'weekly') return sum + r.amount * 4
-      if (r.frequency === 'biweekly') return sum + r.amount * 2
-      if (r.frequency === 'quarterly') return sum + r.amount / 3
-      if (r.frequency === 'annually') return sum + r.amount / 12
-      return sum
-    }, 0)
-
   // Net worth history for sparkline
   const netWorthHistoryData = state.netWorthHistory.map((snap) => ({
     date: format(parseISO(snap.date), 'MMM yyyy'),
@@ -329,10 +317,10 @@ export function DashboardPage() {
         </div>
       )}
 
-      {/* Top Row: Financial Health / Safe to Spend / Net Worth */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+      {/* Top Row: Financial Health + Net Worth */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
         <div className="opacity-0 animate-fade-in stagger-2">
-          {summary ? (
+          {summary && (
             <FinancialHealthCard
               income={summary.income}
               expenses={summary.expenses}
@@ -347,26 +335,9 @@ export function DashboardPage() {
               dayOfMonth={summary.dayOfMonth}
               daysInMonth={summary.daysInMonth}
             />
-          ) : (
-            <SafeToSpendCard
-              income={monthlyIncome}
-              totalBudgeted={totalBudget}
-              totalSpent={monthlyExpenses}
-              upcomingRecurring={upcomingRecurringTotal}
-            />
           )}
         </div>
         <div className="opacity-0 animate-fade-in stagger-3">
-          <SafeToSpendCard
-            income={monthlyIncome}
-            totalBudgeted={totalBudget}
-            totalSpent={monthlyExpenses}
-            upcomingRecurring={upcomingRecurringTotal}
-            isOverspending={summary?.isOverspending}
-            overspendAmount={summary?.overspendAmount}
-          />
-        </div>
-        <div className="opacity-0 animate-fade-in stagger-4">
           <NetWorthCard
             netWorth={netWorth}
             previousNetWorth={previousNetWorth}

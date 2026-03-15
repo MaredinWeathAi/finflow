@@ -19,21 +19,21 @@ const STEPS = [
   },
   {
     id: 'account',
-    title: 'Add Your First Account',
-    subtitle: 'Start by adding a bank account to track your money',
+    title: 'Step 1: Add Your Accounts',
+    subtitle: 'Add your bank accounts, credit cards, and investment accounts first — this is the foundation for everything else',
     icon: CreditCard,
   },
   {
     id: 'budget',
-    title: 'Set a Monthly Budget',
+    title: 'Step 2: Set a Monthly Budget',
     subtitle: 'Tell us how much you want to spend each month',
     icon: Wallet,
   },
   {
     id: 'done',
-    title: 'You\'re All Set!',
-    subtitle: 'Start adding transactions or import from your bank',
-    icon: Check,
+    title: 'Step 3: Upload Statements',
+    subtitle: 'Upload your bank and credit card statements — the system will auto-categorize transactions and learn your spending patterns',
+    icon: Upload,
   },
 ]
 
@@ -93,30 +93,30 @@ export function OnboardingWizard({ userName, onComplete }: OnboardingWizardProps
   const handleSetupBudget = async () => {
     setIsCreating(true)
     try {
-      // Create default categories and budgets
+      // Ensure default categories exist (Gas, CC PMT, etc.)
+      await api.post('/categories/ensure-defaults')
+
+      // Then create budgets scaled to user's monthly target
       const totalBudget = parseFloat(monthlyBudget) || 3000
       const scale = totalBudget / 3450 // Scale to user's budget
 
       for (const cat of DEFAULT_CATEGORIES) {
-        const catRes = await api.post<{ id: string }>('/categories', {
-          name: cat.name,
-          icon: cat.icon,
-          color: cat.color,
-          budget_amount: cat.budget > 0 ? Math.round(cat.budget * scale) : null,
-          is_income: cat.isIncome || false,
-          parent_id: null,
-          sort_order: 0,
-        })
-
-        if (cat.budget > 0 && catRes.id) {
-          const now = new Date()
-          const month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`
-          await api.post('/budgets', {
-            category_id: catRes.id,
-            month,
-            amount: Math.round(cat.budget * scale),
-            rollover: false,
-          })
+        if (cat.budget > 0) {
+          // Find the matching category by name
+          try {
+            const categories = await api.get<any[]>('/categories')
+            const match = categories.find((c: any) => c.name.toLowerCase() === cat.name.toLowerCase())
+            if (match) {
+              const now = new Date()
+              const month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`
+              await api.post('/budgets', {
+                category_id: match.id,
+                month,
+                amount: Math.round(cat.budget * scale),
+                rollover: false,
+              })
+            }
+          } catch { /* ignore individual budget creation failures */ }
         }
       }
 
@@ -271,8 +271,8 @@ export function OnboardingWizard({ userName, onComplete }: OnboardingWizardProps
           {step === 3 && (
             <div className="mt-6 space-y-3 text-left max-w-xs mx-auto">
               {[
-                { text: 'Add transactions manually or import from CSV', action: '/transactions' },
-                { text: 'Upload bank statements to auto-import', action: '/upload' },
+                { text: 'Upload bank statements to auto-import (recommended)', action: '/upload' },
+                { text: 'Add more accounts', action: '/accounts' },
                 { text: 'View your dashboard', action: '/' },
               ].map(({ text, action }, i) => (
                 <button

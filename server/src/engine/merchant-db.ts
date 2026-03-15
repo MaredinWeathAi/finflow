@@ -213,10 +213,9 @@ const SHOPPING: MerchantEntry[] = [
 ].map(p => ({ pattern: p, category: 'Shopping', confidence: 0.75 }));
 
 // ---------------------------------------------------------------------------
-// TRANSPORTATION — Gas, Rideshare, Auto, Transit
+// GAS — Gas stations, convenience stores (fuel-primary)
 // ---------------------------------------------------------------------------
-const TRANSPORTATION: MerchantEntry[] = [
-  // Gas stations & convenience stores
+const GAS: MerchantEntry[] = [
   'shell', 'chevron', 'exxon', 'exxonmobil', 'bp ',
   'sunoco', 'marathon', 'valero', 'citgo', 'phillips 66',
   'conoco', 'conocophillips', 'arco', 'speedway',
@@ -229,12 +228,16 @@ const TRANSPORTATION: MerchantEntry[] = [
   'cumberland farms', 'cumby', 'kum & go', 'kum and go',
   'maverick', 'mapco', 'thorntons', 'royal farms', 'rofo',
   'quick check', 'quickchek', 'plaid pantry', 'ampm', 'am pm',
-  'buc-ee', 'bucee', 'kum & go', 'kum and go',
-  'casey\'s', 'caseys', 'pilot flying', 'pilot travel',
-  'flying j', 'love\'s travel', 'loves travel',
-  'maverick', 'sinclair', 'holiday station', 'kwik trip',
-  'kwiktrip', 'thorntons', 'mapco', 'gate petroleum',
-  'getgo', 'get go', 'cumberland farms', 'turkey hill',
+  'buc-ee', 'bucee', 'sinclair', 'holiday station',
+  'gate petroleum', 'getgo', 'get go', 'turkey hill',
+  // Generic fuel
+  'gas', 'fuel', 'petrol', 'diesel',
+].map(p => ({ pattern: p, category: 'Gas', confidence: 0.85 }));
+
+// ---------------------------------------------------------------------------
+// TRANSPORTATION — Rideshare, Auto, Transit, Tolls
+// ---------------------------------------------------------------------------
+const TRANSPORTATION: MerchantEntry[] = [
   // Rideshare
   'uber', 'lyft', 'via ride',
   // Auto services
@@ -256,8 +259,6 @@ const TRANSPORTATION: MerchantEntry[] = [
   // Car payments & registration
   'car payment', 'auto loan', 'dmv', 'registration',
   'emission', 'smog check',
-  // Generic
-  'gas', 'fuel', 'petrol', 'diesel',
 ].map(p => ({ pattern: p, category: 'Transportation', confidence: 0.85 }));
 
 // ---------------------------------------------------------------------------
@@ -656,9 +657,18 @@ const TRANSFER: MerchantEntry[] = [
   'cash withdrawal', 'cash deposit',
   'bank fee', 'service charge', 'monthly fee',
   'maintenance fee', 'account fee',
-  'credit card payment', 'cc payment', 'autopay',
-  'auto pay', 'minimum payment',
 ].map(p => ({ pattern: p, category: 'Transfer', confidence: 0.75 }));
+
+// ---------------------------------------------------------------------------
+// CC PMT — Credit card payments
+// ---------------------------------------------------------------------------
+const CC_PMT: MerchantEntry[] = [
+  'credit card payment', 'cc payment', 'cc pmt',
+  'autopay', 'auto pay', 'minimum payment',
+  'payment thank you', 'online payment thank',
+  'payment received', 'card payment',
+  'balance payment', 'statement payment',
+].map(p => ({ pattern: p, category: 'CC PMT', confidence: 0.80 }));
 
 // ---------------------------------------------------------------------------
 // Combine all entries into a single searchable array
@@ -667,6 +677,7 @@ export const MERCHANT_DATABASE: MerchantEntry[] = [
   ...GROCERIES,
   ...FOOD_DINING,
   ...SHOPPING,
+  ...GAS,
   ...TRANSPORTATION,
   ...SUBSCRIPTIONS,
   ...UTILITIES,
@@ -682,6 +693,7 @@ export const MERCHANT_DATABASE: MerchantEntry[] = [
   ...GIFTS,
   ...INVESTMENTS,
   ...INCOME,
+  ...CC_PMT,
   ...TRANSFER,
 ];
 

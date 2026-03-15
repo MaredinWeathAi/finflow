@@ -114,8 +114,18 @@ function AddTransactionModal({
     is_pending: transaction?.is_pending || false,
   })
 
+  const [showPropagatePrompt, setShowPropagatePrompt] = useState(false)
+  const categoryChanged = transaction && form.category_id && form.category_id !== transaction.category_id
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+
+    // If category changed on an existing transaction, ask about propagation
+    if (categoryChanged && !showPropagatePrompt) {
+      setShowPropagatePrompt(true)
+      return
+    }
+
     const amount = parseFloat(form.amount) * (form.type === 'expense' ? -1 : 1)
     const payload = {
       name: form.name,
@@ -140,6 +150,42 @@ function AddTransactionModal({
       onClose()
     } catch {
       toast.error('Failed to save transaction')
+    }
+  }
+
+  const handleRecategorize = async (propagate: boolean) => {
+    try {
+      // First save the transaction with all field changes
+      const amount = parseFloat(form.amount) * (form.type === 'expense' ? -1 : 1)
+      await api.put(`/transactions/${transaction!.id}`, {
+        name: form.name,
+        amount,
+        category_id: form.category_id,
+        account_id: form.account_id,
+        date: form.date,
+        notes: form.notes || null,
+        is_pending: form.is_pending,
+        tags: [],
+      })
+
+      if (propagate) {
+        const result = await api.post<{ updated: number; categoryName: string }>('/transactions/recategorize', {
+          transactionId: transaction!.id,
+          categoryId: form.category_id,
+          propagate: true,
+        })
+        if (result.updated > 1) {
+          toast.success(`Updated ${result.updated} similar "${transaction!.name}" transactions to ${result.categoryName}`)
+        } else {
+          toast.success('Transaction updated')
+        }
+      } else {
+        toast.success('Transaction updated')
+      }
+      onSave()
+      onClose()
+    } catch {
+      toast.error('Failed to update transaction')
     }
   }
 
@@ -253,23 +299,48 @@ function AddTransactionModal({
             </div>
           </div>
 
-          <div className="flex gap-3 pt-2">
-            {transaction && onDelete && (
-              <button
-                type="button"
-                onClick={() => { if (confirm('Delete this transaction?')) { onDelete(transaction.id); onClose() } }}
-                className="h-10 px-4 rounded-lg border border-red-500/30 text-red-400 text-sm font-medium hover:bg-red-500/10 transition-colors"
-              >
-                Delete
+          {showPropagatePrompt ? (
+            <div className="bg-primary/5 border border-primary/20 rounded-xl p-4 space-y-3">
+              <p className="text-sm font-medium">Apply to similar transactions?</p>
+              <p className="text-xs text-muted-foreground">
+                Change all transactions named "{transaction?.name}" to the new category?
+              </p>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => handleRecategorize(true)}
+                  className="flex-1 h-9 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
+                >
+                  Yes, change all
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleRecategorize(false)}
+                  className="flex-1 h-9 rounded-lg border border-input text-sm font-medium hover:bg-accent transition-colors"
+                >
+                  Just this one
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="flex gap-3 pt-2">
+              {transaction && onDelete && (
+                <button
+                  type="button"
+                  onClick={() => { if (confirm('Delete this transaction?')) { onDelete(transaction.id); onClose() } }}
+                  className="h-10 px-4 rounded-lg border border-red-500/30 text-red-400 text-sm font-medium hover:bg-red-500/10 transition-colors"
+                >
+                  Delete
+                </button>
+              )}
+              <button type="button" onClick={onClose} className="flex-1 h-10 rounded-lg border border-input text-sm font-medium hover:bg-accent transition-colors">
+                Cancel
               </button>
-            )}
-            <button type="button" onClick={onClose} className="flex-1 h-10 rounded-lg border border-input text-sm font-medium hover:bg-accent transition-colors">
-              Cancel
-            </button>
-            <button type="submit" className="flex-1 h-10 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors">
-              {transaction ? 'Update' : 'Add'} Transaction
-            </button>
-          </div>
+              <button type="submit" className="flex-1 h-10 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors">
+                {transaction ? 'Update' : 'Add'} Transaction
+              </button>
+            </div>
+          )}
         </form>
       </div>
     </div>
@@ -289,7 +360,7 @@ export function TransactionsPage() {
 
   const { categories } = useCategories()
   const { accounts } = useAccounts()
-  const { transactions, total, totalPages, isLoading, refetch } = useTransactions({
+  const { transactions, total, totalPages, totalIncome, totalExpenses, isLoading, refetch } = useTransactions({
     page,
     limit: 30,
     search: search || undefined,
@@ -330,9 +401,6 @@ export function TransactionsPage() {
       toast.error('Failed to delete')
     }
   }
-
-  const totalIncome = transactions.filter(t => t.amount > 0).reduce((s, t) => s + t.amount, 0)
-  const totalExpenses = transactions.filter(t => t.amount < 0).reduce((s, t) => s + Math.abs(t.amount), 0)
 
   return (
     <div>
