@@ -261,7 +261,7 @@ export function categorizeItem(
   const lowerName = name.toLowerCase().trim();
 
   // 1. Check user's custom category_rules table (highest priority — user overrides)
-  const userRuleResult = matchUserRules(lowerName, userId);
+  const userRuleResult = matchUserRules(lowerName, userId, amount);
   if (userRuleResult) {
     return userRuleResult;
   }
@@ -286,56 +286,55 @@ export function categorizeItem(
 // User custom rules matching
 // ---------------------------------------------------------------------------
 
-function matchUserRules(lowerName: string, userId: string): CategorizationResult | null {
+function matchUserRules(lowerName: string, userId: string, amount?: number): CategorizationResult | null {
   const rules = db
     .prepare(
-      `SELECT cr.pattern, cr.category_id, cr.match_type, c.name as category_name
+      `SELECT cr.pattern, cr.category_id, cr.match_type, c.name as category_name,
+              cr.amount_min, cr.amount_max, cr.amount_exact, cr.account_id, cr.is_enabled, cr.priority
        FROM category_rules cr
        JOIN categories c ON c.id = cr.category_id
-       WHERE cr.user_id = ?
-       ORDER BY cr.match_type ASC`
+       WHERE cr.user_id = ? AND (cr.is_enabled = 1 OR cr.is_enabled IS NULL)
+       ORDER BY cr.priority DESC, cr.match_type ASC`
     )
-    .all(userId) as Array<{
-      pattern: string;
-      category_id: string;
-      match_type: string;
-      category_name: string;
-    }>;
+    .all(userId) as any[];
 
   for (const rule of rules) {
-    const pattern = rule.pattern.toLowerCase();
+    const pattern = (rule.pattern || '').toLowerCase().trim();
 
-    switch (rule.match_type) {
-      case 'exact':
-        if (lowerName === pattern) {
-          return {
-            categoryId: rule.category_id,
-            confidence: 1.0,
-            categoryName: rule.category_name,
-          };
-        }
-        break;
-
-      case 'contains':
-        if (lowerName.includes(pattern)) {
-          return {
-            categoryId: rule.category_id,
-            confidence: 0.8,
-            categoryName: rule.category_name,
-          };
-        }
-        break;
-
-      case 'starts_with':
-        if (lowerName.startsWith(pattern)) {
-          return {
-            categoryId: rule.category_id,
-            confidence: 0.8,
-            categoryName: rule.category_name,
-          };
-        }
-        break;
+    // Name/pattern matching (skip if no pattern — rule is amount-only)
+    if (pattern) {
+      let nameMatch = false;
+      switch (rule.match_type) {
+        case 'exact':
+          nameMatch = lowerName === pattern;
+          break;
+        case 'starts_with':
+          nameMatch = lowerName.startsWith(pattern);
+          break;
+        case 'ends_with':
+          nameMatch = lowerName.endsWith(pattern);
+          break;
+        case 'contains':
+        default:
+          nameMatch = lowerName.includes(pattern);
+          break;
+      }
+      if (!nameMatch) continue;
     }
+
+    // Amount conditions (only check if amount is provided)
+    if (amount != null) {
+      const absAmount = Math.abs(amount);
+      if (rule.amount_exact != null && Math.abs(absAmount - Math.abs(rule.amount_exact)) > 0.01) continue;
+      if (rule.amount_min != null && absAmount < rule.amount_min) continue;
+      if (rule.amount_max != null && absAmount > rule.amount_max) continue;
+    }
+
+    return {
+      categoryId: rule.category_id,
+      confidence: pattern ? (rule.match_type === 'exact' ? 1.0 : 0.8) : 0.7,
+      categoryName: rule.category_name,
+    };
   }
 
   return null;

@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { format, parseISO, isToday, isYesterday } from 'date-fns'
 import { Search, Filter, Plus, ArrowUpDown, Download, Upload, X, Check, Tag, Receipt } from 'lucide-react'
 import { cn, formatCurrency } from '@/lib/utils'
@@ -104,17 +104,35 @@ function AddTransactionModal({
   onDelete?: (id: string) => void
 }) {
   const [form, setForm] = useState({
-    name: transaction?.name || '',
-    amount: transaction ? Math.abs(transaction.amount).toString() : '',
-    type: transaction ? (transaction.amount > 0 ? 'income' : 'expense') : 'expense',
-    category_id: transaction?.category_id || '',
-    account_id: transaction?.account_id || '',
-    date: transaction?.date || format(new Date(), 'yyyy-MM-dd'),
-    notes: transaction?.notes || '',
-    is_pending: transaction?.is_pending || false,
+    name: '',
+    amount: '',
+    type: 'expense' as string,
+    category_id: '',
+    account_id: '',
+    date: format(new Date(), 'yyyy-MM-dd'),
+    notes: '',
+    is_pending: false,
   })
 
   const [showPropagatePrompt, setShowPropagatePrompt] = useState(false)
+
+  // Reset form when modal opens or transaction changes
+  useEffect(() => {
+    if (open) {
+      setForm({
+        name: transaction?.name || '',
+        amount: transaction ? Math.abs(transaction.amount).toString() : '',
+        type: transaction ? (transaction.amount > 0 ? 'income' : 'expense') : 'expense',
+        category_id: transaction?.category_id || '',
+        account_id: transaction?.account_id || '',
+        date: transaction?.date || format(new Date(), 'yyyy-MM-dd'),
+        notes: transaction?.notes || '',
+        is_pending: transaction?.is_pending || false,
+      })
+      setShowPropagatePrompt(false)
+    }
+  }, [open, transaction])
+
   const categoryChanged = transaction && form.category_id && form.category_id !== transaction.category_id
 
   const handleSubmit = async (e: React.FormEvent) => {

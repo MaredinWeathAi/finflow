@@ -304,6 +304,17 @@ function initDb(): void {
     // Track data source: 'seed' for demo data, 'upload' for user-imported, 'manual' for hand-entered
     "ALTER TABLE transactions ADD COLUMN source TEXT DEFAULT 'seed'",
     "ALTER TABLE accounts ADD COLUMN source TEXT DEFAULT 'seed'",
+    // Expand category_rules into full transaction rules
+    "ALTER TABLE category_rules ADD COLUMN name TEXT DEFAULT ''",
+    "ALTER TABLE category_rules ADD COLUMN account_id TEXT",
+    "ALTER TABLE category_rules ADD COLUMN amount_min REAL",
+    "ALTER TABLE category_rules ADD COLUMN amount_max REAL",
+    "ALTER TABLE category_rules ADD COLUMN amount_exact REAL",
+    "ALTER TABLE category_rules ADD COLUMN assign_account_id TEXT",
+    "ALTER TABLE category_rules ADD COLUMN assign_type TEXT",
+    "ALTER TABLE category_rules ADD COLUMN is_enabled INTEGER DEFAULT 1",
+    "ALTER TABLE category_rules ADD COLUMN priority INTEGER DEFAULT 0",
+    "ALTER TABLE category_rules ADD COLUMN description TEXT DEFAULT ''",
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch { /* column already exists */ }

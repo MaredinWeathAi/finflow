@@ -17,6 +17,7 @@ import { SettingsPage } from '@/pages/SettingsPage'
 import { InsightsPage } from '@/pages/InsightsPage'
 import { UploadPage } from '@/pages/UploadPage'
 import { CategoriesPage } from '@/pages/CategoriesPage'
+import { RulesPage } from '@/pages/RulesPage'
 import { AdminDashboardPage } from '@/pages/AdminDashboardPage'
 import { InvestmentsPage } from '@/pages/InvestmentsPage'
 import { AdminClientsPage } from '@/pages/AdminClientsPage'
@@ -86,6 +87,7 @@ export default function App() {
           <Route path="/upload" element={<UploadPage />} />
           <Route path="/transactions" element={<TransactionsPage />} />
           <Route path="/categories" element={<CategoriesPage />} />
+          <Route path="/rules" element={<RulesPage />} />
           <Route path="/budgets" element={<BudgetsPage />} />
           <Route path="/accounts" element={<AccountsPage />} />
           <Route path="/investments" element={<InvestmentsPage />} />
