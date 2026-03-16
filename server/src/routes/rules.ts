@@ -296,7 +296,10 @@ function matchesRule(txn: any, rule: any): boolean {
         break;
       case 'contains':
       default:
-        nameMatch = txnName.includes(pattern);
+        // Word-based matching: ALL words in the pattern must appear in the name
+        // e.g. "zelle received" matches "Zelle Payment Received"
+        const words = pattern.split(/\s+/).filter(Boolean);
+        nameMatch = words.length > 0 && words.every((w: string) => txnName.includes(w));
         break;
     }
 

@@ -319,7 +319,10 @@ function matchUserRules(lowerName: string, userId: string, amount?: number): Cat
           break;
         case 'contains':
         default:
-          nameMatch = lowerName.includes(pattern);
+          // Word-based matching: ALL words in the pattern must appear in the name
+          // e.g. "zelle received" matches "Zelle Payment Received"
+          const words = pattern.split(/\s+/).filter(Boolean);
+          nameMatch = words.length > 0 && words.every((w: string) => lowerName.includes(w));
           break;
       }
       if (!nameMatch) continue;
