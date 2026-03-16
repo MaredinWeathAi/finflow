@@ -162,6 +162,8 @@ router.get('/annual', (req: Request, res: Response) => {
 });
 
 // GET /cashflow?period=6m - cash flow data (income vs expenses by month)
+// Returns the last N COMPLETE calendar months (excludes current partial month).
+// Always returns exactly N months, filling months with no data as $0.
 router.get('/cashflow', (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
@@ -184,11 +186,13 @@ router.get('/cashflow', (req: Request, res: Response) => {
       ? `AND (category_id IS NULL OR category_id NOT IN (${cfExpExcludeIds.map(() => '?').join(', ')}))`
       : 'AND 1=1';
 
-    // Calculate start date
+    // Use last N complete calendar months (exclude current partial month)
     const now = new Date();
-    const startDate = new Date(now.getFullYear(), now.getMonth() - months + 1, 1);
-    const startStr = startDate.toISOString().substring(0, 10);
-    const endStr = now.toISOString().substring(0, 10);
+    const lastCompleteMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const startDate = new Date(lastCompleteMonth.getFullYear(), lastCompleteMonth.getMonth() - months + 1, 1);
+    const startStr = `${startDate.getFullYear()}-${String(startDate.getMonth() + 1).padStart(2, '0')}-01`;
+    const lcLastDay = new Date(lastCompleteMonth.getFullYear(), lastCompleteMonth.getMonth() + 1, 0).getDate();
+    const endStr = `${lastCompleteMonth.getFullYear()}-${String(lastCompleteMonth.getMonth() + 1).padStart(2, '0')}-${String(lcLastDay).padStart(2, '0')}`;
 
     // Income: ALL positive amounts (no exclusions)
     // Expenses: exclude Transfer only (internal account moves)
@@ -217,49 +221,22 @@ router.get('/cashflow', (req: Request, res: Response) => {
       monthMap.set(row.month, existing);
     }
 
-    const cashflow = Array.from(monthMap.entries())
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([month, data]) => ({
-        month,
-        income: Math.round(data.income * 100) / 100,
-        expenses: Math.round(data.expenses * 100) / 100,
-        net: Math.round((data.income - data.expenses) * 100) / 100,
-      }));
-
-    // Fill in missing months with zero values
+    // Always return exactly N months, filling gaps with $0
     const allMonths: any[] = [];
-    const current = new Date(startDate);
-    while (current <= now) {
-      const monthKey = `${current.getFullYear()}-${String(current.getMonth() + 1).padStart(2, '0')}`;
-      const existing = cashflow.find((c: any) => c.month === monthKey);
-      allMonths.push(
-        existing || { month: monthKey, income: 0, expenses: 0, net: 0 }
-      );
-      current.setMonth(current.getMonth() + 1);
+    const cursor = new Date(startDate);
+    for (let i = 0; i < months; i++) {
+      const monthKey = `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}`;
+      const existing = monthMap.get(monthKey);
+      allMonths.push({
+        month: monthKey,
+        income: existing ? Math.round(existing.income * 100) / 100 : 0,
+        expenses: existing ? Math.round(existing.expenses * 100) / 100 : 0,
+        net: existing ? Math.round((existing.income - existing.expenses) * 100) / 100 : 0,
+      });
+      cursor.setMonth(cursor.getMonth() + 1);
     }
 
-    // Hard monthly cut-offs: drop incomplete first/last periods for accurate analysis.
-    // Current month is always incomplete (we're mid-month) — drop it.
-    // First month may be incomplete if uploads don't start on day 1 — check min date.
-    const currentMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-    let filtered = allMonths.filter(m => m.month !== currentMonthKey);
-
-    // Check if the first month with data has transactions from early in the month (day <= 5)
-    if (filtered.length > 0) {
-      const firstMonth = filtered[0].month;
-      const minDateResult = db.prepare(
-        `SELECT MIN(date) as minDate FROM transactions WHERE user_id = ? AND substr(date, 1, 7) = ?`
-      ).get(userId, firstMonth) as any;
-      if (minDateResult?.minDate) {
-        const day = parseInt(minDateResult.minDate.substring(8, 10));
-        // If first transaction is after day 10, the month is likely incomplete — drop it
-        if (day > 10) {
-          filtered = filtered.slice(1);
-        }
-      }
-    }
-
-    res.json(filtered);
+    res.json(allMonths);
   } catch (error) {
     console.error('Cash flow error:', error);
     res.status(500).json({ error: 'Failed to generate cash flow report' });
@@ -586,32 +563,30 @@ router.get('/dashboard-summary', (req: Request, res: Response) => {
     const dayOfMonth = month === currentMonth ? today.getDate() : daysInMonth;
 
     // -----------------------------------------------------------------------
-    // 6-Month Averages — find the 6 most recent COMPLETE months with data
-    // (ignores the current partial month; if fewer than 6 months have data,
-    //  use however many exist)
+    // 6-Month Averages — standard calendar-based: last 6 complete months,
+    // always divide by 6 (months with no data count as $0).
+    // If fewer than 6 complete months exist at all, use however many there are.
     // -----------------------------------------------------------------------
-    // Step 1: Find distinct complete months with data (exclude current month)
+    // Step 1: Determine the last complete month (the month before current)
     const currentYM = `${year}-${String(mon).padStart(2, '0')}`;
-    const recentMonths = db.prepare(
-      `SELECT DISTINCT substr(date, 1, 7) as ym FROM transactions
-       WHERE user_id = ? AND substr(date, 1, 7) < ?
-       ORDER BY ym DESC
-       LIMIT 6`
-    ).all(userId, currentYM) as { ym: string }[];
+    // Work backward from the month before the viewed month
+    const viewDate = new Date(year, mon - 1, 1); // month is 1-indexed from split
+    const lastCompleteDate = new Date(viewDate.getFullYear(), viewDate.getMonth() - 1, 1);
+    const lastCompleteYM = `${lastCompleteDate.getFullYear()}-${String(lastCompleteDate.getMonth() + 1).padStart(2, '0')}`;
 
-    const monthCount = Math.max(recentMonths.length, 1);
+    // Step 2: Build 6-month range (6 calendar months ending at lastComplete)
+    const sixMoStartDate = new Date(lastCompleteDate.getFullYear(), lastCompleteDate.getMonth() - 5, 1);
+    const sixMonthStart = `${sixMoStartDate.getFullYear()}-${String(sixMoStartDate.getMonth() + 1).padStart(2, '0')}-01`;
+    const lcLastDay = new Date(lastCompleteDate.getFullYear(), lastCompleteDate.getMonth() + 1, 0).getDate();
+    const sixMonthEnd = `${lastCompleteYM}-${String(lcLastDay).padStart(2, '0')}`;
 
-    // Step 2: Build date range from oldest to newest of those months
-    let sixMonthStart = monthStart; // fallback
-    let sixMonthEnd = monthEnd;     // fallback
-    if (recentMonths.length > 0) {
-      const oldestYM = recentMonths[recentMonths.length - 1].ym;
-      sixMonthStart = oldestYM + '-01';
-      const newestYM = recentMonths[0].ym;
-      const [ny, nm] = newestYM.split('-').map(Number);
-      const lastDay = new Date(ny, nm, 0).getDate();
-      sixMonthEnd = `${newestYM}-${String(lastDay).padStart(2, '0')}`;
-    }
+    // Step 3: Count how many of those 6 months actually have data (for label)
+    // But ALWAYS divide by 6 for a true average
+    const monthsWithData = db.prepare(
+      `SELECT COUNT(DISTINCT substr(date, 1, 7)) as cnt FROM transactions
+       WHERE user_id = ? AND date >= ? AND date <= ?`
+    ).get(userId, sixMonthStart, sixMonthEnd) as any;
+    const monthCount = 6; // Always 6 for a true 6-month average
 
     // 6-month income: ALL positive amounts, no exclusions
     const avgIncomeResult = db.prepare(
@@ -635,30 +610,25 @@ router.get('/dashboard-summary', (req: Request, res: Response) => {
     // -----------------------------------------------------------------------
     let lastMonthIncome = 0;
     let lastMonthExpenses = 0;
-    let lastMonthLabel = '';
-    if (recentMonths.length > 0) {
-      const lastYM = recentMonths[0].ym;
-      lastMonthLabel = lastYM;
-      const [ly, lm] = lastYM.split('-').map(Number);
-      const lmStart = lastYM + '-01';
-      const lmLastDay = new Date(ly, lm, 0).getDate();
-      const lmEnd = `${lastYM}-${String(lmLastDay).padStart(2, '0')}`;
-      // Last month income: ALL positive amounts, no exclusions
-      const lmIncomeResult = db.prepare(
-        `SELECT COALESCE(SUM(amount), 0) as total FROM transactions
-         WHERE user_id = ? AND amount > 0 AND date >= ? AND date <= ?`
-      ).get(userId, lmStart, lmEnd) as any;
+    let lastMonthLabel = lastCompleteYM;
 
-      // Last month expenses: exclude Transfer only
-      const lmExpenseParams = [userId, lmStart, lmEnd, ...expenseExcludeIds];
-      const lmExpenseResult = db.prepare(
-        `SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
-         WHERE user_id = ? AND amount < 0 AND date >= ? AND date <= ? ${buildExpenseExcludeClause()}`
-      ).get(...lmExpenseParams) as any;
+    const lmStart = lastCompleteYM + '-01';
+    const lmEnd = `${lastCompleteYM}-${String(lcLastDay).padStart(2, '0')}`;
+    // Last month income: ALL positive amounts, no exclusions
+    const lmIncomeResult = db.prepare(
+      `SELECT COALESCE(SUM(amount), 0) as total FROM transactions
+       WHERE user_id = ? AND amount > 0 AND date >= ? AND date <= ?`
+    ).get(userId, lmStart, lmEnd) as any;
 
-      lastMonthIncome = Math.round(lmIncomeResult.total * 100) / 100;
-      lastMonthExpenses = Math.round(lmExpenseResult.total * 100) / 100;
-    }
+    // Last month expenses: exclude Transfer only
+    const lmExpenseParams = [userId, lmStart, lmEnd, ...expenseExcludeIds];
+    const lmExpenseResult = db.prepare(
+      `SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
+       WHERE user_id = ? AND amount < 0 AND date >= ? AND date <= ? ${buildExpenseExcludeClause()}`
+    ).get(...lmExpenseParams) as any;
+
+    lastMonthIncome = Math.round(lmIncomeResult.total * 100) / 100;
+    lastMonthExpenses = Math.round(lmExpenseResult.total * 100) / 100;
     const lastMonthSavings = Math.round((lastMonthIncome - lastMonthExpenses) * 100) / 100;
 
     // Top 10 expense categories (6-month average) excluding transfers AND income-flagged categories
