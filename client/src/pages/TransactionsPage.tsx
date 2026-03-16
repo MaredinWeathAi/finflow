@@ -187,15 +187,16 @@ function AddTransactionModal({
       })
 
       if (propagate) {
-        const result = await api.post<{ updated: number; categoryName: string }>('/transactions/recategorize', {
+        const result = await api.post<{ updated: number; categoryName: string; ruleCreated: boolean }>('/transactions/recategorize', {
           transactionId: transaction!.id,
           categoryId: form.category_id,
           propagate: true,
         })
+        const ruleMsg = result.ruleCreated ? ' — rule saved for future transactions' : ''
         if (result.updated > 1) {
-          toast.success(`Updated ${result.updated} similar "${transaction!.name}" transactions to ${result.categoryName}`)
+          toast.success(`Updated ${result.updated} similar transactions to ${result.categoryName}${ruleMsg}`)
         } else {
-          toast.success('Transaction updated')
+          toast.success(`Transaction updated${ruleMsg}`)
         }
       } else {
         toast.success('Transaction updated')
@@ -321,7 +322,7 @@ function AddTransactionModal({
             <div className="bg-primary/5 border border-primary/20 rounded-xl p-4 space-y-3">
               <p className="text-sm font-medium">Apply to similar transactions?</p>
               <p className="text-xs text-muted-foreground">
-                Change all transactions named "{transaction?.name}" to the new category?
+                Change all transactions named "{transaction?.name}" to the new category? A rule will also be created so future transactions like this are automatically categorized.
               </p>
               <div className="flex gap-2">
                 <button

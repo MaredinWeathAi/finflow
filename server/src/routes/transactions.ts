@@ -463,26 +463,41 @@ router.post('/recategorize', (req: Request, res: Response) => {
 
       updatedCount += result.changes;
 
-      // Learn the rule for future categorization
+      // Learn the rule for future categorization — always create/update a rule
+      let ruleCreated = false;
       try {
-        // Check if rule already exists
+        // Check if a rule with this exact pattern already exists (any category)
         const existingRule = db.prepare(
-          `SELECT id FROM category_rules WHERE user_id = ? AND LOWER(pattern) = ? AND category_id = ?`
-        ).get(userId, normalizedName, categoryId) as any;
+          `SELECT id, category_id FROM category_rules WHERE user_id = ? AND LOWER(pattern) = ?`
+        ).get(userId, normalizedName) as any;
 
-        if (!existingRule) {
+        if (existingRule) {
+          // Update existing rule to point to the new category
+          if (existingRule.category_id !== categoryId) {
+            db.prepare(
+              `UPDATE category_rules SET category_id = ?, created_at = ? WHERE id = ?`
+            ).run(categoryId, now, existingRule.id);
+            ruleCreated = true;
+          }
+          // If same category already, rule exists — no action needed
+        } else {
+          // Create new rule
           db.prepare(
             `INSERT INTO category_rules (id, user_id, pattern, category_id, match_type, created_at)
              VALUES (?, ?, ?, ?, 'contains', ?)`
           ).run(crypto.randomUUID(), userId, normalizedName, categoryId, now);
+          ruleCreated = true;
         }
-      } catch (e) { /* ignore */ }
+      } catch (e) {
+        console.error('Rule creation error:', e);
+      }
     }
 
     res.json({
       message: `Updated ${updatedCount} transaction${updatedCount !== 1 ? 's' : ''}`,
       updated: updatedCount,
       categoryName: category.name,
+      ruleCreated: propagate !== false,
     });
   } catch (error) {
     console.error('Recategorize error:', error);
