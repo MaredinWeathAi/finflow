@@ -542,6 +542,56 @@ router.get('/dashboard-summary', (req: Request, res: Response) => {
     const daysInMonth = endOfMonth.getDate();
     const dayOfMonth = month === currentMonth ? today.getDate() : daysInMonth;
 
+    // -----------------------------------------------------------------------
+    // 6-Month Averages (for dashboard row 2 and top expense categories)
+    // Exclude current month (partial) — look back 6 completed months
+    // -----------------------------------------------------------------------
+    const sixMonthsAgo = new Date(year, mon - 7, 1); // 6 full months before this month
+    const sixMonthStart = `${sixMonthsAgo.getFullYear()}-${String(sixMonthsAgo.getMonth() + 1).padStart(2, '0')}-01`;
+    const prevMonthEnd = new Date(year, mon - 1, 0); // last day of previous month
+    const sixMonthEnd = `${prevMonthEnd.getFullYear()}-${String(prevMonthEnd.getMonth() + 1).padStart(2, '0')}-${String(prevMonthEnd.getDate()).padStart(2, '0')}`;
+
+    // Count how many distinct months have data in that range
+    const monthCountResult = db.prepare(
+      `SELECT COUNT(DISTINCT substr(date, 1, 7)) as cnt FROM transactions
+       WHERE user_id = ? AND date >= ? AND date <= ?`
+    ).get(userId, sixMonthStart, sixMonthEnd) as any;
+    const monthCount = Math.max(monthCountResult.cnt || 1, 1);
+
+    const sixMoExcludeParams = [userId, sixMonthStart, sixMonthEnd, ...excludeIds];
+
+    const avgIncomeResult = db.prepare(
+      `SELECT COALESCE(SUM(amount), 0) as total FROM transactions
+       WHERE user_id = ? AND amount > 0 AND date >= ? AND date <= ? ${buildExcludeClause()}`
+    ).get(...sixMoExcludeParams) as any;
+
+    const avgExpenseResult = db.prepare(
+      `SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
+       WHERE user_id = ? AND amount < 0 AND date >= ? AND date <= ? ${buildExcludeClause()}`
+    ).get(...sixMoExcludeParams) as any;
+
+    const avgMonthlyIncome = Math.round((avgIncomeResult.total / monthCount) * 100) / 100;
+    const avgMonthlyExpenses = Math.round((avgExpenseResult.total / monthCount) * 100) / 100;
+    const avgMonthlySavings = Math.round((avgMonthlyIncome - avgMonthlyExpenses) * 100) / 100;
+
+    // Top 10 expense categories (6-month average) excluding transfers/CC PMT
+    const topExpense6MoExcludeIds = [transferCategoryId, ccPmtCategoryId].filter(Boolean);
+    const topExpense6MoExcludeClause = topExpense6MoExcludeIds.length > 0
+      ? `AND c.id NOT IN (${topExpense6MoExcludeIds.map(() => '?').join(', ')})`
+      : 'AND 1=1';
+    const topExpenses6Mo = db.prepare(
+      `SELECT c.id, c.name, c.icon, c.color,
+              COALESCE(SUM(ABS(t.amount)), 0) as total,
+              COUNT(t.id) as transaction_count
+       FROM transactions t
+       JOIN categories c ON t.category_id = c.id
+       WHERE t.user_id = ? AND t.amount < 0 AND t.date >= ? AND t.date <= ?
+             ${topExpense6MoExcludeClause}
+       GROUP BY c.id
+       ORDER BY total DESC
+       LIMIT 10`
+    ).all(userId, sixMonthStart, sixMonthEnd, ...topExpense6MoExcludeIds) as any[];
+
     res.json({
       income,
       expenses,
@@ -580,6 +630,19 @@ router.get('/dashboard-summary', (req: Request, res: Response) => {
       month,
       daysInMonth,
       dayOfMonth,
+      // 6-month averages
+      avgMonthlyIncome,
+      avgMonthlyExpenses,
+      avgMonthlySavings,
+      avgMonthCount: monthCount,
+      topExpenses6Mo: topExpenses6Mo.map((c: any) => ({
+        name: c.name,
+        icon: c.icon,
+        color: c.color,
+        totalAmount: Math.round(c.total * 100) / 100,
+        avgAmount: Math.round((c.total / monthCount) * 100) / 100,
+        count: c.transaction_count,
+      })),
     });
   } catch (error) {
     console.error('Dashboard summary error:', error);

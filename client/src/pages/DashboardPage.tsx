@@ -10,7 +10,7 @@ import {
   endOfMonth,
   parseISO,
 } from 'date-fns'
-import { getGreeting, formatCurrency } from '@/lib/utils'
+import { getGreeting, formatCurrency, cn } from '@/lib/utils'
 import { api } from '@/lib/api'
 import { useAuthStore } from '@/stores/authStore'
 import { useBudgets } from '@/hooks/useBudgets'
@@ -21,9 +21,9 @@ import { NetWorthCard } from '@/components/dashboard/NetWorthCard'
 import { MonthlySpendingCard } from '@/components/dashboard/MonthlySpendingCard'
 import { WeeklySpendingCard } from '@/components/dashboard/WeeklySpendingCard'
 // SafeToSpendCard removed — not useful without real-time data
-import { SavingsSummaryCard } from '@/components/dashboard/SavingsSummaryCard'
+// SavingsSummaryCard removed — replaced by inline 6-month average cards
 import { SpendingTrendChart } from '@/components/dashboard/SpendingTrendChart'
-import { TrendingCategories } from '@/components/dashboard/TrendingCategories'
+// TrendingCategories removed — replaced by Top 10 Expense Categories (6-mo avg)
 import { RecentTransactions } from '@/components/dashboard/RecentTransactions'
 import { UpcomingRecurring } from '@/components/dashboard/UpcomingRecurring'
 import { FinancialHealthCard } from '@/components/dashboard/FinancialHealthCard'
@@ -54,6 +54,12 @@ interface DashboardSummary {
   month: string
   daysInMonth: number
   dayOfMonth: number
+  // 6-month averages
+  avgMonthlyIncome: number
+  avgMonthlyExpenses: number
+  avgMonthlySavings: number
+  avgMonthCount: number
+  topExpenses6Mo: { name: string; icon: string; color: string; totalAmount: number; avgAmount: number; count: number }[]
 }
 
 interface DashboardState {
@@ -233,18 +239,6 @@ export function DashboardPage() {
       ? state.netWorthHistory[state.netWorthHistory.length - 2].net_worth
       : 0
 
-  // Trending categories from budget data
-  const trendingCategories = budgets
-    .filter((b) => b.category_name && b.amount > 0)
-    .map((b) => ({
-      name: b.category_name!,
-      icon: b.category_icon || '📁',
-      color: b.category_color || '#A78BFA',
-      spent: b.spent || 0,
-      budget: b.amount,
-      count: b.transaction_count || 0,
-    }))
-
   // Upcoming recurring
   const upcomingItems = recurring
     .filter((r) => r.is_active)
@@ -319,9 +313,9 @@ export function DashboardPage() {
         </div>
       )}
 
-      {/* Top Row: Financial Health + Net Worth */}
+      {/* Row 1: Monthly Financial Health + Net Worth (equal size) */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-        <div className="opacity-0 animate-fade-in stagger-2 cursor-pointer" onClick={() => setDetailModal('health')}>
+        <div className="opacity-0 animate-fade-in stagger-2 cursor-pointer min-h-[200px]" onClick={() => setDetailModal('health')}>
           {summary && (
             <FinancialHealthCard
               income={summary.income}
@@ -339,7 +333,7 @@ export function DashboardPage() {
             />
           )}
         </div>
-        <div className="opacity-0 animate-fade-in stagger-3 cursor-pointer" onClick={() => setDetailModal('networth')}>
+        <div className="opacity-0 animate-fade-in stagger-3 cursor-pointer min-h-[200px]" onClick={() => setDetailModal('networth')}>
           <NetWorthCard
             netWorth={netWorth}
             previousNetWorth={previousNetWorth}
@@ -348,7 +342,78 @@ export function DashboardPage() {
         </div>
       </div>
 
-      {/* Second Row: CC Debt (if any) + Savings + Weekly Spending */}
+      {/* Row 2: Monthly Income / Monthly Expenses / Monthly Savings (6-month averages) */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+        <div className="opacity-0 animate-fade-in stagger-4">
+          <div className="bg-card rounded-2xl border border-border/50 p-6 h-full flex flex-col justify-between cursor-pointer" onClick={() => setDetailModal('savings')}>
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                Monthly Income
+              </p>
+              <p className="text-[10px] text-muted-foreground mt-0.5">6-month average</p>
+              <p className="text-2xl font-bold tabular-nums text-emerald-400 mt-2">
+                {formatCurrency(summary?.avgMonthlyIncome || 0)}
+              </p>
+            </div>
+            <div className="mt-3 pt-3 border-t border-border/30">
+              <div className="flex justify-between text-xs">
+                <span className="text-muted-foreground">This month</span>
+                <span className="font-medium">{formatCurrency(monthlyIncome)}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div className="opacity-0 animate-fade-in stagger-4">
+          <div className="bg-card rounded-2xl border border-border/50 p-6 h-full flex flex-col justify-between cursor-pointer" onClick={() => setDetailModal('savings')}>
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                Monthly Expenses
+              </p>
+              <p className="text-[10px] text-muted-foreground mt-0.5">6-month average</p>
+              <p className="text-2xl font-bold tabular-nums text-red-400 mt-2">
+                {formatCurrency(summary?.avgMonthlyExpenses || 0)}
+              </p>
+            </div>
+            <div className="mt-3 pt-3 border-t border-border/30">
+              <div className="flex justify-between text-xs">
+                <span className="text-muted-foreground">This month</span>
+                <span className="font-medium">{formatCurrency(monthlyExpenses)}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div className="opacity-0 animate-fade-in stagger-4">
+          <div className={cn(
+            'rounded-2xl border p-6 h-full flex flex-col justify-between cursor-pointer',
+            (summary?.avgMonthlySavings || 0) >= 0
+              ? 'bg-card border-border/50'
+              : 'bg-gradient-to-br from-red-500/10 to-card border-red-500/20'
+          )} onClick={() => setDetailModal('savings')}>
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                Monthly Savings
+              </p>
+              <p className="text-[10px] text-muted-foreground mt-0.5">6-month average</p>
+              <p className={cn(
+                'text-2xl font-bold tabular-nums mt-2',
+                (summary?.avgMonthlySavings || 0) >= 0 ? 'text-emerald-400' : 'text-red-400'
+              )}>
+                {(summary?.avgMonthlySavings || 0) >= 0 ? '+' : ''}{formatCurrency(summary?.avgMonthlySavings || 0)}
+              </p>
+            </div>
+            <div className="mt-3 pt-3 border-t border-border/30">
+              <div className="flex justify-between text-xs">
+                <span className="text-muted-foreground">Savings rate</span>
+                <span className={cn('font-medium', (summary?.avgMonthlyIncome || 0) > 0 && (summary?.avgMonthlySavings || 0) / (summary?.avgMonthlyIncome || 1) >= 0.1 ? 'text-emerald-400' : 'text-amber-400')}>
+                  {(summary?.avgMonthlyIncome || 0) > 0 ? `${(((summary?.avgMonthlySavings || 0) / (summary?.avgMonthlyIncome || 1)) * 100).toFixed(1)}%` : 'N/A'}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Row 3: CC Debt (if any) + Weekly Spending + Monthly Spending/Budget */}
       <div className={`grid grid-cols-1 ${summary && summary.totalCCDebt !== 0 ? 'md:grid-cols-3' : 'md:grid-cols-2'} gap-5`}>
         {summary && summary.totalCCDebt !== 0 && (
           <div className="opacity-0 animate-fade-in stagger-5 cursor-pointer" onClick={() => setDetailModal('ccdebt')}>
@@ -361,33 +426,69 @@ export function DashboardPage() {
             />
           </div>
         )}
-        <div className="opacity-0 animate-fade-in stagger-5 cursor-pointer" onClick={() => setDetailModal('savings')}>
-          <SavingsSummaryCard
-            income={monthlyIncome}
-            expenses={monthlyExpenses}
-            previousSavings={previousSavings}
-          />
-        </div>
         <div className="opacity-0 animate-fade-in stagger-5 cursor-pointer" onClick={() => setDetailModal('weekly')}>
           <WeeklySpendingCard
             dailySpending={dailySpending}
             percentChange={weeklyPercentChange}
           />
         </div>
-      </div>
-
-      {/* Monthly Spending + Trend Chart */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-        <div className="opacity-0 animate-fade-in stagger-6 cursor-pointer" onClick={() => setDetailModal('monthly')}>
+        <div className="opacity-0 animate-fade-in stagger-5 cursor-pointer" onClick={() => setDetailModal('monthly')}>
           <MonthlySpendingCard
             spent={totalSpent}
             budget={totalBudget}
           />
         </div>
-        <div className="md:col-span-2 opacity-0 animate-fade-in stagger-6">
-          <SpendingTrendChart />
-        </div>
       </div>
+
+      {/* Spending Trend Chart */}
+      <div className="opacity-0 animate-fade-in stagger-6">
+        <SpendingTrendChart />
+      </div>
+
+      {/* Top 10 Expense Categories — 6-Month Averages */}
+      {summary && summary.topExpenses6Mo && summary.topExpenses6Mo.length > 0 && (
+        <div className="opacity-0 animate-fade-in stagger-7">
+          <div className="bg-card rounded-2xl border border-border/50 p-6">
+            <div className="flex items-center justify-between mb-5">
+              <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                Top 10 Expense Categories
+              </p>
+              <span className="text-[10px] text-muted-foreground">
+                6-month avg ({summary.avgMonthCount} months)
+              </span>
+            </div>
+            <div className="space-y-3">
+              {summary.topExpenses6Mo.map((cat, i) => {
+                const maxAvg = summary.topExpenses6Mo[0]?.avgAmount || 1
+                const barPct = Math.min((cat.avgAmount / maxAvg) * 100, 100)
+                return (
+                  <div key={cat.name} className="flex items-center gap-4">
+                    <div className="flex w-40 shrink-0 items-center gap-2.5 min-w-0">
+                      <span className="text-lg">{cat.icon || '📁'}</span>
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-medium">{cat.name}</p>
+                        <p className="text-[10px] text-muted-foreground">{cat.count} txns over 6 mo</p>
+                      </div>
+                    </div>
+                    <div className="flex-1">
+                      <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+                        <div
+                          className="h-full rounded-full transition-all duration-700 ease-out"
+                          style={{ width: `${barPct}%`, backgroundColor: cat.color || '#A78BFA' }}
+                        />
+                      </div>
+                    </div>
+                    <div className="w-28 shrink-0 text-right">
+                      <span className="text-sm font-semibold tabular-nums">{formatCurrency(cat.avgAmount)}</span>
+                      <span className="text-[10px] text-muted-foreground">/mo</span>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Budget Burn Rate */}
       {budgets.length > 0 && (
@@ -409,11 +510,6 @@ export function DashboardPage() {
         </div>
       )}
 
-      {/* Trending Categories */}
-      <div className="opacity-0 animate-fade-in stagger-7">
-        <TrendingCategories categories={trendingCategories} />
-      </div>
-
       {/* Bottom Row: Recent Transactions (2/3) + Upcoming Recurring (1/3) */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
         <div className="lg:col-span-2 opacity-0 animate-fade-in stagger-7">
@@ -432,7 +528,7 @@ export function DashboardPage() {
       <CardDetailModal
         open={detailModal === 'health'}
         onClose={() => setDetailModal(null)}
-        title="How Financial Health Score Works"
+        title="How Monthly Financial Health Score Works"
       >
         {summary && (() => {
           const savingsRate = summary.savingsRate

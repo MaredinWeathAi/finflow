@@ -139,7 +139,7 @@ export function FinancialHealthCard({
   }
 
   return (
-    <div className={cn('rounded-2xl border p-5 bg-gradient-to-br to-card', getScoreBg(), getScoreBorder())}>
+    <div className={cn('rounded-2xl border p-6 bg-gradient-to-br to-card h-full flex flex-col justify-between', getScoreBg(), getScoreBorder())}>
       {/* Score Header */}
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
@@ -150,7 +150,7 @@ export function FinancialHealthCard({
           ) : (
             <ShieldAlert className="w-5 h-5 text-red-400" />
           )}
-          <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Financial Health</p>
+          <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Monthly Financial Health</p>
         </div>
         <div className="flex items-baseline gap-1">
           <span className={cn('text-2xl font-bold tabular-nums', getScoreColor())}>{healthScore}</span>
