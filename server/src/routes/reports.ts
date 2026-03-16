@@ -186,13 +186,28 @@ router.get('/cashflow', (req: Request, res: Response) => {
       ? `AND (category_id IS NULL OR category_id NOT IN (${cfExpExcludeIds.map(() => '?').join(', ')}))`
       : 'AND 1=1';
 
-    // Use last N complete calendar months (exclude current partial month)
+    // Find the N most recent COMPLETE months with data (exclude current partial month)
     const now = new Date();
-    const lastCompleteMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-    const startDate = new Date(lastCompleteMonth.getFullYear(), lastCompleteMonth.getMonth() - months + 1, 1);
-    const startStr = `${startDate.getFullYear()}-${String(startDate.getMonth() + 1).padStart(2, '0')}-01`;
-    const lcLastDay = new Date(lastCompleteMonth.getFullYear(), lastCompleteMonth.getMonth() + 1, 0).getDate();
-    const endStr = `${lastCompleteMonth.getFullYear()}-${String(lastCompleteMonth.getMonth() + 1).padStart(2, '0')}-${String(lcLastDay).padStart(2, '0')}`;
+    const currentMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+
+    const recentDataMonths = db.prepare(
+      `SELECT DISTINCT substr(date, 1, 7) as ym FROM transactions
+       WHERE user_id = ? AND substr(date, 1, 7) < ?
+       ORDER BY ym DESC
+       LIMIT ?`
+    ).all(userId, currentMonthKey, months) as { ym: string }[];
+
+    if (recentDataMonths.length === 0) {
+      res.json([]);
+      return;
+    }
+
+    const oldestYM = recentDataMonths[recentDataMonths.length - 1].ym;
+    const newestYM = recentDataMonths[0].ym;
+    const startStr = oldestYM + '-01';
+    const [ny, nm] = newestYM.split('-').map(Number);
+    const newestLastDay = new Date(ny, nm, 0).getDate();
+    const endStr = `${newestYM}-${String(newestLastDay).padStart(2, '0')}`;
 
     // Income: ALL positive amounts (no exclusions)
     // Expenses: exclude Transfer only (internal account moves)
@@ -221,10 +236,12 @@ router.get('/cashflow', (req: Request, res: Response) => {
       monthMap.set(row.month, existing);
     }
 
-    // Always return exactly N months, filling gaps with $0
+    // Build result from the oldest to newest month with data, filling gaps between with $0
     const allMonths: any[] = [];
-    const cursor = new Date(startDate);
-    for (let i = 0; i < months; i++) {
+    const [oy, om] = oldestYM.split('-').map(Number);
+    const cursor = new Date(oy, om - 1, 1);
+    const endDate = new Date(ny, nm - 1, 1);
+    while (cursor <= endDate) {
       const monthKey = `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}`;
       const existing = monthMap.get(monthKey);
       allMonths.push({
@@ -563,30 +580,33 @@ router.get('/dashboard-summary', (req: Request, res: Response) => {
     const dayOfMonth = month === currentMonth ? today.getDate() : daysInMonth;
 
     // -----------------------------------------------------------------------
-    // 6-Month Averages — standard calendar-based: last 6 complete months,
-    // always divide by 6 (months with no data count as $0).
-    // If fewer than 6 complete months exist at all, use however many there are.
+    // 6-Month Averages — find the 6 most recent COMPLETE months that have data.
+    // Excludes current partial month. If fewer than 6 months have data, use
+    // however many exist. Divide by the actual month count.
     // -----------------------------------------------------------------------
-    // Step 1: Determine the last complete month (the month before current)
     const currentYM = `${year}-${String(mon).padStart(2, '0')}`;
-    // Work backward from the month before the viewed month
-    const viewDate = new Date(year, mon - 1, 1); // month is 1-indexed from split
-    const lastCompleteDate = new Date(viewDate.getFullYear(), viewDate.getMonth() - 1, 1);
-    const lastCompleteYM = `${lastCompleteDate.getFullYear()}-${String(lastCompleteDate.getMonth() + 1).padStart(2, '0')}`;
 
-    // Step 2: Build 6-month range (6 calendar months ending at lastComplete)
-    const sixMoStartDate = new Date(lastCompleteDate.getFullYear(), lastCompleteDate.getMonth() - 5, 1);
-    const sixMonthStart = `${sixMoStartDate.getFullYear()}-${String(sixMoStartDate.getMonth() + 1).padStart(2, '0')}-01`;
-    const lcLastDay = new Date(lastCompleteDate.getFullYear(), lastCompleteDate.getMonth() + 1, 0).getDate();
-    const sixMonthEnd = `${lastCompleteYM}-${String(lcLastDay).padStart(2, '0')}`;
+    // Find distinct months with data, excluding the current (partial) month, most recent first
+    const recentMonths = db.prepare(
+      `SELECT DISTINCT substr(date, 1, 7) as ym FROM transactions
+       WHERE user_id = ? AND substr(date, 1, 7) < ?
+       ORDER BY ym DESC
+       LIMIT 6`
+    ).all(userId, currentYM) as { ym: string }[];
 
-    // Step 3: Count how many of those 6 months actually have data (for label)
-    // But ALWAYS divide by 6 for a true average
-    const monthsWithData = db.prepare(
-      `SELECT COUNT(DISTINCT substr(date, 1, 7)) as cnt FROM transactions
-       WHERE user_id = ? AND date >= ? AND date <= ?`
-    ).get(userId, sixMonthStart, sixMonthEnd) as any;
-    const monthCount = 6; // Always 6 for a true 6-month average
+    const monthCount = Math.max(recentMonths.length, 1);
+
+    // Build date range from oldest to newest of those months
+    let sixMonthStart = monthStart; // fallback
+    let sixMonthEnd = monthEnd;     // fallback
+    if (recentMonths.length > 0) {
+      const oldestYM = recentMonths[recentMonths.length - 1].ym;
+      sixMonthStart = oldestYM + '-01';
+      const newestYM = recentMonths[0].ym;
+      const [ny, nm] = newestYM.split('-').map(Number);
+      const newestLastDay = new Date(ny, nm, 0).getDate();
+      sixMonthEnd = `${newestYM}-${String(newestLastDay).padStart(2, '0')}`;
+    }
 
     // 6-month income: ALL positive amounts, no exclusions
     const avgIncomeResult = db.prepare(
@@ -610,25 +630,30 @@ router.get('/dashboard-summary', (req: Request, res: Response) => {
     // -----------------------------------------------------------------------
     let lastMonthIncome = 0;
     let lastMonthExpenses = 0;
-    let lastMonthLabel = lastCompleteYM;
+    let lastMonthLabel = '';
+    if (recentMonths.length > 0) {
+      const lastYM = recentMonths[0].ym;
+      lastMonthLabel = lastYM;
+      const [ly, lm] = lastYM.split('-').map(Number);
+      const lmStart = lastYM + '-01';
+      const lmLastDay = new Date(ly, lm, 0).getDate();
+      const lmEnd = `${lastYM}-${String(lmLastDay).padStart(2, '0')}`;
+      // Last month income: ALL positive amounts, no exclusions
+      const lmIncomeResult = db.prepare(
+        `SELECT COALESCE(SUM(amount), 0) as total FROM transactions
+         WHERE user_id = ? AND amount > 0 AND date >= ? AND date <= ?`
+      ).get(userId, lmStart, lmEnd) as any;
 
-    const lmStart = lastCompleteYM + '-01';
-    const lmEnd = `${lastCompleteYM}-${String(lcLastDay).padStart(2, '0')}`;
-    // Last month income: ALL positive amounts, no exclusions
-    const lmIncomeResult = db.prepare(
-      `SELECT COALESCE(SUM(amount), 0) as total FROM transactions
-       WHERE user_id = ? AND amount > 0 AND date >= ? AND date <= ?`
-    ).get(userId, lmStart, lmEnd) as any;
+      // Last month expenses: exclude Transfer only
+      const lmExpenseParams = [userId, lmStart, lmEnd, ...expenseExcludeIds];
+      const lmExpenseResult = db.prepare(
+        `SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
+         WHERE user_id = ? AND amount < 0 AND date >= ? AND date <= ? ${buildExpenseExcludeClause()}`
+      ).get(...lmExpenseParams) as any;
 
-    // Last month expenses: exclude Transfer only
-    const lmExpenseParams = [userId, lmStart, lmEnd, ...expenseExcludeIds];
-    const lmExpenseResult = db.prepare(
-      `SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
-       WHERE user_id = ? AND amount < 0 AND date >= ? AND date <= ? ${buildExpenseExcludeClause()}`
-    ).get(...lmExpenseParams) as any;
-
-    lastMonthIncome = Math.round(lmIncomeResult.total * 100) / 100;
-    lastMonthExpenses = Math.round(lmExpenseResult.total * 100) / 100;
+      lastMonthIncome = Math.round(lmIncomeResult.total * 100) / 100;
+      lastMonthExpenses = Math.round(lmExpenseResult.total * 100) / 100;
+    }
     const lastMonthSavings = Math.round((lastMonthIncome - lastMonthExpenses) * 100) / 100;
 
     // Top 10 expense categories (6-month average) excluding transfers AND income-flagged categories
