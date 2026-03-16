@@ -9,10 +9,20 @@ export function useCategories() {
   const fetchCategories = useCallback(async () => {
     setIsLoading(true)
     try {
-      const res = await api.get<Category[]>('/categories')
-      setCategories(res)
+      // Ensure system categories (Gas, CC PMT) exist, then fetch
+      const ensureRes = await api.post<{ categories: Category[]; created: number }>('/categories/ensure-defaults')
+      if (ensureRes?.categories) {
+        setCategories(ensureRes.categories)
+      } else {
+        const res = await api.get<Category[]>('/categories')
+        setCategories(res)
+      }
     } catch (err) {
-      console.error('Failed to fetch categories:', err)
+      // Fallback: just fetch
+      try {
+        const res = await api.get<Category[]>('/categories')
+        setCategories(res)
+      } catch { /* ignore */ }
     } finally {
       setIsLoading(false)
     }

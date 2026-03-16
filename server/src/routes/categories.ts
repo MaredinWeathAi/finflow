@@ -26,8 +26,30 @@ router.post('/ensure-defaults', (req: Request, res: Response) => {
     const existingCount = (db.prepare('SELECT COUNT(*) as count FROM categories WHERE user_id = ?').get(userId) as any).count;
 
     if (existingCount > 0) {
+      // Even if categories exist, ensure system categories (Gas, CC PMT) are present
+      const systemCategories = [
+        { name: 'Gas', icon: '⛽', color: '#F97316', isIncome: false },
+        { name: 'CC PMT', icon: '💳', color: '#64748B', isIncome: false },
+      ];
+      let added = 0;
+      for (const cat of systemCategories) {
+        const exists = db.prepare(
+          'SELECT id FROM categories WHERE user_id = ? AND LOWER(name) = ?'
+        ).get(userId, cat.name.toLowerCase()) as any;
+        if (!exists) {
+          const maxOrder = db.prepare(
+            'SELECT MAX(sort_order) as max_order FROM categories WHERE user_id = ?'
+          ).get(userId) as any;
+          const nextOrder = (maxOrder?.max_order ?? -1) + 1;
+          db.prepare(
+            `INSERT INTO categories (id, user_id, name, icon, color, is_income, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?)`
+          ).run(crypto.randomUUID(), userId, cat.name, cat.icon, cat.color, cat.isIncome ? 1 : 0, nextOrder);
+          added++;
+        }
+      }
+
       const categories = db.prepare('SELECT * FROM categories WHERE user_id = ? ORDER BY sort_order ASC, name ASC').all(userId);
-      res.json({ message: 'Categories already exist', created: 0, categories });
+      res.json({ message: added > 0 ? `Added ${added} missing system categories` : 'Categories already exist', created: added, categories });
       return;
     }
 
