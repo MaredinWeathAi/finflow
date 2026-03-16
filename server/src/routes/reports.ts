@@ -706,7 +706,8 @@ router.get('/dashboard-summary', (req: Request, res: Response) => {
     const topExpenses6Mo = db.prepare(
       `SELECT c.id, c.name, c.icon, c.color,
               COALESCE(SUM(ABS(t.amount)), 0) as total,
-              COUNT(t.id) as transaction_count
+              COUNT(t.id) as transaction_count,
+              COUNT(DISTINCT substr(t.date, 1, 7)) as months_with_data
        FROM transactions t
        JOIN categories c ON t.category_id = c.id
        WHERE t.user_id = ? AND t.amount < 0 AND t.date >= ? AND t.date <= ?
@@ -721,7 +722,8 @@ router.get('/dashboard-summary', (req: Request, res: Response) => {
     const topIncome6Mo = db.prepare(
       `SELECT c.id, c.name, c.icon, c.color,
               COALESCE(SUM(t.amount), 0) as total,
-              COUNT(t.id) as transaction_count
+              COUNT(t.id) as transaction_count,
+              COUNT(DISTINCT substr(t.date, 1, 7)) as months_with_data
        FROM transactions t
        JOIN categories c ON t.category_id = c.id
        WHERE t.user_id = ? AND t.amount > 0 AND t.date >= ? AND t.date <= ?
@@ -790,7 +792,7 @@ router.get('/dashboard-summary', (req: Request, res: Response) => {
         icon: c.icon,
         color: c.color,
         totalAmount: Math.round(c.total * 100) / 100,
-        avgAmount: Math.round((c.total / monthCount) * 100) / 100,
+        avgAmount: Math.round((c.total / Math.max(c.months_with_data, 1)) * 100) / 100,
         count: c.transaction_count,
       })),
       topIncome6Mo: topIncome6Mo.map((c: any) => ({
@@ -798,7 +800,7 @@ router.get('/dashboard-summary', (req: Request, res: Response) => {
         icon: c.icon,
         color: c.color,
         totalAmount: Math.round(c.total * 100) / 100,
-        avgAmount: Math.round((c.total / monthCount) * 100) / 100,
+        avgAmount: Math.round((c.total / Math.max(c.months_with_data, 1)) * 100) / 100,
         count: c.transaction_count,
       })),
     });
