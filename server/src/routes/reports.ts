@@ -174,6 +174,18 @@ router.get('/cashflow', (req: Request, res: Response) => {
       months = parseInt(match[1]);
     }
 
+    // Get Transfer and CC PMT categories to exclude (consistency with dashboard)
+    const transferCat = db.prepare(
+      `SELECT id FROM categories WHERE user_id = ? AND LOWER(name) = 'transfer'`
+    ).get(userId) as any;
+    const ccPmtCat = db.prepare(
+      `SELECT id FROM categories WHERE user_id = ? AND LOWER(name) = 'cc pmt'`
+    ).get(userId) as any;
+    const cfExcludeIds = [transferCat?.id, ccPmtCat?.id].filter(Boolean);
+    const cfExcludeClause = cfExcludeIds.length > 0
+      ? `AND (category_id IS NULL OR category_id NOT IN (${cfExcludeIds.map(() => '?').join(', ')}))`
+      : 'AND 1=1';
+
     // Calculate start date
     const now = new Date();
     const startDate = new Date(now.getFullYear(), now.getMonth() - months + 1, 1);
@@ -187,11 +199,11 @@ router.get('/cashflow', (req: Request, res: Response) => {
            SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) as income,
            SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END) as expenses
          FROM transactions
-         WHERE user_id = ? AND date >= ? AND date <= ?
+         WHERE user_id = ? AND date >= ? AND date <= ? ${cfExcludeClause}
          GROUP BY substr(date, 1, 7)
          ORDER BY month ASC`
       )
-      .all(userId, startStr, endStr)
+      .all(userId, startStr, endStr, ...cfExcludeIds)
       .map((row: any) => ({
         month: row.month,
         income: Math.round(row.income * 100) / 100,

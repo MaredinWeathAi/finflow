@@ -69,7 +69,7 @@ export function SpendingTrendChart() {
         <div className="flex items-center gap-2">
           <TrendingUp className="w-4 h-4 text-primary" />
           <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
-            6-Month Spending Trend
+            {data.length}-Month Spending Trend
           </h3>
         </div>
         <span className="text-xs text-muted-foreground">

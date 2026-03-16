@@ -1,6 +1,6 @@
-import { useState, useCallback, useEffect } from 'react'
-import { format, parseISO, isToday, isYesterday } from 'date-fns'
-import { Search, Filter, Plus, ArrowUpDown, Download, Upload, X, Check, Tag, Receipt } from 'lucide-react'
+import { useState, useCallback, useEffect, useMemo } from 'react'
+import { format, parseISO, isToday, isYesterday, subDays, subMonths, startOfMonth, endOfMonth, startOfQuarter, subQuarters, endOfQuarter } from 'date-fns'
+import { Search, Filter, Plus, ArrowUpDown, Download, Upload, X, Check, Tag, Receipt, Calendar } from 'lucide-react'
 import { cn, formatCurrency } from '@/lib/utils'
 import { useTransactions } from '@/hooks/useTransactions'
 import { useCategories } from '@/hooks/useCategories'
@@ -365,16 +365,53 @@ function AddTransactionModal({
   )
 }
 
+// Build date filter options: last 30 days, last month, last quarter, then individual months for 12 months
+function useDateFilterOptions() {
+  return useMemo(() => {
+    const now = new Date()
+    const options: { label: string; value: string; startDate?: string; endDate?: string }[] = [
+      { label: 'All Time', value: '' },
+      { label: 'Last 30 Days', value: 'last30',
+        startDate: format(subDays(now, 30), 'yyyy-MM-dd'),
+        endDate: format(now, 'yyyy-MM-dd') },
+      { label: 'Last Month', value: 'lastmonth',
+        startDate: format(startOfMonth(subMonths(now, 1)), 'yyyy-MM-dd'),
+        endDate: format(endOfMonth(subMonths(now, 1)), 'yyyy-MM-dd') },
+      { label: 'Last Quarter', value: 'lastquarter',
+        startDate: format(startOfQuarter(subQuarters(now, 1)), 'yyyy-MM-dd'),
+        endDate: format(endOfQuarter(subQuarters(now, 1)), 'yyyy-MM-dd') },
+    ]
+    // Add individual months for the last 12 months (most recent first)
+    for (let i = 0; i < 12; i++) {
+      const m = subMonths(now, i)
+      const ms = startOfMonth(m)
+      const me = endOfMonth(m)
+      const label = format(ms, 'MMMM yyyy')
+      options.push({
+        label,
+        value: `month_${format(ms, 'yyyy-MM')}`,
+        startDate: format(ms, 'yyyy-MM-dd'),
+        endDate: format(me, 'yyyy-MM-dd'),
+      })
+    }
+    return options
+  }, [])
+}
+
 export function TransactionsPage() {
   const [search, setSearch] = useState('')
   const [selectedCategory, setSelectedCategory] = useState('')
   const [selectedAccount, setSelectedAccount] = useState('')
+  const [selectedDateFilter, setSelectedDateFilter] = useState('')
   const [sortBy, setSortBy] = useState('date_desc')
   const [page, setPage] = useState(1)
   const [showFilters, setShowFilters] = useState(false)
   const [showAddModal, setShowAddModal] = useState(false)
   const [editTransaction, setEditTransaction] = useState<Transaction | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+
+  const dateFilterOptions = useDateFilterOptions()
+  const activeDateFilter = dateFilterOptions.find(o => o.value === selectedDateFilter)
 
   const { categories } = useCategories()
   const { accounts } = useAccounts()
@@ -384,6 +421,8 @@ export function TransactionsPage() {
     search: search || undefined,
     category: selectedCategory || undefined,
     account: selectedAccount || undefined,
+    startDate: activeDateFilter?.startDate || undefined,
+    endDate: activeDateFilter?.endDate || undefined,
     sort: sortBy,
   })
 
@@ -424,7 +463,7 @@ export function TransactionsPage() {
     <div>
       <PageHeader
         title="Transactions"
-        description={`${total} transactions found`}
+        description={`${total} transactions${activeDateFilter?.label ? ` · ${activeDateFilter.label}` : ''}`}
         action={
           <button
             onClick={() => { setEditTransaction(null); setShowAddModal(true) }}
@@ -490,7 +529,18 @@ export function TransactionsPage() {
 
       {/* Filter Bar */}
       {showFilters && (
-        <div className="flex items-center gap-3 mb-4 p-3 bg-card rounded-xl border border-border/50">
+        <div className="flex items-center gap-3 mb-4 p-3 bg-card rounded-xl border border-border/50 flex-wrap">
+          <select
+            value={selectedDateFilter}
+            onChange={e => { setSelectedDateFilter(e.target.value); setPage(1) }}
+            className="h-9 px-3 rounded-lg border border-input bg-background text-sm"
+          >
+            {dateFilterOptions.map((opt, i) => (
+              <option key={opt.value || 'all'} value={opt.value}>
+                {i >= 4 ? `📅 ${opt.label}` : opt.label}
+              </option>
+            ))}
+          </select>
           <select
             value={selectedCategory}
             onChange={e => { setSelectedCategory(e.target.value); setPage(1) }}
@@ -511,12 +561,12 @@ export function TransactionsPage() {
               <option key={a.id} value={a.id}>{a.name}</option>
             ))}
           </select>
-          {(selectedCategory || selectedAccount) && (
+          {(selectedCategory || selectedAccount || selectedDateFilter) && (
             <button
-              onClick={() => { setSelectedCategory(''); setSelectedAccount(''); setPage(1) }}
+              onClick={() => { setSelectedCategory(''); setSelectedAccount(''); setSelectedDateFilter(''); setPage(1) }}
               className="h-9 px-3 rounded-lg text-sm text-muted-foreground hover:text-foreground flex items-center gap-1"
             >
-              <X className="w-3 h-3" /> Clear
+              <X className="w-3 h-3" /> Clear All
             </button>
           )}
         </div>

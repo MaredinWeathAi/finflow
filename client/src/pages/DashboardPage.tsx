@@ -352,7 +352,7 @@ export function DashboardPage() {
                 Top 10 Expense Categories
               </p>
               <span className="text-[10px] text-muted-foreground">
-                6-month avg ({summary.avgMonthCount} months)
+                {summary.avgMonthCount}-month avg
               </span>
             </div>
             <div className="space-y-3">
@@ -365,7 +365,7 @@ export function DashboardPage() {
                       <span className="text-lg">{cat.icon || '📁'}</span>
                       <div className="min-w-0">
                         <p className="truncate text-sm font-medium">{cat.name}</p>
-                        <p className="text-[10px] text-muted-foreground">{cat.count} txns over 6 mo</p>
+                        <p className="text-[10px] text-muted-foreground">{cat.count} txns over {summary.avgMonthCount} mo</p>
                       </div>
                     </div>
                     <div className="flex-1">
