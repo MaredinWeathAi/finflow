@@ -187,15 +187,36 @@ router.get('/cashflow', (req: Request, res: Response) => {
       : 'AND 1=1';
 
     // Find the N most recent COMPLETE months with data (exclude current partial month)
+    // Fetch N+1 so we can drop a partial first month and still have up to N
     const now = new Date();
     const currentMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 
-    const recentDataMonths = db.prepare(
+    let recentDataMonths = db.prepare(
       `SELECT DISTINCT substr(date, 1, 7) as ym FROM transactions
        WHERE user_id = ? AND substr(date, 1, 7) < ?
        ORDER BY ym DESC
        LIMIT ?`
-    ).all(userId, currentMonthKey, months) as { ym: string }[];
+    ).all(userId, currentMonthKey, months + 1) as { ym: string }[];
+
+    // Drop the oldest month if it's partial (first transaction after day 10)
+    if (recentDataMonths.length > 0) {
+      const oldestCandidate = recentDataMonths[recentDataMonths.length - 1].ym;
+      const minDateResult = db.prepare(
+        `SELECT MIN(date) as minDate FROM transactions WHERE user_id = ? AND substr(date, 1, 7) = ?`
+      ).get(userId, oldestCandidate) as any;
+      if (minDateResult?.minDate) {
+        const day = parseInt(minDateResult.minDate.substring(8, 10));
+        if (day > 10) {
+          // Partial month — drop it
+          recentDataMonths = recentDataMonths.slice(0, -1);
+        }
+      }
+    }
+
+    // Cap at requested month count
+    if (recentDataMonths.length > months) {
+      recentDataMonths = recentDataMonths.slice(0, months);
+    }
 
     if (recentDataMonths.length === 0) {
       res.json([]);
@@ -587,12 +608,33 @@ router.get('/dashboard-summary', (req: Request, res: Response) => {
     const currentYM = `${year}-${String(mon).padStart(2, '0')}`;
 
     // Find distinct months with data, excluding the current (partial) month, most recent first
-    const recentMonths = db.prepare(
+    // Fetch 7 so we can drop a partial first month and still have up to 6
+    let recentMonths = db.prepare(
       `SELECT DISTINCT substr(date, 1, 7) as ym FROM transactions
        WHERE user_id = ? AND substr(date, 1, 7) < ?
        ORDER BY ym DESC
-       LIMIT 6`
+       LIMIT 7`
     ).all(userId, currentYM) as { ym: string }[];
+
+    // Drop the oldest month if it's partial (first transaction after day 10)
+    if (recentMonths.length > 0) {
+      const oldestCandidate = recentMonths[recentMonths.length - 1].ym;
+      const minDateResult = db.prepare(
+        `SELECT MIN(date) as minDate FROM transactions WHERE user_id = ? AND substr(date, 1, 7) = ?`
+      ).get(userId, oldestCandidate) as any;
+      if (minDateResult?.minDate) {
+        const day = parseInt(minDateResult.minDate.substring(8, 10));
+        if (day > 10) {
+          // Partial month — drop it
+          recentMonths = recentMonths.slice(0, -1);
+        }
+      }
+    }
+
+    // Cap at 6 months
+    if (recentMonths.length > 6) {
+      recentMonths = recentMonths.slice(0, 6);
+    }
 
     const monthCount = Math.max(recentMonths.length, 1);
 
