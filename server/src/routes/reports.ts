@@ -174,14 +174,12 @@ router.get('/cashflow', (req: Request, res: Response) => {
       months = parseInt(match[1]);
     }
 
-    // Get Transfer and CC PMT categories to exclude from expenses only
+    // Get Transfer category to exclude from expenses (internal moves, not real expenses)
+    // CC PMT is a real expense — it represents paying off credit card debt
     const transferCat = db.prepare(
       `SELECT id FROM categories WHERE user_id = ? AND LOWER(name) = 'transfer'`
     ).get(userId) as any;
-    const ccPmtCat = db.prepare(
-      `SELECT id FROM categories WHERE user_id = ? AND LOWER(name) = 'cc pmt'`
-    ).get(userId) as any;
-    const cfExpExcludeIds = [transferCat?.id, ccPmtCat?.id].filter(Boolean);
+    const cfExpExcludeIds = [transferCat?.id].filter(Boolean);
     const cfExpExcludeClause = cfExpExcludeIds.length > 0
       ? `AND (category_id IS NULL OR category_id NOT IN (${cfExpExcludeIds.map(() => '?').join(', ')}))`
       : 'AND 1=1';
@@ -193,7 +191,7 @@ router.get('/cashflow', (req: Request, res: Response) => {
     const endStr = now.toISOString().substring(0, 10);
 
     // Income: ALL positive amounts (no exclusions)
-    // Expenses: exclude Transfer and CC PMT to avoid double-counting
+    // Expenses: exclude Transfer only (internal account moves)
     const incomeRows = db.prepare(
       `SELECT substr(date, 1, 7) as month, SUM(amount) as income
        FROM transactions
@@ -427,7 +425,8 @@ router.get('/dashboard-summary', (req: Request, res: Response) => {
     const endOfMonth = new Date(year, mon, 0);
     const monthEnd = `${year}-${String(mon).padStart(2, '0')}-${String(endOfMonth.getDate()).padStart(2, '0')}`;
 
-    // Get Transfer and CC PMT categories (both excluded from income/expense totals)
+    // Get Transfer category — excluded from expenses (internal account moves, not real expenses)
+    // CC PMT is a real expense — it represents paying off credit card debt, so it counts.
     const transferCategory = db.prepare(
       `SELECT id FROM categories WHERE user_id = ? AND LOWER(name) = 'transfer'`
     ).get(userId) as any;
@@ -438,9 +437,8 @@ router.get('/dashboard-summary', (req: Request, res: Response) => {
     ).get(userId) as any;
     const ccPmtCategoryId = ccPmtCategory?.id;
 
-    // Exclude CC PMT from expenses (the expense was already counted when charge hit)
-    // but show ALL income regardless of category — income is income.
-    const expenseExcludeIds = [transferCategoryId, ccPmtCategoryId].filter(Boolean);
+    // Only exclude Transfer from expenses — CC PMT is a real expense
+    const expenseExcludeIds = [transferCategoryId].filter(Boolean);
     const buildExpenseExcludeClause = () => {
       if (expenseExcludeIds.length === 0) return 'AND 1=1';
       const placeholders = expenseExcludeIds.map(() => '?').join(', ');
@@ -453,7 +451,7 @@ router.get('/dashboard-summary', (req: Request, res: Response) => {
        WHERE user_id = ? AND amount > 0 AND date >= ? AND date <= ?`
     ).get(userId, monthStart, monthEnd) as any;
 
-    // Expenses: exclude Transfer and CC PMT to avoid double-counting
+    // Expenses: exclude Transfer only (internal account moves)
     const expenseExcludeParams = [userId, monthStart, monthEnd, ...expenseExcludeIds];
     const expenseResult = db.prepare(
       `SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
@@ -527,8 +525,8 @@ router.get('/dashboard-summary', (req: Request, res: Response) => {
 
     const totalCash = cashAccounts.reduce((sum, acc) => sum + (acc.balance || 0), 0);
 
-    // Top expense categories (excluding transfers and CC PMT)
-    const topExpenseExcludeIds = [transferCategoryId, ccPmtCategoryId].filter(Boolean);
+    // Top expense categories (excluding transfers only)
+    const topExpenseExcludeIds = [transferCategoryId].filter(Boolean);
     const topExpenseExcludeClause = topExpenseExcludeIds.length > 0
       ? `AND c.id NOT IN (${topExpenseExcludeIds.map(() => '?').join(', ')})`
       : 'AND 1=1';
@@ -607,7 +605,7 @@ router.get('/dashboard-summary', (req: Request, res: Response) => {
        WHERE user_id = ? AND amount > 0 AND date >= ? AND date <= ?`
     ).get(userId, sixMonthStart, sixMonthEnd) as any;
 
-    // 6-month expenses: exclude Transfer and CC PMT
+    // 6-month expenses: exclude Transfer only
     const sixMoExpenseParams = [userId, sixMonthStart, sixMonthEnd, ...expenseExcludeIds];
     const avgExpenseResult = db.prepare(
       `SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
@@ -637,7 +635,7 @@ router.get('/dashboard-summary', (req: Request, res: Response) => {
          WHERE user_id = ? AND amount > 0 AND date >= ? AND date <= ?`
       ).get(userId, lmStart, lmEnd) as any;
 
-      // Last month expenses: exclude Transfer and CC PMT
+      // Last month expenses: exclude Transfer only
       const lmExpenseParams = [userId, lmStart, lmEnd, ...expenseExcludeIds];
       const lmExpenseResult = db.prepare(
         `SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
@@ -649,8 +647,8 @@ router.get('/dashboard-summary', (req: Request, res: Response) => {
     }
     const lastMonthSavings = Math.round((lastMonthIncome - lastMonthExpenses) * 100) / 100;
 
-    // Top 10 expense categories (6-month average) excluding transfers/CC PMT
-    const topExpense6MoExcludeIds = [transferCategoryId, ccPmtCategoryId].filter(Boolean);
+    // Top 10 expense categories (6-month average) excluding transfers only
+    const topExpense6MoExcludeIds = [transferCategoryId].filter(Boolean);
     const topExpense6MoExcludeClause = topExpense6MoExcludeIds.length > 0
       ? `AND c.id NOT IN (${topExpense6MoExcludeIds.map(() => '?').join(', ')})`
       : 'AND 1=1';
