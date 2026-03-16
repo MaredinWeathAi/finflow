@@ -245,11 +245,13 @@ function RuleModal({
       }
 
       if (rule) {
-        await api.put(`/rules/${rule.id}`, payload)
-        toast.success('Rule updated')
+        const result = await api.put<any>(`/rules/${rule.id}`, payload)
+        const applied = result?.applied || 0
+        toast.success(applied > 0 ? `Rule updated — applied to ${applied} transactions` : 'Rule updated')
       } else {
-        await api.post('/rules', payload)
-        toast.success('Rule created')
+        const result = await api.post<any>('/rules', payload)
+        const applied = result?.applied || 0
+        toast.success(applied > 0 ? `Rule created — applied to ${applied} transactions` : 'Rule created')
       }
       onSave()
       onClose()

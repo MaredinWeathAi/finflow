@@ -28,7 +28,58 @@ router.get('/', (req: Request, res: Response) => {
 });
 
 // ---------------------------------------------------------------------------
-// POST / — create a new rule
+// Helper: apply a single rule to all matching transactions
+// ---------------------------------------------------------------------------
+function applySingleRule(userId: string, rule: any): number {
+  const now = new Date().toISOString();
+  let totalUpdated = 0;
+
+  const updateCategoryOnly = db.prepare(
+    `UPDATE transactions SET category_id = ?, updated_at = ? WHERE id = ? AND user_id = ?`
+  );
+  const updateCategoryAndAmount = db.prepare(
+    `UPDATE transactions SET category_id = ?, amount = ?, updated_at = ? WHERE id = ? AND user_id = ?`
+  );
+
+  const transactions = db.prepare(
+    `SELECT id, name, amount, date, account_id, category_id FROM transactions WHERE user_id = ?`
+  ).all(userId) as any[];
+
+  for (const txn of transactions) {
+    if (matchesRule(txn, rule)) {
+      const categoryChanged = txn.category_id !== rule.category_id;
+
+      let newAmount = txn.amount;
+      let amountChanged = false;
+      if (rule.assign_type) {
+        const absAmt = Math.abs(txn.amount);
+        if (rule.assign_type === 'income' && txn.amount < 0) {
+          newAmount = absAmt;
+          amountChanged = true;
+        } else if (rule.assign_type === 'expense' && txn.amount > 0) {
+          newAmount = -absAmt;
+          amountChanged = true;
+        }
+      }
+
+      if (categoryChanged && amountChanged) {
+        updateCategoryAndAmount.run(rule.category_id, newAmount, now, txn.id, userId);
+        totalUpdated++;
+      } else if (categoryChanged) {
+        updateCategoryOnly.run(rule.category_id, now, txn.id, userId);
+        totalUpdated++;
+      } else if (amountChanged) {
+        updateCategoryAndAmount.run(txn.category_id, newAmount, now, txn.id, userId);
+        totalUpdated++;
+      }
+    }
+  }
+
+  return totalUpdated;
+}
+
+// ---------------------------------------------------------------------------
+// POST / — create a new rule (auto-applies to existing transactions)
 // ---------------------------------------------------------------------------
 router.post('/', (req: Request, res: Response) => {
   try {
@@ -82,9 +133,24 @@ router.post('/', (req: Request, res: Response) => {
        FROM category_rules r
        LEFT JOIN categories c ON r.category_id = c.id
        WHERE r.id = ?`
-    ).get(id);
+    ).get(id) as any;
 
-    res.status(201).json(rule);
+    // Auto-apply the new rule to existing transactions
+    let applied = 0;
+    if (is_enabled !== false) {
+      applied = applySingleRule(userId, {
+        pattern: pattern || '',
+        match_type: match_type || 'contains',
+        category_id,
+        account_id: account_id || null,
+        amount_min: amount_min ?? null,
+        amount_max: amount_max ?? null,
+        amount_exact: amount_exact ?? null,
+        assign_type: assign_type || null,
+      });
+    }
+
+    res.status(201).json({ ...rule, applied });
   } catch (error) {
     console.error('Create rule error:', error);
     res.status(500).json({ error: 'Failed to create rule' });
@@ -137,9 +203,15 @@ router.put('/:id', (req: Request, res: Response) => {
        FROM category_rules r
        LEFT JOIN categories c ON r.category_id = c.id
        WHERE r.id = ?`
-    ).get(id);
+    ).get(id) as any;
 
-    res.json(rule);
+    // Auto-apply updated rule to existing transactions if enabled
+    let applied = 0;
+    if (rule && rule.is_enabled) {
+      applied = applySingleRule(userId, rule);
+    }
+
+    res.json({ ...rule, applied });
   } catch (error) {
     console.error('Update rule error:', error);
     res.status(500).json({ error: 'Failed to update rule' });

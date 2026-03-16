@@ -174,16 +174,16 @@ router.get('/cashflow', (req: Request, res: Response) => {
       months = parseInt(match[1]);
     }
 
-    // Get Transfer and CC PMT categories to exclude (consistency with dashboard)
+    // Get Transfer and CC PMT categories to exclude from expenses only
     const transferCat = db.prepare(
       `SELECT id FROM categories WHERE user_id = ? AND LOWER(name) = 'transfer'`
     ).get(userId) as any;
     const ccPmtCat = db.prepare(
       `SELECT id FROM categories WHERE user_id = ? AND LOWER(name) = 'cc pmt'`
     ).get(userId) as any;
-    const cfExcludeIds = [transferCat?.id, ccPmtCat?.id].filter(Boolean);
-    const cfExcludeClause = cfExcludeIds.length > 0
-      ? `AND (category_id IS NULL OR category_id NOT IN (${cfExcludeIds.map(() => '?').join(', ')}))`
+    const cfExpExcludeIds = [transferCat?.id, ccPmtCat?.id].filter(Boolean);
+    const cfExpExcludeClause = cfExpExcludeIds.length > 0
+      ? `AND (category_id IS NULL OR category_id NOT IN (${cfExpExcludeIds.map(() => '?').join(', ')}))`
       : 'AND 1=1';
 
     // Calculate start date
@@ -192,23 +192,40 @@ router.get('/cashflow', (req: Request, res: Response) => {
     const startStr = startDate.toISOString().substring(0, 10);
     const endStr = now.toISOString().substring(0, 10);
 
-    const cashflow = db
-      .prepare(
-        `SELECT
-           substr(date, 1, 7) as month,
-           SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) as income,
-           SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END) as expenses
-         FROM transactions
-         WHERE user_id = ? AND date >= ? AND date <= ? ${cfExcludeClause}
-         GROUP BY substr(date, 1, 7)
-         ORDER BY month ASC`
-      )
-      .all(userId, startStr, endStr, ...cfExcludeIds)
-      .map((row: any) => ({
-        month: row.month,
-        income: Math.round(row.income * 100) / 100,
-        expenses: Math.round(row.expenses * 100) / 100,
-        net: Math.round((row.income - row.expenses) * 100) / 100,
+    // Income: ALL positive amounts (no exclusions)
+    // Expenses: exclude Transfer and CC PMT to avoid double-counting
+    const incomeRows = db.prepare(
+      `SELECT substr(date, 1, 7) as month, SUM(amount) as income
+       FROM transactions
+       WHERE user_id = ? AND amount > 0 AND date >= ? AND date <= ?
+       GROUP BY substr(date, 1, 7)`
+    ).all(userId, startStr, endStr) as any[];
+
+    const expenseRows = db.prepare(
+      `SELECT substr(date, 1, 7) as month, SUM(ABS(amount)) as expenses
+       FROM transactions
+       WHERE user_id = ? AND amount < 0 AND date >= ? AND date <= ? ${cfExpExcludeClause}
+       GROUP BY substr(date, 1, 7)`
+    ).all(userId, startStr, endStr, ...cfExpExcludeIds) as any[];
+
+    // Merge income and expense rows by month
+    const monthMap = new Map<string, { income: number; expenses: number }>();
+    for (const row of incomeRows) {
+      monthMap.set(row.month, { income: row.income || 0, expenses: 0 });
+    }
+    for (const row of expenseRows) {
+      const existing = monthMap.get(row.month) || { income: 0, expenses: 0 };
+      existing.expenses = row.expenses || 0;
+      monthMap.set(row.month, existing);
+    }
+
+    const cashflow = Array.from(monthMap.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([month, data]) => ({
+        month,
+        income: Math.round(data.income * 100) / 100,
+        expenses: Math.round(data.expenses * 100) / 100,
+        net: Math.round((data.income - data.expenses) * 100) / 100,
       }));
 
     // Fill in missing months with zero values
@@ -421,25 +438,27 @@ router.get('/dashboard-summary', (req: Request, res: Response) => {
     ).get(userId) as any;
     const ccPmtCategoryId = ccPmtCategory?.id;
 
-    // Core monthly numbers (excluding transfers and CC payments — CC PMT is a balance
-    // transfer, not a new expense; the expense was already counted when the charge hit)
-    const excludeIds = [transferCategoryId, ccPmtCategoryId].filter(Boolean);
-    const buildExcludeClause = () => {
-      if (excludeIds.length === 0) return 'AND 1=1';
-      const placeholders = excludeIds.map(() => '?').join(', ');
+    // Exclude CC PMT from expenses (the expense was already counted when charge hit)
+    // but show ALL income regardless of category — income is income.
+    const expenseExcludeIds = [transferCategoryId, ccPmtCategoryId].filter(Boolean);
+    const buildExpenseExcludeClause = () => {
+      if (expenseExcludeIds.length === 0) return 'AND 1=1';
+      const placeholders = expenseExcludeIds.map(() => '?').join(', ');
       return `AND (category_id IS NULL OR category_id NOT IN (${placeholders}))`;
     };
-    const excludeParams = [userId, monthStart, monthEnd, ...excludeIds];
 
+    // Income: ALL positive amounts, no exclusions
     const incomeResult = db.prepare(
       `SELECT COALESCE(SUM(amount), 0) as total FROM transactions
-       WHERE user_id = ? AND amount > 0 AND date >= ? AND date <= ? ${buildExcludeClause()}`
-    ).get(...excludeParams) as any;
+       WHERE user_id = ? AND amount > 0 AND date >= ? AND date <= ?`
+    ).get(userId, monthStart, monthEnd) as any;
 
+    // Expenses: exclude Transfer and CC PMT to avoid double-counting
+    const expenseExcludeParams = [userId, monthStart, monthEnd, ...expenseExcludeIds];
     const expenseResult = db.prepare(
       `SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
-       WHERE user_id = ? AND amount < 0 AND date >= ? AND date <= ? ${buildExcludeClause()}`
-    ).get(...excludeParams) as any;
+       WHERE user_id = ? AND amount < 0 AND date >= ? AND date <= ? ${buildExpenseExcludeClause()}`
+    ).get(...expenseExcludeParams) as any;
 
     const income = Math.round(incomeResult.total * 100) / 100;
     const expenses = Math.round(expenseResult.total * 100) / 100;
@@ -582,17 +601,18 @@ router.get('/dashboard-summary', (req: Request, res: Response) => {
       sixMonthEnd = `${newestYM}-${String(lastDay).padStart(2, '0')}`;
     }
 
-    const sixMoExcludeParams = [userId, sixMonthStart, sixMonthEnd, ...excludeIds];
-
+    // 6-month income: ALL positive amounts, no exclusions
     const avgIncomeResult = db.prepare(
       `SELECT COALESCE(SUM(amount), 0) as total FROM transactions
-       WHERE user_id = ? AND amount > 0 AND date >= ? AND date <= ? ${buildExcludeClause()}`
-    ).get(...sixMoExcludeParams) as any;
+       WHERE user_id = ? AND amount > 0 AND date >= ? AND date <= ?`
+    ).get(userId, sixMonthStart, sixMonthEnd) as any;
 
+    // 6-month expenses: exclude Transfer and CC PMT
+    const sixMoExpenseParams = [userId, sixMonthStart, sixMonthEnd, ...expenseExcludeIds];
     const avgExpenseResult = db.prepare(
       `SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
-       WHERE user_id = ? AND amount < 0 AND date >= ? AND date <= ? ${buildExcludeClause()}`
-    ).get(...sixMoExcludeParams) as any;
+       WHERE user_id = ? AND amount < 0 AND date >= ? AND date <= ? ${buildExpenseExcludeClause()}`
+    ).get(...sixMoExpenseParams) as any;
 
     const avgMonthlyIncome = Math.round((avgIncomeResult.total / monthCount) * 100) / 100;
     const avgMonthlyExpenses = Math.round((avgExpenseResult.total / monthCount) * 100) / 100;
@@ -611,16 +631,18 @@ router.get('/dashboard-summary', (req: Request, res: Response) => {
       const lmStart = lastYM + '-01';
       const lmLastDay = new Date(ly, lm, 0).getDate();
       const lmEnd = `${lastYM}-${String(lmLastDay).padStart(2, '0')}`;
-      const lmExcludeParams = [userId, lmStart, lmEnd, ...excludeIds];
-
+      // Last month income: ALL positive amounts, no exclusions
       const lmIncomeResult = db.prepare(
         `SELECT COALESCE(SUM(amount), 0) as total FROM transactions
-         WHERE user_id = ? AND amount > 0 AND date >= ? AND date <= ? ${buildExcludeClause()}`
-      ).get(...lmExcludeParams) as any;
+         WHERE user_id = ? AND amount > 0 AND date >= ? AND date <= ?`
+      ).get(userId, lmStart, lmEnd) as any;
+
+      // Last month expenses: exclude Transfer and CC PMT
+      const lmExpenseParams = [userId, lmStart, lmEnd, ...expenseExcludeIds];
       const lmExpenseResult = db.prepare(
         `SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
-         WHERE user_id = ? AND amount < 0 AND date >= ? AND date <= ? ${buildExcludeClause()}`
-      ).get(...lmExcludeParams) as any;
+         WHERE user_id = ? AND amount < 0 AND date >= ? AND date <= ? ${buildExpenseExcludeClause()}`
+      ).get(...lmExpenseParams) as any;
 
       lastMonthIncome = Math.round(lmIncomeResult.total * 100) / 100;
       lastMonthExpenses = Math.round(lmExpenseResult.total * 100) / 100;
