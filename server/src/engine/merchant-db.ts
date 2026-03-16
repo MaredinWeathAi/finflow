@@ -213,9 +213,10 @@ const SHOPPING: MerchantEntry[] = [
 ].map(p => ({ pattern: p, category: 'Shopping', confidence: 0.75 }));
 
 // ---------------------------------------------------------------------------
-// GAS — Gas stations, convenience stores (fuel-primary)
+// TRANSPORTATION — Gas, Rideshare, Auto, Transit, Tolls
 // ---------------------------------------------------------------------------
-const GAS: MerchantEntry[] = [
+const TRANSPORTATION: MerchantEntry[] = [
+  // Gas stations & convenience stores
   'shell', 'chevron', 'exxon', 'exxonmobil', 'bp ',
   'sunoco', 'marathon', 'valero', 'citgo', 'phillips 66',
   'conoco', 'conocophillips', 'arco', 'speedway',
@@ -232,12 +233,6 @@ const GAS: MerchantEntry[] = [
   'gate petroleum', 'getgo', 'get go', 'turkey hill',
   // Generic fuel
   'gas', 'fuel', 'petrol', 'diesel',
-].map(p => ({ pattern: p, category: 'Gas', confidence: 0.85 }));
-
-// ---------------------------------------------------------------------------
-// TRANSPORTATION — Rideshare, Auto, Transit, Tolls
-// ---------------------------------------------------------------------------
-const TRANSPORTATION: MerchantEntry[] = [
   // Rideshare
   'uber', 'lyft', 'via ride',
   // Auto services
@@ -677,7 +672,6 @@ export const MERCHANT_DATABASE: MerchantEntry[] = [
   ...GROCERIES,
   ...FOOD_DINING,
   ...SHOPPING,
-  ...GAS,
   ...TRANSPORTATION,
   ...SUBSCRIPTIONS,
   ...UTILITIES,

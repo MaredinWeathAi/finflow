@@ -26,9 +26,8 @@ router.post('/ensure-defaults', (req: Request, res: Response) => {
     const existingCount = (db.prepare('SELECT COUNT(*) as count FROM categories WHERE user_id = ?').get(userId) as any).count;
 
     if (existingCount > 0) {
-      // Even if categories exist, ensure system categories (Gas, CC PMT) are present
+      // Even if categories exist, ensure system categories (CC PMT) are present
       const systemCategories = [
-        { name: 'Gas', icon: '⛽', color: '#F97316', isIncome: false },
         { name: 'CC PMT', icon: '💳', color: '#64748B', isIncome: false },
       ];
       let added = 0;
@@ -58,7 +57,6 @@ router.post('/ensure-defaults', (req: Request, res: Response) => {
       { name: 'Groceries', icon: '🛒', color: '#22C55E', isIncome: false },
       { name: 'Food & Dining', icon: '🍔', color: '#F59E0B', isIncome: false },
       { name: 'Transportation', icon: '🚗', color: '#3B82F6', isIncome: false },
-      { name: 'Gas', icon: '⛽', color: '#F97316', isIncome: false },
       { name: 'Shopping', icon: '🛍️', color: '#8B5CF6', isIncome: false },
       { name: 'Utilities', icon: '💡', color: '#14B8A6', isIncome: false },
       { name: 'Healthcare', icon: '🏥', color: '#EF4444', isIncome: false },

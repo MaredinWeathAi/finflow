@@ -127,12 +127,30 @@ function detectFrequency(dates: string[]): string {
 // ---------------------------------------------------------------------------
 
 function analyzeAccounts(userId: string): { summaries: AccountSummary[]; totalAssets: number; totalLiabilities: number } {
+  const LIABILITY_TYPES = ['credit', 'loan', 'mortgage'];
+
   const accounts = db.prepare(
-    `SELECT id, name, type, institution, balance FROM accounts WHERE user_id = ?`
+    `SELECT id, name, type, institution, balance, is_hidden FROM accounts WHERE user_id = ?`
   ).all(userId) as any[];
 
+  // Find accounts that have linked investment holdings — these accounts'
+  // balances mirror the portfolio value, so we must NOT count them
+  // separately in assets (the investment total covers them).
+  const investmentAccountIds = new Set<string>();
+  const investments = db.prepare(
+    `SELECT account_id, shares, current_price FROM investments WHERE user_id = ?`
+  ).all(userId) as any[];
+  for (const inv of investments) {
+    if (inv.account_id) investmentAccountIds.add(inv.account_id);
+  }
+
+  // Investment portfolio value from individual holdings (single source of truth)
+  const investmentPortfolioValue = investments.reduce(
+    (sum: number, inv: any) => sum + (inv.shares * inv.current_price), 0
+  );
+
   const summaries: AccountSummary[] = [];
-  let totalAssets = 0;
+  let totalAccountAssets = 0;  // cash/non-investment accounts
   let totalLiabilities = 0;
 
   for (const acct of accounts) {
@@ -158,12 +176,19 @@ function analyzeAccounts(userId: string): { summaries: AccountSummary[]; totalAs
       transactionCount: inflows.cnt + outflows.cnt,
     });
 
-    if (acct.balance >= 0) {
-      totalAssets += acct.balance;
-    } else {
+    // Skip hidden accounts from net worth
+    if (acct.is_hidden) continue;
+
+    if (LIABILITY_TYPES.includes(acct.type)) {
       totalLiabilities += Math.abs(acct.balance);
+    } else if (!investmentAccountIds.has(acct.id)) {
+      // Only count non-investment-linked accounts as cash assets
+      totalAccountAssets += acct.balance;
     }
   }
+
+  // Total assets = cash accounts + investment portfolio (no double counting)
+  const totalAssets = totalAccountAssets + investmentPortfolioValue;
 
   return { summaries, totalAssets, totalLiabilities };
 }
@@ -522,6 +547,194 @@ function detectPatterns(
     });
   }
 
+  // ---------------------------------------------------------------------------
+  // 6. Monthly Spending Habits — category-level month-over-month consistency
+  // ---------------------------------------------------------------------------
+  if (monthlyCashFlow.length >= 3) {
+    // Get per-category-per-month spending (complete months only)
+    const now = new Date();
+    const currentMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+
+    const catMonthly = db.prepare(
+      `SELECT c.name as category, substr(t.date, 1, 7) as month,
+              SUM(ABS(t.amount)) as total
+       FROM transactions t
+       JOIN categories c ON t.category_id = c.id
+       WHERE t.user_id = ? AND t.amount < 0
+         AND substr(t.date, 1, 7) != ?
+         AND LOWER(c.name) NOT IN ('cc pmt', 'transfer')
+       GROUP BY c.id, substr(t.date, 1, 7)
+       ORDER BY c.name, month`
+    ).all(userId, currentMonthKey) as any[];
+
+    // Build per-category arrays
+    const catData = new Map<string, { months: string[]; totals: number[] }>();
+    for (const row of catMonthly) {
+      if (!catData.has(row.category)) catData.set(row.category, { months: [], totals: [] });
+      catData.get(row.category)!.months.push(row.month);
+      catData.get(row.category)!.totals.push(row.total);
+    }
+
+    // Find categories with the most consistent spending (low coefficient of variation)
+    const habitInsights: { category: string; avg: number; cv: number; trend: 'stable' | 'rising' | 'falling' }[] = [];
+
+    for (const [cat, data] of catData) {
+      if (data.totals.length < 3) continue;
+      const avg = data.totals.reduce((a, b) => a + b, 0) / data.totals.length;
+      if (avg < 20) continue; // skip tiny categories
+      const variance = data.totals.reduce((s, v) => s + (v - avg) ** 2, 0) / data.totals.length;
+      const stdDev = Math.sqrt(variance);
+      const cv = stdDev / avg; // coefficient of variation
+
+      // Trend: compare last 3 months
+      const recent = data.totals.slice(-3);
+      let trend: 'stable' | 'rising' | 'falling' = 'stable';
+      if (recent.length >= 3) {
+        if (recent[2] > recent[0] * 1.15) trend = 'rising';
+        else if (recent[2] < recent[0] * 0.85) trend = 'falling';
+      }
+
+      habitInsights.push({ category: cat, avg, cv, trend });
+    }
+
+    // Most consistent habits (low variance)
+    const consistent = habitInsights.filter(h => h.cv < 0.25).sort((a, b) => a.cv - b.cv);
+    if (consistent.length > 0) {
+      const top = consistent.slice(0, 3);
+      patterns.push({
+        type: 'consistent-habits',
+        title: 'Your Most Consistent Spending',
+        description: `${top.map(h => `${h.category} (~${fmtCurrency(h.avg)}/mo)`).join(', ')} — these categories barely fluctuate month to month, which means they're locked-in habits. ${consistent.length > 3 ? `Plus ${consistent.length - 3} more stable categories.` : ''} Consistent spending is great for budgeting predictability, but also means even small reductions compound into significant savings.`,
+      });
+    }
+
+    // Rising spending categories (trending up)
+    const rising = habitInsights.filter(h => h.trend === 'rising' && h.avg >= 50).sort((a, b) => b.avg - a.avg);
+    if (rising.length > 0) {
+      const top = rising.slice(0, 3);
+      patterns.push({
+        type: 'rising-spending',
+        title: 'Spending Trending Up',
+        description: `${top.map(h => `${h.category} (avg ${fmtCurrency(h.avg)}/mo)`).join(', ')} — ${top.length === 1 ? 'this category has' : 'these categories have'} been creeping up recently. This is worth watching — small month-over-month increases can add up significantly over a year.`,
+      });
+    }
+
+    // Falling spending categories (positive trend)
+    const falling = habitInsights.filter(h => h.trend === 'falling' && h.avg >= 50).sort((a, b) => b.avg - a.avg);
+    if (falling.length > 0) {
+      const top = falling.slice(0, 3);
+      patterns.push({
+        type: 'falling-spending',
+        title: 'Spending Trending Down',
+        description: `Good news: ${top.map(h => h.category).join(', ')} spending is declining. ${top.length === 1 ? 'This category is' : 'These categories are'} showing real improvement. Keep it up.`,
+      });
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // 7. Outlier Detection — unusual transactions that stand out
+  // ---------------------------------------------------------------------------
+  {
+    // Find transactions that are statistical outliers within their category
+    const catStats = db.prepare(
+      `SELECT c.name as category, c.id as category_id,
+              AVG(ABS(t.amount)) as avg_amount,
+              COUNT(*) as cnt
+       FROM transactions t
+       JOIN categories c ON t.category_id = c.id
+       WHERE t.user_id = ? AND t.amount < 0
+         AND LOWER(c.name) NOT IN ('cc pmt', 'transfer')
+       GROUP BY c.id
+       HAVING cnt >= 5`
+    ).all(userId) as any[];
+
+    const outliers: { name: string; amount: number; category: string; date: string; ratio: number }[] = [];
+
+    for (const cat of catStats) {
+      // Find transactions > 3x the category average
+      const bigOnes = db.prepare(
+        `SELECT t.name, ABS(t.amount) as amount, t.date
+         FROM transactions t
+         WHERE t.user_id = ? AND t.category_id = ? AND t.amount < 0
+           AND ABS(t.amount) > ? * 3
+         ORDER BY ABS(t.amount) DESC
+         LIMIT 3`
+      ).all(userId, cat.category_id, cat.avg_amount) as any[];
+
+      for (const txn of bigOnes) {
+        outliers.push({
+          name: txn.name,
+          amount: txn.amount,
+          category: cat.category,
+          date: txn.date,
+          ratio: txn.amount / cat.avg_amount,
+        });
+      }
+    }
+
+    if (outliers.length > 0) {
+      outliers.sort((a, b) => b.ratio - a.ratio);
+      const top = outliers.slice(0, 5);
+      patterns.push({
+        type: 'spending-outliers',
+        title: 'Unusual Charges Detected',
+        description: `${top.map(o => `"${o.name}" (${fmtCurrency(o.amount)} on ${o.date} in ${o.category} — ${o.ratio.toFixed(1)}x your typical spend in that category)`).join('; ')}. These outliers can silently blow your budget. Double-check they're expected, and consider whether any are one-time vs recurring.`,
+      });
+    }
+
+    // Monthly spending spikes — months where total expenses were >30% above the 3-month average
+    if (monthlyCashFlow.length >= 4) {
+      const spikeMonths: { month: string; expenses: number; avg: number; pctAbove: number }[] = [];
+
+      for (let i = 3; i < monthlyCashFlow.length; i++) {
+        const prevAvg = (monthlyCashFlow[i - 1].expenses + monthlyCashFlow[i - 2].expenses + monthlyCashFlow[i - 3].expenses) / 3;
+        if (prevAvg > 0) {
+          const pctAbove = (monthlyCashFlow[i].expenses - prevAvg) / prevAvg;
+          if (pctAbove > 0.30) {
+            spikeMonths.push({
+              month: monthlyCashFlow[i].month,
+              expenses: monthlyCashFlow[i].expenses,
+              avg: prevAvg,
+              pctAbove,
+            });
+          }
+        }
+      }
+
+      if (spikeMonths.length > 0) {
+        const top = spikeMonths.sort((a, b) => b.pctAbove - a.pctAbove).slice(0, 3);
+        patterns.push({
+          type: 'spending-spikes',
+          title: 'Monthly Spending Spikes',
+          description: `${top.map(s => `${s.month}: ${fmtCurrency(s.expenses)} (${(s.pctAbove * 100).toFixed(0)}% above your 3-month average of ${fmtCurrency(s.avg)})`).join('; ')}. Identifying what drove these spikes can help you plan for — or avoid — similar surges in the future.`,
+        });
+      }
+    }
+
+    // Savings rate pattern
+    if (monthlyCashFlow.length >= 2) {
+      const completedMonths = monthlyCashFlow.filter(m => m.income > 0);
+      if (completedMonths.length >= 2) {
+        const savingsRates = completedMonths.map(m => (m.income - m.expenses) / m.income);
+        const avgSavingsRate = savingsRates.reduce((a, b) => a + b, 0) / savingsRates.length;
+        const recentRate = savingsRates[savingsRates.length - 1];
+
+        let advice = '';
+        if (avgSavingsRate >= 0.20) advice = 'You\'re saving 20%+ of income — that\'s excellent. You\'re building wealth at a strong pace.';
+        else if (avgSavingsRate >= 0.10) advice = 'You\'re saving 10-20% of income — solid, but there\'s room to optimize discretionary spending for even stronger savings.';
+        else if (avgSavingsRate >= 0) advice = 'Your savings rate is under 10%. Look for 2-3 categories where you can trim spending to build a stronger financial cushion.';
+        else advice = 'You\'re spending more than you earn on average. This is unsustainable — review your largest expense categories for areas to cut.';
+
+        patterns.push({
+          type: 'savings-rate',
+          title: 'Savings Rate',
+          description: `Your average savings rate is ${(avgSavingsRate * 100).toFixed(1)}% across ${completedMonths.length} months. Most recent month: ${(recentRate * 100).toFixed(1)}%. ${advice}`,
+          percentage: avgSavingsRate,
+        });
+      }
+    }
+  }
+
   return patterns;
 }
 
@@ -535,6 +748,7 @@ function generateNarrative(
   merchants: MerchantSummary[],
   transfers: TransferPair[],
   monthlyCashFlow: CashFlowMonth[],
+  patterns: SpendingPattern[],
   totalAssets: number,
   totalLiabilities: number,
 ): string[] {
@@ -582,6 +796,35 @@ function generateNarrative(
     );
   }
 
+  // Monthly habits summary — pull from patterns for a cohesive narrative
+  const savingsPattern = patterns.find(p => p.type === 'savings-rate');
+  const risingPattern = patterns.find(p => p.type === 'rising-spending');
+  const outlierPattern = patterns.find(p => p.type === 'spending-outliers');
+
+  if (savingsPattern || risingPattern || outlierPattern) {
+    narrative.push(''); // blank line separator
+    narrative.push('--- Monthly Habit Insights ---');
+
+    if (savingsPattern) {
+      const rate = savingsPattern.percentage ?? 0;
+      if (rate >= 0.15) {
+        narrative.push(`Your ${(rate * 100).toFixed(1)}% savings rate is strong. You're consistently keeping more than you spend, which builds long-term financial resilience.`);
+      } else if (rate >= 0) {
+        narrative.push(`Your ${(rate * 100).toFixed(1)}% savings rate leaves room for improvement. Targeting even 5% more would make a significant difference over 12 months.`);
+      } else {
+        narrative.push(`You're currently spending more than you earn (${(rate * 100).toFixed(1)}% savings rate). This is the most important thing to address — review your largest categories for quick wins.`);
+      }
+    }
+
+    if (risingPattern) {
+      narrative.push(`Watch out: some of your spending categories are trending upward. ${risingPattern.description}`);
+    }
+
+    if (outlierPattern) {
+      narrative.push(`Unusual charges were detected that significantly deviate from your normal patterns. Review these to make sure nothing slipped through.`);
+    }
+  }
+
   return narrative;
 }
 
@@ -615,6 +858,7 @@ export function generateFinancialAnalysis(userId: string): FinancialAnalysis {
     topMerchants,
     transfers,
     monthlyCashFlow,
+    patterns,
     totalAssets,
     totalLiabilities,
   );
