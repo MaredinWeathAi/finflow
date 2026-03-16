@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Plus, X, Eye, EyeOff, CreditCard, Building, Landmark, Bitcoin, Car, Home, LineChart } from 'lucide-react'
+import { Plus, X, Trash2, Eye, EyeOff, CreditCard, Building, Landmark, Bitcoin, Car, Home, LineChart } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { cn, formatCurrency } from '@/lib/utils'
 import { useAccounts } from '@/hooks/useAccounts'
@@ -68,6 +68,7 @@ function AddAccountModal({ open, onClose, account, onSave }: {
     last_four: '',
     icon: '',
   })
+  const [confirmDelete, setConfirmDelete] = useState(false)
 
   // Reset form when modal opens or account changes
   useEffect(() => {
@@ -80,6 +81,7 @@ function AddAccountModal({ open, onClose, account, onSave }: {
         last_four: account?.last_four || '',
         icon: account?.icon || '',
       })
+      setConfirmDelete(false)
     }
   }, [open, account])
 
@@ -98,6 +100,22 @@ function AddAccountModal({ open, onClose, account, onSave }: {
       onClose()
     } catch {
       toast.error('Failed to save account')
+    }
+  }
+
+  const handleDelete = async () => {
+    if (!account) return
+    if (!confirmDelete) {
+      setConfirmDelete(true)
+      return
+    }
+    try {
+      await api.delete(`/accounts/${account.id}`)
+      toast.success(`"${account.name}" deleted`)
+      onSave()
+      onClose()
+    } catch {
+      toast.error('Failed to delete account')
     }
   }
 
@@ -139,8 +157,24 @@ function AddAccountModal({ open, onClose, account, onSave }: {
             </div>
           </div>
           <div className="flex gap-3 pt-2">
-            <button type="button" onClick={onClose} className="flex-1 h-10 rounded-lg border border-input text-sm font-medium hover:bg-accent transition-colors">Cancel</button>
-            <button type="submit" className="flex-1 h-10 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors">{account ? 'Update' : 'Add'}</button>
+            {account && (
+              <button
+                type="button"
+                onClick={handleDelete}
+                className={cn(
+                  'h-10 px-3 rounded-lg text-sm font-medium transition-colors flex items-center gap-1.5',
+                  confirmDelete
+                    ? 'bg-red-600 text-white hover:bg-red-700'
+                    : 'border border-red-300 text-red-500 hover:bg-red-50 dark:border-red-800 dark:hover:bg-red-950'
+                )}
+              >
+                <Trash2 className="w-4 h-4" />
+                {confirmDelete ? 'Confirm Delete' : 'Delete'}
+              </button>
+            )}
+            <div className="flex-1" />
+            <button type="button" onClick={onClose} className="h-10 px-4 rounded-lg border border-input text-sm font-medium hover:bg-accent transition-colors">Cancel</button>
+            <button type="submit" className="h-10 px-4 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors">{account ? 'Update' : 'Add'}</button>
           </div>
         </form>
       </div>
