@@ -8,7 +8,9 @@ router.get('/', (req: Request, res: Response) => {
   try {
     const categories = db
       .prepare(
-        'SELECT * FROM categories WHERE user_id = ? ORDER BY sort_order ASC, name ASC'
+        `SELECT * FROM categories WHERE user_id = ?
+         ORDER BY CASE WHEN LOWER(name) = 'uncategorized' THEN 1 ELSE 0 END ASC,
+                  sort_order ASC, name ASC`
       )
       .all(req.user!.id);
 
@@ -29,6 +31,7 @@ router.post('/ensure-defaults', (req: Request, res: Response) => {
       // Even if categories exist, ensure system categories (CC PMT) are present
       const systemCategories = [
         { name: 'CC PMT', icon: '💳', color: '#64748B', isIncome: false },
+        { name: 'Home Improvements', icon: '🏡', color: '#D97706', isIncome: false },
       ];
       let added = 0;
       for (const cat of systemCategories) {
@@ -70,6 +73,7 @@ router.post('/ensure-defaults', (req: Request, res: Response) => {
       { name: 'Pets', icon: '🐾', color: '#A78BFA', isIncome: false },
       { name: 'Gifts & Donations', icon: '🎁', color: '#FB923C', isIncome: false },
       { name: 'Investments', icon: '📊', color: '#818CF8', isIncome: false },
+      { name: 'Home Improvements', icon: '🏡', color: '#D97706', isIncome: false },
       { name: 'Salary', icon: '💵', color: '#10B981', isIncome: true },
       { name: 'Freelance', icon: '💼', color: '#22D3EE', isIncome: true },
       { name: 'Other Income', icon: '💰', color: '#34D399', isIncome: true },

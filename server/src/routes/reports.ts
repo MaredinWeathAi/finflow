@@ -525,7 +525,7 @@ router.get('/dashboard-summary', (req: Request, res: Response) => {
 
     const totalCash = cashAccounts.reduce((sum, acc) => sum + (acc.balance || 0), 0);
 
-    // Top expense categories (excluding transfers only)
+    // Top expense categories (excluding transfers AND income-flagged categories)
     const topExpenseExcludeIds = [transferCategoryId].filter(Boolean);
     const topExpenseExcludeClause = topExpenseExcludeIds.length > 0
       ? `AND c.id NOT IN (${topExpenseExcludeIds.map(() => '?').join(', ')})`
@@ -537,11 +537,25 @@ router.get('/dashboard-summary', (req: Request, res: Response) => {
        FROM transactions t
        JOIN categories c ON t.category_id = c.id
        WHERE t.user_id = ? AND t.amount < 0 AND t.date >= ? AND t.date <= ?
+             AND c.is_income = 0
              ${topExpenseExcludeClause}
+       GROUP BY c.id
+       ORDER BY CASE WHEN LOWER(c.name) = 'uncategorized' THEN 1 ELSE 0 END ASC, total DESC
+       LIMIT 10`
+    ).all(userId, monthStart, monthEnd, ...topExpenseExcludeIds) as any[];
+
+    // Top income categories (this month)
+    const topIncome = db.prepare(
+      `SELECT c.id, c.name, c.icon, c.color,
+              COALESCE(SUM(t.amount), 0) as total,
+              COUNT(t.id) as transaction_count
+       FROM transactions t
+       JOIN categories c ON t.category_id = c.id
+       WHERE t.user_id = ? AND t.amount > 0 AND t.date >= ? AND t.date <= ?
        GROUP BY c.id
        ORDER BY total DESC
        LIMIT 10`
-    ).all(userId, monthStart, monthEnd, ...topExpenseExcludeIds) as any[];
+    ).all(userId, monthStart, monthEnd) as any[];
 
     // Uncategorized transactions
     const uncategorizedResult = db.prepare(
@@ -647,7 +661,7 @@ router.get('/dashboard-summary', (req: Request, res: Response) => {
     }
     const lastMonthSavings = Math.round((lastMonthIncome - lastMonthExpenses) * 100) / 100;
 
-    // Top 10 expense categories (6-month average) excluding transfers only
+    // Top 10 expense categories (6-month average) excluding transfers AND income-flagged categories
     const topExpense6MoExcludeIds = [transferCategoryId].filter(Boolean);
     const topExpense6MoExcludeClause = topExpense6MoExcludeIds.length > 0
       ? `AND c.id NOT IN (${topExpense6MoExcludeIds.map(() => '?').join(', ')})`
@@ -659,11 +673,25 @@ router.get('/dashboard-summary', (req: Request, res: Response) => {
        FROM transactions t
        JOIN categories c ON t.category_id = c.id
        WHERE t.user_id = ? AND t.amount < 0 AND t.date >= ? AND t.date <= ?
+             AND c.is_income = 0
              ${topExpense6MoExcludeClause}
+       GROUP BY c.id
+       ORDER BY CASE WHEN LOWER(c.name) = 'uncategorized' THEN 1 ELSE 0 END ASC, total DESC
+       LIMIT 10`
+    ).all(userId, sixMonthStart, sixMonthEnd, ...topExpense6MoExcludeIds) as any[];
+
+    // Top income categories (6-month average)
+    const topIncome6Mo = db.prepare(
+      `SELECT c.id, c.name, c.icon, c.color,
+              COALESCE(SUM(t.amount), 0) as total,
+              COUNT(t.id) as transaction_count
+       FROM transactions t
+       JOIN categories c ON t.category_id = c.id
+       WHERE t.user_id = ? AND t.amount > 0 AND t.date >= ? AND t.date <= ?
        GROUP BY c.id
        ORDER BY total DESC
        LIMIT 10`
-    ).all(userId, sixMonthStart, sixMonthEnd, ...topExpense6MoExcludeIds) as any[];
+    ).all(userId, sixMonthStart, sixMonthEnd) as any[];
 
     res.json({
       income,
@@ -698,6 +726,13 @@ router.get('/dashboard-summary', (req: Request, res: Response) => {
         amount: Math.round(c.total * 100) / 100,
         count: c.transaction_count,
       })),
+      topIncome: topIncome.map((c: any) => ({
+        name: c.name,
+        icon: c.icon,
+        color: c.color,
+        amount: Math.round(c.total * 100) / 100,
+        count: c.transaction_count,
+      })),
       uncategorizedCount,
       uncategorizedTotal,
       month,
@@ -714,6 +749,14 @@ router.get('/dashboard-summary', (req: Request, res: Response) => {
       lastMonthSavings,
       lastMonthLabel,
       topExpenses6Mo: topExpenses6Mo.map((c: any) => ({
+        name: c.name,
+        icon: c.icon,
+        color: c.color,
+        totalAmount: Math.round(c.total * 100) / 100,
+        avgAmount: Math.round((c.total / monthCount) * 100) / 100,
+        count: c.transaction_count,
+      })),
+      topIncome6Mo: topIncome6Mo.map((c: any) => ({
         name: c.name,
         icon: c.icon,
         color: c.color,

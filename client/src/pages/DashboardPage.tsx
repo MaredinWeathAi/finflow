@@ -56,6 +56,8 @@ interface DashboardSummary {
   lastMonthSavings: number
   lastMonthLabel: string
   topExpenses6Mo: { name: string; icon: string; color: string; totalAmount: number; avgAmount: number; count: number }[]
+  topIncome: { name: string; icon: string; color: string; amount: number; count: number }[]
+  topIncome6Mo: { name: string; icon: string; color: string; totalAmount: number; avgAmount: number; count: number }[]
 }
 
 interface DashboardState {
@@ -343,47 +345,95 @@ export function DashboardPage() {
         );
       })()}
 
-      {/* Top 10 Expense Categories — 6-Month Averages */}
-      {summary && summary.topExpenses6Mo && summary.topExpenses6Mo.length > 0 && (
+      {/* Top Categories — Expenses & Income side by side (6-Month Averages) */}
+      {summary && ((summary.topExpenses6Mo && summary.topExpenses6Mo.length > 0) || (summary.topIncome6Mo && summary.topIncome6Mo.length > 0)) && (
         <div className="opacity-0 animate-fade-in stagger-7">
-          <div className="bg-card rounded-2xl border border-border/50 p-6">
-            <div className="flex items-center justify-between mb-5">
-              <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                Top 10 Expense Categories
-              </p>
-              <span className="text-[10px] text-muted-foreground">
-                {summary.avgMonthCount}-month avg
-              </span>
-            </div>
-            <div className="space-y-3">
-              {summary.topExpenses6Mo.map((cat, i) => {
-                const maxAvg = summary.topExpenses6Mo[0]?.avgAmount || 1
-                const barPct = Math.min((cat.avgAmount / maxAvg) * 100, 100)
-                return (
-                  <div key={cat.name} className="flex items-center gap-4">
-                    <div className="flex w-40 shrink-0 items-center gap-2.5 min-w-0">
-                      <span className="text-lg">{cat.icon || '📁'}</span>
-                      <div className="min-w-0">
-                        <p className="truncate text-sm font-medium">{cat.name}</p>
-                        <p className="text-[10px] text-muted-foreground">{cat.count} txns over {summary.avgMonthCount} mo</p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+            {/* Top Expense Categories */}
+            {summary.topExpenses6Mo && summary.topExpenses6Mo.length > 0 && (
+              <div className="bg-card rounded-2xl border border-border/50 p-6">
+                <div className="flex items-center justify-between mb-5">
+                  <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                    Top Expense Categories
+                  </p>
+                  <span className="text-[10px] text-muted-foreground">
+                    {summary.avgMonthCount}-month avg
+                  </span>
+                </div>
+                <div className="space-y-3">
+                  {summary.topExpenses6Mo.map((cat) => {
+                    const maxAvg = summary.topExpenses6Mo[0]?.avgAmount || 1
+                    const barPct = Math.min((cat.avgAmount / maxAvg) * 100, 100)
+                    return (
+                      <div key={cat.name} className="flex items-center gap-3">
+                        <div className="flex w-36 shrink-0 items-center gap-2 min-w-0">
+                          <span className="text-base">{cat.icon || '📁'}</span>
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-medium">{cat.name}</p>
+                            <p className="text-[10px] text-muted-foreground">{cat.count} txns</p>
+                          </div>
+                        </div>
+                        <div className="flex-1">
+                          <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+                            <div
+                              className="h-full rounded-full transition-all duration-700 ease-out"
+                              style={{ width: `${barPct}%`, backgroundColor: cat.color || '#A78BFA' }}
+                            />
+                          </div>
+                        </div>
+                        <div className="w-24 shrink-0 text-right">
+                          <span className="text-sm font-semibold tabular-nums">{formatCurrency(cat.avgAmount)}</span>
+                          <span className="text-[10px] text-muted-foreground">/mo</span>
+                        </div>
                       </div>
-                    </div>
-                    <div className="flex-1">
-                      <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
-                        <div
-                          className="h-full rounded-full transition-all duration-700 ease-out"
-                          style={{ width: `${barPct}%`, backgroundColor: cat.color || '#A78BFA' }}
-                        />
+                    )
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Top Income Categories */}
+            {summary.topIncome6Mo && summary.topIncome6Mo.length > 0 && (
+              <div className="bg-card rounded-2xl border border-border/50 p-6">
+                <div className="flex items-center justify-between mb-5">
+                  <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                    Top Income Categories
+                  </p>
+                  <span className="text-[10px] text-muted-foreground">
+                    {summary.avgMonthCount}-month avg
+                  </span>
+                </div>
+                <div className="space-y-3">
+                  {summary.topIncome6Mo.map((cat) => {
+                    const maxAvg = summary.topIncome6Mo[0]?.avgAmount || 1
+                    const barPct = Math.min((cat.avgAmount / maxAvg) * 100, 100)
+                    return (
+                      <div key={cat.name} className="flex items-center gap-3">
+                        <div className="flex w-36 shrink-0 items-center gap-2 min-w-0">
+                          <span className="text-base">{cat.icon || '📁'}</span>
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-medium">{cat.name}</p>
+                            <p className="text-[10px] text-muted-foreground">{cat.count} txns</p>
+                          </div>
+                        </div>
+                        <div className="flex-1">
+                          <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+                            <div
+                              className="h-full rounded-full transition-all duration-700 ease-out"
+                              style={{ width: `${barPct}%`, backgroundColor: cat.color || '#10B981' }}
+                            />
+                          </div>
+                        </div>
+                        <div className="w-24 shrink-0 text-right">
+                          <span className="text-sm font-semibold tabular-nums">{formatCurrency(cat.avgAmount)}</span>
+                          <span className="text-[10px] text-muted-foreground">/mo</span>
+                        </div>
                       </div>
-                    </div>
-                    <div className="w-28 shrink-0 text-right">
-                      <span className="text-sm font-semibold tabular-nums">{formatCurrency(cat.avgAmount)}</span>
-                      <span className="text-[10px] text-muted-foreground">/mo</span>
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
