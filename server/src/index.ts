@@ -49,10 +49,30 @@ app.get('/api/debug-txns', (_req, res) => {
     const month = (_req.query.month as string) || '2026-02';
     const monthStart = `${month}-01`;
     const monthEnd = `${month}-31`;
+    const userParam = _req.query.user as string;
 
-    // Get the first user
-    const user = db.prepare('SELECT id, username FROM users LIMIT 1').get() as any;
-    if (!user) return res.json({ error: 'No users' });
+    // Show all users
+    const allUsers = db.prepare('SELECT id, username, email FROM users').all();
+
+    // Get user - either specified or first
+    let user: any;
+    if (userParam) {
+      user = db.prepare('SELECT id, username FROM users WHERE username = ? OR id = ?').get(userParam, userParam) as any;
+    }
+    if (!user) {
+      user = db.prepare('SELECT id, username FROM users LIMIT 1').get() as any;
+    }
+    if (!user) return res.json({ error: 'No users', allUsers });
+
+    // Get all months with data for this user
+    const months = db.prepare(
+      `SELECT substr(date, 1, 7) as month, COUNT(*) as count,
+              SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) as income,
+              SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END) as expenses
+       FROM transactions WHERE user_id = ?
+       GROUP BY substr(date, 1, 7)
+       ORDER BY month DESC`
+    ).all(user.id);
 
     // All income (positive) for the month
     const income = db.prepare(
@@ -110,7 +130,10 @@ app.get('/api/debug-txns', (_req, res) => {
     ).all(user.id);
 
     res.json({
+      allUsers,
       user: user.username,
+      userId: user.id,
+      monthsWithData: months,
       month,
       totals,
       incomeCount: (income as any[]).length,
