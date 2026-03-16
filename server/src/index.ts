@@ -43,6 +43,94 @@ app.get('/api/health', (_req, res) => {
   res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+// TEMP debug endpoint for Feb expense investigation
+app.get('/api/debug-feb', (_req, res) => {
+  try {
+    const userId = '8177d9e8-91cb-4142-a119-cd3ccc576546'; // marcelozinn7
+    const monthStart = '2026-02-01';
+    const monthEnd = '2026-02-28';
+
+    // Get Transfer and CC PMT category IDs
+    const transferCat = db.prepare(
+      `SELECT id, name FROM categories WHERE user_id = ? AND LOWER(name) = 'transfer'`
+    ).get(userId) as any;
+    const ccPmtCat = db.prepare(
+      `SELECT id, name FROM categories WHERE user_id = ? AND LOWER(name) = 'cc pmt'`
+    ).get(userId) as any;
+
+    const excludeIds = [transferCat?.id, ccPmtCat?.id].filter(Boolean);
+
+    // All negative (expense) transactions for Feb
+    const allExpenses = db.prepare(
+      `SELECT t.id, t.name, t.amount, t.date, c.name as category_name, a.name as account_name
+       FROM transactions t
+       LEFT JOIN categories c ON t.category_id = c.id
+       LEFT JOIN accounts a ON t.account_id = a.id
+       WHERE t.user_id = ? AND t.amount < 0 AND t.date >= ? AND t.date <= ?
+       ORDER BY t.amount ASC`
+    ).all(userId, monthStart, monthEnd) as any[];
+
+    // Expenses WITHOUT exclusion (raw total)
+    const rawTotal = db.prepare(
+      `SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
+       WHERE user_id = ? AND amount < 0 AND date >= ? AND date <= ?`
+    ).get(userId, monthStart, monthEnd) as any;
+
+    // Expenses WITH exclusion (what dashboard shows)
+    const excludeClause = excludeIds.length > 0
+      ? `AND (category_id IS NULL OR category_id NOT IN (${excludeIds.map(() => '?').join(', ')}))`
+      : '';
+    const filteredTotal = db.prepare(
+      `SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
+       WHERE user_id = ? AND amount < 0 AND date >= ? AND date <= ? ${excludeClause}`
+    ).get(userId, monthStart, monthEnd, ...excludeIds) as any;
+
+    // Income total (all positive, no exclusion)
+    const incomeTotal = db.prepare(
+      `SELECT COALESCE(SUM(amount), 0) as total FROM transactions
+       WHERE user_id = ? AND amount > 0 AND date >= ? AND date <= ?`
+    ).get(userId, monthStart, monthEnd) as any;
+
+    // Group expenses by category
+    const byCategory = db.prepare(
+      `SELECT c.name as category_name, COUNT(*) as count, SUM(ABS(t.amount)) as total
+       FROM transactions t
+       LEFT JOIN categories c ON t.category_id = c.id
+       WHERE t.user_id = ? AND t.amount < 0 AND t.date >= ? AND t.date <= ?
+       GROUP BY c.name
+       ORDER BY total DESC`
+    ).all(userId, monthStart, monthEnd);
+
+    // Transfer/CC PMT expenses specifically
+    const excludedExpenses = excludeIds.length > 0
+      ? db.prepare(
+          `SELECT t.name, t.amount, t.date, c.name as category_name, a.name as account_name
+           FROM transactions t
+           LEFT JOIN categories c ON t.category_id = c.id
+           LEFT JOIN accounts a ON t.account_id = a.id
+           WHERE t.user_id = ? AND t.amount < 0 AND t.date >= ? AND t.date <= ?
+           AND t.category_id IN (${excludeIds.map(() => '?').join(', ')})
+           ORDER BY t.amount ASC`
+        ).all(userId, monthStart, monthEnd, ...excludeIds) as any[]
+      : [];
+
+    res.json({
+      transferCat: transferCat ? { id: transferCat.id, name: transferCat.name } : null,
+      ccPmtCat: ccPmtCat ? { id: ccPmtCat.id, name: ccPmtCat.name } : null,
+      incomeTotal: incomeTotal.total,
+      rawExpenseTotal: rawTotal.total,
+      dashboardExpenseTotal: filteredTotal.total,
+      excludedAmount: Math.round((rawTotal.total - filteredTotal.total) * 100) / 100,
+      expenseCount: allExpenses.length,
+      byCategory,
+      excludedExpenses,
+      allExpenses,
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // One-time seed endpoint — only seeds if no users exist
 app.post('/api/seed', async (_req, res) => {
   try {
