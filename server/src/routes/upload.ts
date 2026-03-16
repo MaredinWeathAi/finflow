@@ -285,14 +285,36 @@ router.post('/', upload.array('files', 50), async (req: Request, res: Response) 
             }
           }
 
+          // If a user rule specifies assign_type, override the amount sign
+          // This lets rules like "Zelle from Maredin → Income" flip negative to positive
+          let finalAmount = row.amount;
+          if (catResult.assignType) {
+            const absAmt = Math.abs(row.amount);
+            if (catResult.assignType === 'income') {
+              finalAmount = absAmt; // force positive
+            } else if (catResult.assignType === 'expense') {
+              finalAmount = -absAmt; // force negative
+            }
+            // 'transfer' keeps original sign
+            // Also override the transfer detection if rule says income/expense
+            if (catResult.assignType === 'income' || catResult.assignType === 'expense') {
+              // Rule explicitly says this is income/expense, not a transfer
+              // Don't let transfer detection override the rule's category
+              if (catResult.categoryId) {
+                finalCategoryId = catResult.categoryId;
+                finalCategoryName = catResult.categoryName;
+              }
+            }
+          }
+
           // Classify income type
-          const incomeType = classifyIncomeType(row.name, row.amount);
+          const incomeType = classifyIncomeType(row.name, finalAmount);
 
           insertPending.run(
             itemId, sessionId, fileId, userId,
             JSON.stringify({ ...row.rawData, incomeType, transferType: transferInfo.transferType || row.transferType || null }),
             row.name,
-            row.amount,
+            finalAmount,
             row.date,
             row.category || finalCategoryName || null,
             finalCategoryId,

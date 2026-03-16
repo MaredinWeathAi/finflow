@@ -121,7 +121,7 @@ function RuleCard({
           ))}
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <span className="text-[10px] uppercase tracking-wider text-muted-foreground">Assign to:</span>
           {rule.category_name && (
             <span
@@ -132,6 +132,16 @@ function RuleCard({
               }}
             >
               {rule.category_icon} {rule.category_name}
+            </span>
+          )}
+          {rule.assign_type && (
+            <span className={cn(
+              'text-[10px] font-medium uppercase tracking-wider px-1.5 py-0.5 rounded-full',
+              rule.assign_type === 'income' ? 'bg-emerald-500/15 text-emerald-400' :
+              rule.assign_type === 'expense' ? 'bg-red-500/15 text-red-400' :
+              'bg-blue-500/15 text-blue-400'
+            )}>
+              Treat as {rule.assign_type}
             </span>
           )}
         </div>
@@ -212,7 +222,7 @@ function RuleModal({
         is_enabled: rule ? !!rule.is_enabled : true,
       })
       setTestResults(null)
-      setShowAdvanced(!!(rule?.amount_min || rule?.amount_max || rule?.amount_exact || rule?.account_id || rule?.priority))
+      setShowAdvanced(!!(rule?.amount_min || rule?.amount_max || rule?.amount_exact || rule?.account_id || rule?.priority || rule?.assign_type))
     }
   }, [open, rule])
 
@@ -408,6 +418,22 @@ function RuleModal({
                 ))}
               </select>
             </div>
+            <div>
+              <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Treat as (transaction type)</label>
+              <select
+                value={form.assign_type}
+                onChange={e => setForm(f => ({ ...f, assign_type: e.target.value }))}
+                className="mt-0.5 w-full h-9 rounded-lg border border-input bg-background px-3 text-sm"
+              >
+                <option value="">Don't change type</option>
+                <option value="income">Income (money in)</option>
+                <option value="expense">Expense (money out)</option>
+                <option value="transfer">Transfer (between accounts)</option>
+              </select>
+              <p className="text-[10px] text-muted-foreground mt-1">
+                Override how the system treats matching transactions. E.g., mark Zelle deposits as "Income" instead of "Transfer."
+              </p>
+            </div>
           </div>
 
           {/* Description */}
@@ -566,9 +592,10 @@ export function RulesPage() {
           <div>
             <p className="text-sm font-medium mb-1">How Rules Work</p>
             <p className="text-xs text-muted-foreground">
-              Rules tell the system how to automatically categorize transactions. When a transaction's name, amount, or account
-              matches your conditions, it gets assigned to the category you choose. Rules apply to new uploads and can be
-              run against existing transactions with "Apply All Rules." Higher priority rules are checked first.
+              Rules tell the system how to automatically categorize and classify transactions. When a transaction's name, amount,
+              or account matches your conditions, it gets assigned to the category you choose — and you can also override whether
+              the system treats it as income, expense, or transfer. For example, "Zelle from Maredin" can be marked as Salary
+              and treated as income. Rules apply to new uploads and can be run against existing transactions with "Apply All Rules."
             </p>
           </div>
         </div>

@@ -10,6 +10,8 @@ export interface CategorizationResult {
   categoryId: string | null;
   confidence: number;
   categoryName?: string;
+  /** When a user rule specifies a type override (income / expense / transfer) */
+  assignType?: 'income' | 'expense' | 'transfer' | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -290,7 +292,8 @@ function matchUserRules(lowerName: string, userId: string, amount?: number): Cat
   const rules = db
     .prepare(
       `SELECT cr.pattern, cr.category_id, cr.match_type, c.name as category_name,
-              cr.amount_min, cr.amount_max, cr.amount_exact, cr.account_id, cr.is_enabled, cr.priority
+              cr.amount_min, cr.amount_max, cr.amount_exact, cr.account_id, cr.is_enabled, cr.priority,
+              cr.assign_type
        FROM category_rules cr
        JOIN categories c ON c.id = cr.category_id
        WHERE cr.user_id = ? AND (cr.is_enabled = 1 OR cr.is_enabled IS NULL)
@@ -334,6 +337,7 @@ function matchUserRules(lowerName: string, userId: string, amount?: number): Cat
       categoryId: rule.category_id,
       confidence: pattern ? (rule.match_type === 'exact' ? 1.0 : 0.8) : 0.7,
       categoryName: rule.category_name,
+      assignType: rule.assign_type || null,
     };
   }
 

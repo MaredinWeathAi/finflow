@@ -183,8 +183,13 @@ router.post('/apply', (req: Request, res: Response) => {
 
     let totalUpdated = 0;
 
-    const update = db.prepare(
+    const updateCategoryOnly = db.prepare(
       `UPDATE transactions SET category_id = ?, updated_at = ?
+       WHERE id = ? AND user_id = ?`
+    );
+
+    const updateCategoryAndAmount = db.prepare(
+      `UPDATE transactions SET category_id = ?, amount = ?, updated_at = ?
        WHERE id = ? AND user_id = ?`
     );
 
@@ -199,9 +204,31 @@ router.post('/apply', (req: Request, res: Response) => {
       for (const txn of transactions) {
         for (const rule of rules) {
           if (matchesRule(txn, rule)) {
-            // Only update if category would actually change
-            if (txn.category_id !== rule.category_id) {
-              update.run(rule.category_id, now, txn.id, userId);
+            const categoryChanged = txn.category_id !== rule.category_id;
+
+            // Determine if amount sign needs to flip based on assign_type
+            let newAmount = txn.amount;
+            let amountChanged = false;
+            if (rule.assign_type) {
+              const absAmt = Math.abs(txn.amount);
+              if (rule.assign_type === 'income' && txn.amount < 0) {
+                newAmount = absAmt;
+                amountChanged = true;
+              } else if (rule.assign_type === 'expense' && txn.amount > 0) {
+                newAmount = -absAmt;
+                amountChanged = true;
+              }
+              // 'transfer' keeps original sign — user just wants category override
+            }
+
+            if (categoryChanged && amountChanged) {
+              updateCategoryAndAmount.run(rule.category_id, newAmount, now, txn.id, userId);
+              totalUpdated++;
+            } else if (categoryChanged) {
+              updateCategoryOnly.run(rule.category_id, now, txn.id, userId);
+              totalUpdated++;
+            } else if (amountChanged) {
+              updateCategoryAndAmount.run(txn.category_id, newAmount, now, txn.id, userId);
               totalUpdated++;
             }
             break; // first matching rule wins (highest priority)
