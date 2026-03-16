@@ -543,20 +543,32 @@ router.get('/dashboard-summary', (req: Request, res: Response) => {
     const dayOfMonth = month === currentMonth ? today.getDate() : daysInMonth;
 
     // -----------------------------------------------------------------------
-    // 6-Month Averages (for dashboard row 2 and top expense categories)
-    // Exclude current month (partial) — look back 6 completed months
+    // 6-Month Averages — find the 6 most recent COMPLETE months with data
+    // (ignores the current partial month; if fewer than 6 months have data,
+    //  use however many exist)
     // -----------------------------------------------------------------------
-    const sixMonthsAgo = new Date(year, mon - 7, 1); // 6 full months before this month
-    const sixMonthStart = `${sixMonthsAgo.getFullYear()}-${String(sixMonthsAgo.getMonth() + 1).padStart(2, '0')}-01`;
-    const prevMonthEnd = new Date(year, mon - 1, 0); // last day of previous month
-    const sixMonthEnd = `${prevMonthEnd.getFullYear()}-${String(prevMonthEnd.getMonth() + 1).padStart(2, '0')}-${String(prevMonthEnd.getDate()).padStart(2, '0')}`;
+    // Step 1: Find distinct complete months with data (exclude current month)
+    const currentYM = `${year}-${String(mon).padStart(2, '0')}`;
+    const recentMonths = db.prepare(
+      `SELECT DISTINCT substr(date, 1, 7) as ym FROM transactions
+       WHERE user_id = ? AND substr(date, 1, 7) < ?
+       ORDER BY ym DESC
+       LIMIT 6`
+    ).all(userId, currentYM) as { ym: string }[];
 
-    // Count how many distinct months have data in that range
-    const monthCountResult = db.prepare(
-      `SELECT COUNT(DISTINCT substr(date, 1, 7)) as cnt FROM transactions
-       WHERE user_id = ? AND date >= ? AND date <= ?`
-    ).get(userId, sixMonthStart, sixMonthEnd) as any;
-    const monthCount = Math.max(monthCountResult.cnt || 1, 1);
+    const monthCount = Math.max(recentMonths.length, 1);
+
+    // Step 2: Build date range from oldest to newest of those months
+    let sixMonthStart = monthStart; // fallback
+    let sixMonthEnd = monthEnd;     // fallback
+    if (recentMonths.length > 0) {
+      const oldestYM = recentMonths[recentMonths.length - 1].ym;
+      sixMonthStart = oldestYM + '-01';
+      const newestYM = recentMonths[0].ym;
+      const [ny, nm] = newestYM.split('-').map(Number);
+      const lastDay = new Date(ny, nm, 0).getDate();
+      sixMonthEnd = `${newestYM}-${String(lastDay).padStart(2, '0')}`;
+    }
 
     const sixMoExcludeParams = [userId, sixMonthStart, sixMonthEnd, ...excludeIds];
 
@@ -573,6 +585,35 @@ router.get('/dashboard-summary', (req: Request, res: Response) => {
     const avgMonthlyIncome = Math.round((avgIncomeResult.total / monthCount) * 100) / 100;
     const avgMonthlyExpenses = Math.round((avgExpenseResult.total / monthCount) * 100) / 100;
     const avgMonthlySavings = Math.round((avgMonthlyIncome - avgMonthlyExpenses) * 100) / 100;
+
+    // -----------------------------------------------------------------------
+    // Last completed month figures (for dashboard row income/expenses/savings)
+    // -----------------------------------------------------------------------
+    let lastMonthIncome = 0;
+    let lastMonthExpenses = 0;
+    let lastMonthLabel = '';
+    if (recentMonths.length > 0) {
+      const lastYM = recentMonths[0].ym;
+      lastMonthLabel = lastYM;
+      const [ly, lm] = lastYM.split('-').map(Number);
+      const lmStart = lastYM + '-01';
+      const lmLastDay = new Date(ly, lm, 0).getDate();
+      const lmEnd = `${lastYM}-${String(lmLastDay).padStart(2, '0')}`;
+      const lmExcludeParams = [userId, lmStart, lmEnd, ...excludeIds];
+
+      const lmIncomeResult = db.prepare(
+        `SELECT COALESCE(SUM(amount), 0) as total FROM transactions
+         WHERE user_id = ? AND amount > 0 AND date >= ? AND date <= ? ${buildExcludeClause()}`
+      ).get(...lmExcludeParams) as any;
+      const lmExpenseResult = db.prepare(
+        `SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
+         WHERE user_id = ? AND amount < 0 AND date >= ? AND date <= ? ${buildExcludeClause()}`
+      ).get(...lmExcludeParams) as any;
+
+      lastMonthIncome = Math.round(lmIncomeResult.total * 100) / 100;
+      lastMonthExpenses = Math.round(lmExpenseResult.total * 100) / 100;
+    }
+    const lastMonthSavings = Math.round((lastMonthIncome - lastMonthExpenses) * 100) / 100;
 
     // Top 10 expense categories (6-month average) excluding transfers/CC PMT
     const topExpense6MoExcludeIds = [transferCategoryId, ccPmtCategoryId].filter(Boolean);
@@ -635,6 +676,11 @@ router.get('/dashboard-summary', (req: Request, res: Response) => {
       avgMonthlyExpenses,
       avgMonthlySavings,
       avgMonthCount: monthCount,
+      // Last completed month
+      lastMonthIncome,
+      lastMonthExpenses,
+      lastMonthSavings,
+      lastMonthLabel,
       topExpenses6Mo: topExpenses6Mo.map((c: any) => ({
         name: c.name,
         icon: c.icon,

@@ -59,6 +59,11 @@ interface DashboardSummary {
   avgMonthlyExpenses: number
   avgMonthlySavings: number
   avgMonthCount: number
+  // Last completed month
+  lastMonthIncome: number
+  lastMonthExpenses: number
+  lastMonthSavings: number
+  lastMonthLabel: string
   topExpenses6Mo: { name: string; icon: string; color: string; totalAmount: number; avgAmount: number; count: number }[]
 }
 
@@ -342,78 +347,88 @@ export function DashboardPage() {
         </div>
       </div>
 
-      {/* Row 2: Monthly Income / Monthly Expenses / Monthly Savings (6-month averages) */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-        <div className="opacity-0 animate-fade-in stagger-4">
-          <div className="bg-card rounded-2xl border border-border/50 p-6 h-full flex flex-col justify-between cursor-pointer" onClick={() => setDetailModal('savings')}>
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                Monthly Income
-              </p>
-              <p className="text-[10px] text-muted-foreground mt-0.5">6-month average</p>
-              <p className="text-2xl font-bold tabular-nums text-emerald-400 mt-2">
-                {formatCurrency(summary?.avgMonthlyIncome || 0)}
-              </p>
-            </div>
-            <div className="mt-3 pt-3 border-t border-border/30">
-              <div className="flex justify-between text-xs">
-                <span className="text-muted-foreground">This month</span>
-                <span className="font-medium">{formatCurrency(monthlyIncome)}</span>
-              </div>
-            </div>
-          </div>
-        </div>
-        <div className="opacity-0 animate-fade-in stagger-4">
-          <div className="bg-card rounded-2xl border border-border/50 p-6 h-full flex flex-col justify-between cursor-pointer" onClick={() => setDetailModal('savings')}>
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                Monthly Expenses
-              </p>
-              <p className="text-[10px] text-muted-foreground mt-0.5">6-month average</p>
-              <p className="text-2xl font-bold tabular-nums text-red-400 mt-2">
-                {formatCurrency(summary?.avgMonthlyExpenses || 0)}
-              </p>
-            </div>
-            <div className="mt-3 pt-3 border-t border-border/30">
-              <div className="flex justify-between text-xs">
-                <span className="text-muted-foreground">This month</span>
-                <span className="font-medium">{formatCurrency(monthlyExpenses)}</span>
-              </div>
-            </div>
-          </div>
-        </div>
-        <div className="opacity-0 animate-fade-in stagger-4">
-          <div className={cn(
-            'rounded-2xl border p-6 h-full flex flex-col justify-between cursor-pointer',
-            (summary?.avgMonthlySavings || 0) >= 0
-              ? 'bg-card border-border/50'
-              : 'bg-gradient-to-br from-red-500/10 to-card border-red-500/20'
-          )} onClick={() => setDetailModal('savings')}>
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                Monthly Savings
-              </p>
-              <p className="text-[10px] text-muted-foreground mt-0.5">6-month average</p>
-              <p className={cn(
-                'text-2xl font-bold tabular-nums mt-2',
-                (summary?.avgMonthlySavings || 0) >= 0 ? 'text-emerald-400' : 'text-red-400'
-              )}>
-                {(summary?.avgMonthlySavings || 0) >= 0 ? '+' : ''}{formatCurrency(summary?.avgMonthlySavings || 0)}
-              </p>
-            </div>
-            <div className="mt-3 pt-3 border-t border-border/30">
-              <div className="flex justify-between text-xs">
-                <span className="text-muted-foreground">Savings rate</span>
-                <span className={cn('font-medium', (summary?.avgMonthlyIncome || 0) > 0 && (summary?.avgMonthlySavings || 0) / (summary?.avgMonthlyIncome || 1) >= 0.1 ? 'text-emerald-400' : 'text-amber-400')}>
-                  {(summary?.avgMonthlyIncome || 0) > 0 ? `${(((summary?.avgMonthlySavings || 0) / (summary?.avgMonthlyIncome || 1)) * 100).toFixed(1)}%` : 'N/A'}
-                </span>
-              </div>
-            </div>
-          </div>
-        </div>
+      {/* Row 2: 6-Month Spending Trend Chart */}
+      <div className="opacity-0 animate-fade-in stagger-4">
+        <SpendingTrendChart />
       </div>
 
-      {/* Row 3: CC Debt (if any) + Weekly Spending + Monthly Spending/Budget */}
+      {/* Row 3: Last Month Income / Expenses / Savings */}
+      {(() => {
+        const lmIncome = summary?.lastMonthIncome || 0;
+        const lmExpenses = summary?.lastMonthExpenses || 0;
+        const lmSavings = summary?.lastMonthSavings || 0;
+        const lmLabel = summary?.lastMonthLabel
+          ? new Date(summary.lastMonthLabel + '-15').toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
+          : 'Last month';
+        const lmSavingsRate = lmIncome > 0 ? ((lmSavings / lmIncome) * 100) : 0;
+        return (
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+            <div className="opacity-0 animate-fade-in stagger-5">
+              <div className="bg-card rounded-2xl border border-border/50 p-6 h-full flex flex-col justify-between cursor-pointer" onClick={() => setDetailModal('savings')}>
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Income</p>
+                  <p className="text-[10px] text-muted-foreground mt-0.5">{lmLabel}</p>
+                  <p className="text-2xl font-bold tabular-nums text-emerald-400 mt-2">
+                    {formatCurrency(lmIncome)}
+                  </p>
+                </div>
+                <div className="mt-3 pt-3 border-t border-border/30">
+                  <div className="flex justify-between text-xs">
+                    <span className="text-muted-foreground">6-mo avg</span>
+                    <span className="font-medium">{formatCurrency(summary?.avgMonthlyIncome || 0)}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div className="opacity-0 animate-fade-in stagger-5">
+              <div className="bg-card rounded-2xl border border-border/50 p-6 h-full flex flex-col justify-between cursor-pointer" onClick={() => setDetailModal('savings')}>
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Expenses</p>
+                  <p className="text-[10px] text-muted-foreground mt-0.5">{lmLabel}</p>
+                  <p className="text-2xl font-bold tabular-nums text-red-400 mt-2">
+                    {formatCurrency(lmExpenses)}
+                  </p>
+                </div>
+                <div className="mt-3 pt-3 border-t border-border/30">
+                  <div className="flex justify-between text-xs">
+                    <span className="text-muted-foreground">6-mo avg</span>
+                    <span className="font-medium">{formatCurrency(summary?.avgMonthlyExpenses || 0)}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div className="opacity-0 animate-fade-in stagger-5">
+              <div className={cn(
+                'rounded-2xl border p-6 h-full flex flex-col justify-between cursor-pointer',
+                lmSavings >= 0
+                  ? 'bg-card border-border/50'
+                  : 'bg-gradient-to-br from-red-500/10 to-card border-red-500/20'
+              )} onClick={() => setDetailModal('savings')}>
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Savings</p>
+                  <p className="text-[10px] text-muted-foreground mt-0.5">{lmLabel}</p>
+                  <p className={cn(
+                    'text-2xl font-bold tabular-nums mt-2',
+                    lmSavings >= 0 ? 'text-emerald-400' : 'text-red-400'
+                  )}>
+                    {lmSavings >= 0 ? '+' : ''}{formatCurrency(lmSavings)}
+                  </p>
+                </div>
+                <div className="mt-3 pt-3 border-t border-border/30">
+                  <div className="flex justify-between text-xs">
+                    <span className="text-muted-foreground">Savings rate</span>
+                    <span className={cn('font-medium', lmSavingsRate >= 10 ? 'text-emerald-400' : 'text-amber-400')}>
+                      {lmIncome > 0 ? `${lmSavingsRate.toFixed(1)}%` : 'N/A'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Row 4: CC Debt (if any) + Weekly Spending + Monthly Spending/Budget */}
       <div className={`grid grid-cols-1 ${summary && summary.totalCCDebt !== 0 ? 'md:grid-cols-3' : 'md:grid-cols-2'} gap-5`}>
         {summary && summary.totalCCDebt !== 0 && (
           <div className="opacity-0 animate-fade-in stagger-5 cursor-pointer" onClick={() => setDetailModal('ccdebt')}>
@@ -438,11 +453,6 @@ export function DashboardPage() {
             budget={totalBudget}
           />
         </div>
-      </div>
-
-      {/* Spending Trend Chart */}
-      <div className="opacity-0 animate-fade-in stagger-6">
-        <SpendingTrendChart />
       </div>
 
       {/* Top 10 Expense Categories — 6-Month Averages */}
