@@ -730,4 +730,51 @@ router.get('/dashboard-summary', (req: Request, res: Response) => {
   }
 });
 
+// GET /debug-income?month=YYYY-MM — debug: show all income for a month and Zelle transactions
+router.get('/debug-income', (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.id;
+    const month = (req.query.month as string) || new Date().toISOString().substring(0, 7);
+    const monthStart = month + '-01';
+    const [year, mon] = month.split('-').map(Number);
+    const endOfMonth = new Date(year, mon, 0);
+    const monthEnd = `${year}-${String(mon).padStart(2, '0')}-${String(endOfMonth.getDate()).padStart(2, '0')}`;
+
+    // All positive-amount (income) transactions for the month
+    const allIncome = db.prepare(
+      `SELECT t.id, t.name, t.amount, t.date, c.name as category_name, a.name as account_name
+       FROM transactions t
+       LEFT JOIN categories c ON t.category_id = c.id
+       LEFT JOIN accounts a ON t.account_id = a.id
+       WHERE t.user_id = ? AND t.amount > 0 AND t.date >= ? AND t.date <= ?
+       ORDER BY t.amount DESC`
+    ).all(userId, monthStart, monthEnd) as any[];
+
+    // All Zelle transactions (any amount) for the month
+    const zelleAll = db.prepare(
+      `SELECT t.id, t.name, t.amount, t.date, c.name as category_name, a.name as account_name
+       FROM transactions t
+       LEFT JOIN categories c ON t.category_id = c.id
+       LEFT JOIN accounts a ON t.account_id = a.id
+       WHERE t.user_id = ? AND LOWER(t.name) LIKE '%zelle%' AND t.date >= ? AND t.date <= ?
+       ORDER BY t.date DESC`
+    ).all(userId, monthStart, monthEnd) as any[];
+
+    const totalIncome = allIncome.reduce((sum: number, t: any) => sum + t.amount, 0);
+
+    res.json({
+      month,
+      dateRange: `${monthStart} to ${monthEnd}`,
+      totalIncome: Math.round(totalIncome * 100) / 100,
+      incomeTransactionCount: allIncome.length,
+      incomeTransactions: allIncome,
+      zelleTransactions: zelleAll,
+      zelleCount: zelleAll.length,
+    });
+  } catch (error) {
+    console.error('Debug income error:', error);
+    res.status(500).json({ error: 'Failed to run debug query' });
+  }
+});
+
 export default router;
