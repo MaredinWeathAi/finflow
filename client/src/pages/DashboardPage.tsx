@@ -1,10 +1,7 @@
 import { useState, useEffect } from 'react'
 import {
   format,
-  startOfWeek,
-  endOfWeek,
   isWithinInterval,
-  subWeeks,
   subMonths,
   startOfMonth,
   endOfMonth,
@@ -15,17 +12,11 @@ import { api } from '@/lib/api'
 import { useAuthStore } from '@/stores/authStore'
 import { useBudgets } from '@/hooks/useBudgets'
 import { useAccounts } from '@/hooks/useAccounts'
-import { useRecurring } from '@/hooks/useRecurring'
+// useRecurring removed — Upcoming Recurring section removed from dashboard
 import type { Transaction, NetWorthSnapshot } from '@/types'
 import { NetWorthCard } from '@/components/dashboard/NetWorthCard'
-import { MonthlySpendingCard } from '@/components/dashboard/MonthlySpendingCard'
-import { WeeklySpendingCard } from '@/components/dashboard/WeeklySpendingCard'
-// SafeToSpendCard removed — not useful without real-time data
-// SavingsSummaryCard removed — replaced by inline 6-month average cards
 import { SpendingTrendChart } from '@/components/dashboard/SpendingTrendChart'
-// TrendingCategories removed — replaced by Top 10 Expense Categories (6-mo avg)
 import { RecentTransactions } from '@/components/dashboard/RecentTransactions'
-import { UpcomingRecurring } from '@/components/dashboard/UpcomingRecurring'
 import { FinancialHealthCard } from '@/components/dashboard/FinancialHealthCard'
 import { CreditCardDebtCard } from '@/components/dashboard/CreditCardDebtCard'
 import { DataQualityBanner } from '@/components/dashboard/DataQualityBanner'
@@ -74,75 +65,11 @@ interface DashboardState {
   isLoading: boolean
 }
 
-const DAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
-
-function computeWeeklySpending(
-  transactions: Transaction[],
-  weekStart: Date,
-  weekEnd: Date
-): { day: string; amount: number }[] {
-  const dailyMap: Record<number, number> = {}
-  for (let i = 0; i < 7; i++) {
-    dailyMap[i] = 0
-  }
-
-  transactions
-    .filter((tx) => {
-      const txDate = parseISO(tx.date)
-      return (
-        tx.amount < 0 &&
-        isWithinInterval(txDate, { start: weekStart, end: weekEnd })
-      )
-    })
-    .forEach((tx) => {
-      const txDate = parseISO(tx.date)
-      const dayIndex = (txDate.getDay() + 6) % 7
-      dailyMap[dayIndex] += Math.abs(tx.amount)
-    })
-
-  return DAY_LABELS.map((day, i) => ({
-    day,
-    amount: dailyMap[i],
-  }))
-}
-
-function computeWeeklyPercentChange(
-  transactions: Transaction[],
-  currentWeekStart: Date,
-  currentWeekEnd: Date
-): number {
-  const prevWeekStart = subWeeks(currentWeekStart, 1)
-  const prevWeekEnd = subWeeks(currentWeekEnd, 1)
-
-  const currentTotal = transactions
-    .filter((tx) => {
-      const txDate = parseISO(tx.date)
-      return (
-        tx.amount < 0 &&
-        isWithinInterval(txDate, { start: currentWeekStart, end: currentWeekEnd })
-      )
-    })
-    .reduce((sum, tx) => sum + Math.abs(tx.amount), 0)
-
-  const prevTotal = transactions
-    .filter((tx) => {
-      const txDate = parseISO(tx.date)
-      return (
-        tx.amount < 0 &&
-        isWithinInterval(txDate, { start: prevWeekStart, end: prevWeekEnd })
-      )
-    })
-    .reduce((sum, tx) => sum + Math.abs(tx.amount), 0)
-
-  if (prevTotal === 0) return 0
-  return ((currentTotal - prevTotal) / prevTotal) * 100
-}
-
 export function DashboardPage() {
   const user = useAuthStore((s) => s.user)
   const { netWorth, totalAssets, totalLiabilities } = useAccounts()
   const { budgets, totalBudget, totalSpent } = useBudgets()
-  const { recurring } = useRecurring()
+  // useRecurring removed
 
   const [showOnboarding, setShowOnboarding] = useState(false)
   const [detailModal, setDetailModal] = useState<string | null>(null)
@@ -194,20 +121,6 @@ export function DashboardPage() {
   }, [])
 
   const now = new Date()
-  const currentWeekStart = startOfWeek(now, { weekStartsOn: 1 })
-  const currentWeekEnd = endOfWeek(now, { weekStartsOn: 1 })
-
-  // Weekly spending data
-  const dailySpending = computeWeeklySpending(
-    state.transactions,
-    currentWeekStart,
-    currentWeekEnd
-  )
-  const weeklyPercentChange = computeWeeklyPercentChange(
-    state.transactions,
-    currentWeekStart,
-    currentWeekEnd
-  )
 
   // Monthly income/expenses - prefer dashboard-summary (transfer-aware) over raw tx math
   const summary = state.summary
@@ -243,16 +156,6 @@ export function DashboardPage() {
     state.netWorthHistory.length >= 2
       ? state.netWorthHistory[state.netWorthHistory.length - 2].net_worth
       : 0
-
-  // Upcoming recurring
-  const upcomingItems = recurring
-    .filter((r) => r.is_active)
-    .map((r) => ({
-      name: r.name,
-      amount: r.amount,
-      next_date: r.next_date,
-      category_icon: r.category_icon || '📅',
-    }))
 
   // Recent transactions (top 8)
   const recentTransactions = state.transactions.slice(0, 8)
@@ -352,7 +255,7 @@ export function DashboardPage() {
         <SpendingTrendChart />
       </div>
 
-      {/* Row 3: Last Month Income / Expenses / Savings */}
+      {/* Row 3: Last Month Income / Expenses / Savings + CC Debt */}
       {(() => {
         const lmIncome = summary?.lastMonthIncome || 0;
         const lmExpenses = summary?.lastMonthExpenses || 0;
@@ -361,8 +264,9 @@ export function DashboardPage() {
           ? new Date(summary.lastMonthLabel + '-15').toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
           : 'Last month';
         const lmSavingsRate = lmIncome > 0 ? ((lmSavings / lmIncome) * 100) : 0;
+        const hasCCDebt = summary && summary.totalCCDebt !== 0;
         return (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+          <div className={`grid grid-cols-1 ${hasCCDebt ? 'md:grid-cols-4' : 'md:grid-cols-3'} gap-5`}>
             <div className="opacity-0 animate-fade-in stagger-5">
               <div className="bg-card rounded-2xl border border-border/50 p-6 h-full flex flex-col justify-between cursor-pointer" onClick={() => setDetailModal('savings')}>
                 <div>
@@ -424,36 +328,20 @@ export function DashboardPage() {
                 </div>
               </div>
             </div>
+            {hasCCDebt && (
+              <div className="opacity-0 animate-fade-in stagger-5 cursor-pointer" onClick={() => setDetailModal('ccdebt')}>
+                <CreditCardDebtCard
+                  creditCards={summary!.creditCards}
+                  totalCCDebt={summary!.totalCCDebt}
+                  ccSpendingThisMonth={summary!.ccSpendingThisMonth}
+                  ccInterestFees={summary!.ccInterestFees}
+                  income={summary!.income}
+                />
+              </div>
+            )}
           </div>
         );
       })()}
-
-      {/* Row 4: CC Debt (if any) + Weekly Spending + Monthly Spending/Budget */}
-      <div className={`grid grid-cols-1 ${summary && summary.totalCCDebt !== 0 ? 'md:grid-cols-3' : 'md:grid-cols-2'} gap-5`}>
-        {summary && summary.totalCCDebt !== 0 && (
-          <div className="opacity-0 animate-fade-in stagger-5 cursor-pointer" onClick={() => setDetailModal('ccdebt')}>
-            <CreditCardDebtCard
-              creditCards={summary.creditCards}
-              totalCCDebt={summary.totalCCDebt}
-              ccSpendingThisMonth={summary.ccSpendingThisMonth}
-              ccInterestFees={summary.ccInterestFees}
-              income={summary.income}
-            />
-          </div>
-        )}
-        <div className="opacity-0 animate-fade-in stagger-5 cursor-pointer" onClick={() => setDetailModal('weekly')}>
-          <WeeklySpendingCard
-            dailySpending={dailySpending}
-            percentChange={weeklyPercentChange}
-          />
-        </div>
-        <div className="opacity-0 animate-fade-in stagger-5 cursor-pointer" onClick={() => setDetailModal('monthly')}>
-          <MonthlySpendingCard
-            spent={totalSpent}
-            budget={totalBudget}
-          />
-        </div>
-      </div>
 
       {/* Top 10 Expense Categories — 6-Month Averages */}
       {summary && summary.topExpenses6Mo && summary.topExpenses6Mo.length > 0 && (
@@ -520,14 +408,9 @@ export function DashboardPage() {
         </div>
       )}
 
-      {/* Bottom Row: Recent Transactions (2/3) + Upcoming Recurring (1/3) */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
-        <div className="lg:col-span-2 opacity-0 animate-fade-in stagger-7">
-          <RecentTransactions transactions={recentTransactions} />
-        </div>
-        <div className="opacity-0 animate-fade-in stagger-7">
-          <UpcomingRecurring items={upcomingItems} />
-        </div>
+      {/* Recent Transactions — full width */}
+      <div className="opacity-0 animate-fade-in stagger-7">
+        <RecentTransactions transactions={recentTransactions} />
       </div>
 
       {/* ================================================================== */}
@@ -747,86 +630,7 @@ export function DashboardPage() {
         </div>
       </CardDetailModal>
 
-      {/* Weekly Spending Detail */}
-      <CardDetailModal
-        open={detailModal === 'weekly'}
-        onClose={() => setDetailModal(null)}
-        title="Weekly Spending Breakdown"
-      >
-        <div className="space-y-1">
-          <p className="text-sm text-muted-foreground mb-4">
-            Your daily spending for the current week (Mon–Sun), compared to last week.
-          </p>
-
-          <SectionHeader>Daily Totals</SectionHeader>
-          {dailySpending.map((d, i) => (
-            <FormulaRow
-              key={i}
-              label={d.day}
-              value={formatCurrency(d.amount)}
-              color={d.amount > 0 ? 'default' : 'default'}
-            />
-          ))}
-          <FormulaRow
-            label="Week Total"
-            value={formatCurrency(dailySpending.reduce((s, d) => s + d.amount, 0))}
-            bold
-            operator="="
-          />
-
-          <SectionHeader>Week-over-Week Change</SectionHeader>
-          <FormulaRow
-            label="vs. Last Week"
-            value={`${weeklyPercentChange >= 0 ? '+' : ''}${weeklyPercentChange.toFixed(1)}%`}
-            color={weeklyPercentChange <= 0 ? 'green' : 'red'}
-            detail={weeklyPercentChange <= 0 ? 'Spending decreased (good)' : 'Spending increased from last week'}
-          />
-        </div>
-      </CardDetailModal>
-
-      {/* Monthly Spending Detail */}
-      <CardDetailModal
-        open={detailModal === 'monthly'}
-        onClose={() => setDetailModal(null)}
-        title="Monthly Budget Breakdown"
-      >
-        <div className="space-y-1">
-          <p className="text-sm text-muted-foreground mb-4">
-            Your total spending vs. total budget across all categories this month.
-          </p>
-
-          <SectionHeader>Overview</SectionHeader>
-          <FormulaRow label="Total Budget" value={formatCurrency(totalBudget)} color="green" />
-          <FormulaRow label="Total Spent" value={formatCurrency(totalSpent)} operator="-" color="red" />
-          <FormulaRow label="Remaining" value={formatCurrency(totalBudget - totalSpent)} bold operator="=" color={totalBudget - totalSpent >= 0 ? 'green' : 'red'} />
-          <FormulaRow
-            label="Budget Used"
-            value={totalBudget > 0 ? `${((totalSpent / totalBudget) * 100).toFixed(0)}%` : 'N/A'}
-            detail={summary ? `Day ${summary.dayOfMonth} of ${summary.daysInMonth} (${((summary.dayOfMonth / summary.daysInMonth) * 100).toFixed(0)}% through month)` : ''}
-          />
-
-          {budgets.filter(b => b.category_name && b.amount > 0).length > 0 && (
-            <>
-              <SectionHeader>By Category</SectionHeader>
-              {budgets
-                .filter(b => b.category_name && b.amount > 0)
-                .sort((a, b) => (b.spent || 0) - (a.spent || 0))
-                .map((b, i) => {
-                  const pct = b.amount > 0 ? ((b.spent || 0) / b.amount) * 100 : 0
-                  return (
-                    <FormulaRow
-                      key={i}
-                      label={`${b.category_icon || '📁'} ${b.category_name}`}
-                      value={`${formatCurrency(b.spent || 0)} / ${formatCurrency(b.amount)}`}
-                      detail={`${pct.toFixed(0)}% used${pct > 100 ? ' — over budget!' : ''}`}
-                      color={pct > 100 ? 'red' : pct > 80 ? 'amber' : 'green'}
-                    />
-                  )
-                })}
-            </>
-          )}
-        </div>
-      </CardDetailModal>
+      {/* Weekly and Monthly detail modals removed — cards no longer on dashboard */}
     </div>
   )
 }

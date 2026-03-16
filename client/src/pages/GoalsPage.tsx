@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Plus, X, Target, PartyPopper, Lightbulb } from 'lucide-react'
+import { Plus, X, Target, PartyPopper, Lightbulb, Trash2 } from 'lucide-react'
 import { differenceInDays, parseISO, format } from 'date-fns'
 import { cn, formatCurrency } from '@/lib/utils'
 import { useGoals } from '@/hooks/useGoals'
@@ -172,6 +172,18 @@ function AddGoalModal({ open, onClose, goal, recommendation, onSave }: {
     icon: '🎯',
     color: '#A78BFA',
   })
+  const [confirmDelete, setConfirmDelete] = useState(false)
+
+  const handleDelete = async () => {
+    if (!goal) return
+    try {
+      await api.delete(`/goals/${goal.id}`)
+      toast.success('Goal deleted')
+      onSave()
+      onClose()
+      setConfirmDelete(false)
+    } catch { toast.error('Failed to delete goal') }
+  }
 
   // Reset form when modal opens or goal/recommendation changes
   useEffect(() => {
@@ -231,6 +243,11 @@ function AddGoalModal({ open, onClose, goal, recommendation, onSave }: {
     } catch { toast.error('Failed to save') }
   }
 
+  // Reset confirm delete when modal closes
+  useEffect(() => {
+    if (!open) setConfirmDelete(false)
+  }, [open])
+
   if (!open) return null
 
   return (
@@ -270,6 +287,37 @@ function AddGoalModal({ open, onClose, goal, recommendation, onSave }: {
             <button type="button" onClick={onClose} className="flex-1 h-10 rounded-lg border border-input text-sm font-medium hover:bg-accent transition-colors">Cancel</button>
             <button type="submit" className="flex-1 h-10 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors">{goal ? 'Update' : 'Create'}</button>
           </div>
+          {goal && (
+            <div className="pt-4 mt-4 border-t border-border/30">
+              {!confirmDelete ? (
+                <button
+                  type="button"
+                  onClick={() => setConfirmDelete(true)}
+                  className="flex items-center gap-2 text-xs text-red-400 hover:text-red-300 transition-colors"
+                >
+                  <Trash2 className="w-3.5 h-3.5" /> Delete this goal
+                </button>
+              ) : (
+                <div className="flex items-center gap-3">
+                  <span className="text-xs text-red-400">Are you sure?</span>
+                  <button
+                    type="button"
+                    onClick={handleDelete}
+                    className="text-xs font-medium px-3 py-1.5 rounded-lg bg-red-500/20 text-red-400 hover:bg-red-500/30 transition-colors"
+                  >
+                    Yes, delete
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmDelete(false)}
+                    className="text-xs font-medium px-3 py-1.5 rounded-lg hover:bg-accent transition-colors"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
         </form>
       </div>
     </div>
