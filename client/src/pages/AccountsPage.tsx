@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Plus, X, Trash2, Eye, EyeOff, CreditCard, Building, Landmark, Bitcoin, Car, Home, LineChart } from 'lucide-react'
+import { Plus, X, Trash2, Eye, EyeOff, CreditCard, Building, Landmark, Bitcoin, Car, Home, LineChart, TrendingUp, PiggyBank, Briefcase, GraduationCap, HeartPulse, Shield, Wallet } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { cn, formatCurrency } from '@/lib/utils'
 import { useAccounts } from '@/hooks/useAccounts'
@@ -16,6 +16,14 @@ const typeIcons: Record<string, React.ReactNode> = {
   loan: <Car className="w-5 h-5" />,
   mortgage: <Home className="w-5 h-5" />,
   property: <Home className="w-5 h-5" />,
+  '401k': <Briefcase className="w-5 h-5" />,
+  ira: <PiggyBank className="w-5 h-5" />,
+  roth_ira: <PiggyBank className="w-5 h-5" />,
+  brokerage: <TrendingUp className="w-5 h-5" />,
+  '529': <GraduationCap className="w-5 h-5" />,
+  hsa: <HeartPulse className="w-5 h-5" />,
+  pension: <Shield className="w-5 h-5" />,
+  other_investment: <Wallet className="w-5 h-5" />,
 }
 
 const typeLabels: Record<string, string> = {
@@ -26,11 +34,28 @@ const typeLabels: Record<string, string> = {
   loan: 'Loans',
   mortgage: 'Mortgage',
   property: 'Property',
+  '401k': '401(k)',
+  ira: 'Traditional IRA',
+  roth_ira: 'Roth IRA',
+  brokerage: 'Brokerage',
+  '529': '529 Plan',
+  hsa: 'HSA',
+  pension: 'Pension',
+  other_investment: 'Other Investment',
 }
+
+// Group labels shown in the type dropdown
+const typeGroupOptions = [
+  { label: 'Bank Accounts', types: ['checking', 'savings'] },
+  { label: 'Credit', types: ['credit'] },
+  { label: 'Investment Accounts', types: ['401k', 'ira', 'roth_ira', 'brokerage', '529', 'hsa', 'pension', 'other_investment'] },
+  { label: 'Other', types: ['crypto', 'loan', 'mortgage', 'property'] },
+]
 
 const typeGroups = [
   { types: ['checking', 'savings'], label: 'Cash' },
   { types: ['credit'], label: 'Credit Cards' },
+  { types: ['401k', 'ira', 'roth_ira', 'brokerage', '529', 'hsa', 'pension', 'other_investment'], label: 'Investment Accounts' },
   { types: ['crypto'], label: 'Crypto' },
   { types: ['loan', 'mortgage'], label: 'Loans & Debts' },
   { types: ['property'], label: 'Property & Assets' },
@@ -138,7 +163,11 @@ function AddAccountModal({ open, onClose, account, onSave }: {
             <div>
               <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Type</label>
               <select value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value as any }))} className="mt-1 w-full h-10 rounded-lg border border-input bg-background px-3 text-sm">
-                {Object.entries(typeLabels).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                {typeGroupOptions.map(group => (
+                  <optgroup key={group.label} label={group.label}>
+                    {group.types.map(t => <option key={t} value={t}>{typeLabels[t]}</option>)}
+                  </optgroup>
+                ))}
               </select>
             </div>
             <div>
@@ -183,7 +212,7 @@ function AddAccountModal({ open, onClose, account, onSave }: {
 }
 
 export function AccountsPage() {
-  const { accounts, isLoading, totalAssets, totalAccountAssets, totalLiabilities, investmentPortfolioValue, netWorth, refetch } = useAccounts()
+  const { accounts, isLoading, totalAssets, totalAccountAssets, totalLiabilities, totalInvestmentAccounts, investmentPortfolioValue, netWorth, refetch } = useAccounts()
   const [showModal, setShowModal] = useState(false)
   const [editAccount, setEditAccount] = useState<Account | null>(null)
   const navigate = useNavigate()
@@ -204,20 +233,25 @@ export function AccountsPage() {
       />
 
       {/* Net Worth Summary */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 mb-6">
         <div className="bg-card rounded-xl border border-border/50 p-4">
-          <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Account Assets</p>
+          <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Cash & Assets</p>
           <p className="text-xl font-bold text-success mt-1">{formatCurrency(totalAccountAssets)}</p>
+        </div>
+        <div className="bg-card rounded-xl border border-border/50 p-4">
+          <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Investment Accounts</p>
+          <p className="text-xl font-bold text-success mt-1">{formatCurrency(totalInvestmentAccounts)}</p>
         </div>
         <div
           className="bg-card rounded-xl border border-border/50 p-4 cursor-pointer hover:bg-accent/20 transition-colors"
           onClick={() => navigate('/investments')}
         >
           <div className="flex items-center gap-1.5">
-            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Investments</p>
+            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Positions</p>
             <LineChart className="w-3 h-3 text-muted-foreground" />
           </div>
           <p className="text-xl font-bold text-success mt-1">{formatCurrency(investmentPortfolioValue)}</p>
+          <p className="text-[10px] text-muted-foreground mt-0.5">Individual holdings</p>
         </div>
         <div className="bg-card rounded-xl border border-border/50 p-4">
           <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Total Liabilities</p>
@@ -226,7 +260,7 @@ export function AccountsPage() {
         <div className="bg-card rounded-xl border border-border/50 p-4">
           <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Net Worth</p>
           <p className="text-xl font-bold mt-1">{formatCurrency(netWorth)}</p>
-          <p className="text-[10px] text-muted-foreground mt-0.5">Accounts + Investments - Liabilities</p>
+          <p className="text-[10px] text-muted-foreground mt-0.5">All assets - Liabilities</p>
         </div>
       </div>
 

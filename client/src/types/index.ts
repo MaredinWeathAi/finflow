@@ -13,7 +13,7 @@ export interface Account {
   id: string
   user_id: string
   name: string
-  type: 'checking' | 'savings' | 'credit' | 'investment' | 'crypto' | 'loan' | 'mortgage' | 'property'
+  type: 'checking' | 'savings' | 'credit' | 'investment' | 'crypto' | 'loan' | 'mortgage' | 'property' | '401k' | 'ira' | 'roth_ira' | 'brokerage' | '529' | 'hsa' | 'pension' | 'other_investment'
   institution: string
   balance: number
   last_four: string

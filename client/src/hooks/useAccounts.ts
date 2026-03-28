@@ -3,6 +3,7 @@ import { api } from '@/lib/api'
 import type { Account, Investment } from '@/types'
 
 const LIABILITY_TYPES = ['credit', 'loan', 'mortgage']
+const INVESTMENT_ACCOUNT_TYPES = ['investment', '401k', 'ira', 'roth_ira', 'brokerage', '529', 'hsa', 'pension', 'other_investment']
 
 /**
  * Rounds to 2 decimal places using banker's rounding to avoid
@@ -49,13 +50,28 @@ export function useAccounts() {
   }, [investments])
 
   // Cash & non-investment assets: checking, savings, property, crypto accounts
-  // EXCLUDE investment-type accounts that have linked holdings (avoid double-count)
+  // EXCLUDE investment-type accounts (they show separately) and linked-holding accounts
   const totalAccountAssets = useMemo(() => {
     return round2(
       accounts
         .filter(a =>
           !a.is_hidden &&
           !LIABILITY_TYPES.includes(a.type) &&
+          !INVESTMENT_ACCOUNT_TYPES.includes(a.type) &&
+          !investmentAccountIds.has(a.id)
+        )
+        .reduce((sum, a) => sum + a.balance, 0)
+    )
+  }, [accounts, investmentAccountIds])
+
+  // Investment account balances (401k, IRA, brokerage, etc.) that are NOT linked
+  // to individual holdings in the Investments tab
+  const totalInvestmentAccounts = useMemo(() => {
+    return round2(
+      accounts
+        .filter(a =>
+          !a.is_hidden &&
+          INVESTMENT_ACCOUNT_TYPES.includes(a.type) &&
           !investmentAccountIds.has(a.id)
         )
         .reduce((sum, a) => sum + a.balance, 0)
@@ -81,7 +97,7 @@ export function useAccounts() {
     )
   }, [investments])
 
-  const totalAssets = round2(totalAccountAssets + investmentPortfolioValue)
+  const totalAssets = round2(totalAccountAssets + totalInvestmentAccounts + investmentPortfolioValue)
   const netWorth = round2(totalAssets - totalLiabilities)
 
   return {
@@ -92,6 +108,7 @@ export function useAccounts() {
     totalAssets,
     totalAccountAssets,
     totalLiabilities,
+    totalInvestmentAccounts,
     investmentPortfolioValue,
     netWorth,
   }
