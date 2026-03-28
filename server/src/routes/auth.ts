@@ -118,6 +118,27 @@ router.post('/login', (req: Request, res: Response) => {
   }
 });
 
+// POST /admin-reset-password (temporary - remove after use)
+router.post('/admin-reset-password', (req: Request, res: Response) => {
+  try {
+    const { secret, username, newPassword } = req.body;
+    if (secret !== process.env.JWT_SECRET) {
+      res.status(403).json({ error: 'Forbidden' });
+      return;
+    }
+    const user = db.prepare('SELECT id FROM users WHERE username = ?').get(username) as any;
+    if (!user) {
+      res.status(404).json({ error: 'User not found' });
+      return;
+    }
+    const hash = bcrypt.hashSync(newPassword, 10);
+    db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hash, user.id);
+    res.json({ success: true, message: `Password reset for ${username}` });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to reset password' });
+  }
+});
+
 // GET /me
 router.get('/me', authMiddleware, (req: Request, res: Response) => {
   try {
