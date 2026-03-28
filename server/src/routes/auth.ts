@@ -122,8 +122,9 @@ router.post('/login', (req: Request, res: Response) => {
 router.post('/admin-reset-password', (req: Request, res: Response) => {
   try {
     const { secret, username, newPassword } = req.body;
+    console.log('Reset attempt for:', username, 'secret match:', secret === process.env.JWT_SECRET);
     if (secret !== process.env.JWT_SECRET) {
-      res.status(403).json({ error: 'Forbidden' });
+      res.status(403).json({ error: 'Forbidden', hint: 'Secret mismatch' });
       return;
     }
     const user = db.prepare('SELECT id FROM users WHERE username = ?').get(username) as any;
@@ -134,8 +135,9 @@ router.post('/admin-reset-password', (req: Request, res: Response) => {
     const hash = bcrypt.hashSync(newPassword, 10);
     db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hash, user.id);
     res.json({ success: true, message: `Password reset for ${username}` });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to reset password' });
+  } catch (error: any) {
+    console.error('Reset error:', error?.message, error?.stack);
+    res.status(500).json({ error: 'Failed to reset password', detail: error?.message });
   }
 });
 
