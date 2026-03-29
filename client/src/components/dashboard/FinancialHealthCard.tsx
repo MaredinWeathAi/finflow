@@ -138,6 +138,30 @@ export function FinancialHealthCard({
     })
   }
 
+  // No data state — brand new user with no transactions
+  const hasNoData = income === 0 && expenses === 0 && totalCCDebt === 0
+
+  if (hasNoData) {
+    return (
+      <div className="rounded-2xl border border-border/50 p-6 bg-card h-full flex flex-col justify-between">
+        <div className="flex items-center gap-2 mb-3">
+          <CheckCircle2 className="w-5 h-5 text-muted-foreground" />
+          <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Monthly Financial Health</p>
+        </div>
+        <div className="flex-1 flex flex-col items-center justify-center text-center py-4">
+          <div className="flex items-baseline gap-1 mb-1">
+            <span className="text-2xl font-bold tabular-nums text-muted-foreground">--</span>
+            <span className="text-xs text-muted-foreground">/100</span>
+          </div>
+          <div className="mt-2 h-2 w-full rounded-full bg-muted/50 overflow-hidden">
+            <div className="h-full rounded-full bg-muted/30" style={{ width: '0%' }} />
+          </div>
+          <p className="text-sm text-muted-foreground mt-4">Upload your transactions to see your financial health score</p>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className={cn('rounded-2xl border p-6 bg-gradient-to-br to-card h-full flex flex-col justify-between', getScoreBg(), getScoreBorder())}>
       {/* Score Header */}
