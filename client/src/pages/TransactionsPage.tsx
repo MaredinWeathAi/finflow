@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useMemo } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { format, parseISO, isToday, isYesterday, subDays, subMonths, startOfMonth, endOfMonth, startOfQuarter, subQuarters, endOfQuarter } from 'date-fns'
 import { Search, Filter, Plus, ArrowUpDown, Download, Upload, X, Check, Tag, Receipt, Calendar } from 'lucide-react'
 import { cn, formatCurrency } from '@/lib/utils'
@@ -400,10 +401,18 @@ function useDateFilterOptions() {
 }
 
 export function TransactionsPage() {
+  const [searchParams, setSearchParams] = useSearchParams()
   const [search, setSearch] = useState('')
-  const [selectedCategory, setSelectedCategory] = useState('')
+  const [selectedCategory, setSelectedCategory] = useState(searchParams.get('category') || '')
   const [selectedAccount, setSelectedAccount] = useState('')
   const [selectedDateFilter, setSelectedDateFilter] = useState('')
+
+  // Clear URL params after reading them so they don't persist on refresh
+  useEffect(() => {
+    if (searchParams.has('category')) {
+      setSearchParams({}, { replace: true })
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
   const [sortBy, setSortBy] = useState('date_desc')
   const [page, setPage] = useState(1)
   const [showFilters, setShowFilters] = useState(false)

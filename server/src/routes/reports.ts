@@ -787,7 +787,10 @@ router.get('/dashboard-summary', (req: Request, res: Response) => {
       lastMonthExpenses,
       lastMonthSavings,
       lastMonthLabel,
+      sixMonthStart,
+      sixMonthEnd,
       topExpenses6Mo: topExpenses6Mo.map((c: any) => ({
+        id: c.id,
         name: c.name,
         icon: c.icon,
         color: c.color,
@@ -796,6 +799,7 @@ router.get('/dashboard-summary', (req: Request, res: Response) => {
         count: c.transaction_count,
       })),
       topIncome6Mo: topIncome6Mo.map((c: any) => ({
+        id: c.id,
         name: c.name,
         icon: c.icon,
         color: c.color,

@@ -23,6 +23,7 @@ import { DataQualityBanner } from '@/components/dashboard/DataQualityBanner'
 import { BudgetBurnRate } from '@/components/dashboard/BudgetBurnRate'
 import { OnboardingWizard } from '@/components/shared/OnboardingWizard'
 import { CardDetailModal, FormulaRow, SectionHeader } from '@/components/dashboard/CardDetailModal'
+import { CategoryDrilldownModal } from '@/components/dashboard/CategoryDrilldownModal'
 
 interface DashboardSummary {
   income: number
@@ -55,9 +56,11 @@ interface DashboardSummary {
   lastMonthExpenses: number
   lastMonthSavings: number
   lastMonthLabel: string
-  topExpenses6Mo: { name: string; icon: string; color: string; totalAmount: number; avgAmount: number; count: number }[]
+  sixMonthStart: string
+  sixMonthEnd: string
+  topExpenses6Mo: { id: string; name: string; icon: string; color: string; totalAmount: number; avgAmount: number; count: number }[]
   topIncome: { name: string; icon: string; color: string; amount: number; count: number }[]
-  topIncome6Mo: { name: string; icon: string; color: string; totalAmount: number; avgAmount: number; count: number }[]
+  topIncome6Mo: { id: string; name: string; icon: string; color: string; totalAmount: number; avgAmount: number; count: number }[]
 }
 
 interface DashboardState {
@@ -75,6 +78,11 @@ export function DashboardPage() {
 
   const [showOnboarding, setShowOnboarding] = useState(false)
   const [detailModal, setDetailModal] = useState<string | null>(null)
+  const [drilldown, setDrilldown] = useState<{
+    categoryId: string; categoryName: string; categoryIcon: string; categoryColor: string;
+    avgAmount: number; totalAmount: number; count: number;
+    dateStart: string; dateEnd: string; type: 'expense' | 'income'
+  } | null>(null)
 
   const [state, setState] = useState<DashboardState>({
     transactions: [],
@@ -365,7 +373,16 @@ export function DashboardPage() {
                     const maxAvg = summary.topExpenses6Mo[0]?.avgAmount || 1
                     const barPct = Math.min((cat.avgAmount / maxAvg) * 100, 100)
                     return (
-                      <div key={cat.name} className="flex items-center gap-3">
+                      <div
+                        key={cat.name}
+                        className="flex items-center gap-3 rounded-lg px-2 py-1 -mx-2 cursor-pointer hover:bg-accent/30 transition-colors"
+                        onClick={() => setDrilldown({
+                          categoryId: cat.id, categoryName: cat.name, categoryIcon: cat.icon,
+                          categoryColor: cat.color, avgAmount: cat.avgAmount, totalAmount: cat.totalAmount,
+                          count: cat.count, dateStart: summary.sixMonthStart, dateEnd: summary.sixMonthEnd,
+                          type: 'expense',
+                        })}
+                      >
                         <div className="flex w-36 shrink-0 items-center gap-2 min-w-0">
                           <span className="text-base">{cat.icon || '📁'}</span>
                           <div className="min-w-0">
@@ -408,7 +425,16 @@ export function DashboardPage() {
                     const maxAvg = summary.topIncome6Mo[0]?.avgAmount || 1
                     const barPct = Math.min((cat.avgAmount / maxAvg) * 100, 100)
                     return (
-                      <div key={cat.name} className="flex items-center gap-3">
+                      <div
+                        key={cat.name}
+                        className="flex items-center gap-3 rounded-lg px-2 py-1 -mx-2 cursor-pointer hover:bg-accent/30 transition-colors"
+                        onClick={() => setDrilldown({
+                          categoryId: cat.id, categoryName: cat.name, categoryIcon: cat.icon,
+                          categoryColor: cat.color, avgAmount: cat.avgAmount, totalAmount: cat.totalAmount,
+                          count: cat.count, dateStart: summary.sixMonthStart, dateEnd: summary.sixMonthEnd,
+                          type: 'income',
+                        })}
+                      >
                         <div className="flex w-36 shrink-0 items-center gap-2 min-w-0">
                           <span className="text-base">{cat.icon || '📁'}</span>
                           <div className="min-w-0">
@@ -681,6 +707,24 @@ export function DashboardPage() {
       </CardDetailModal>
 
       {/* Weekly and Monthly detail modals removed — cards no longer on dashboard */}
+
+      {/* Category Drilldown Modal */}
+      {drilldown && (
+        <CategoryDrilldownModal
+          open={!!drilldown}
+          onClose={() => setDrilldown(null)}
+          categoryId={drilldown.categoryId}
+          categoryName={drilldown.categoryName}
+          categoryIcon={drilldown.categoryIcon}
+          categoryColor={drilldown.categoryColor}
+          avgAmount={drilldown.avgAmount}
+          totalAmount={drilldown.totalAmount}
+          count={drilldown.count}
+          dateStart={drilldown.dateStart}
+          dateEnd={drilldown.dateEnd}
+          type={drilldown.type}
+        />
+      )}
     </div>
   )
 }
