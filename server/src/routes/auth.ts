@@ -118,17 +118,6 @@ router.post('/login', (req: Request, res: Response) => {
   }
 });
 
-// TEMP: debug users lookup - remove after use
-router.post('/debug-users', (req: Request, res: Response) => {
-  const { secret } = req.body;
-  if (secret !== process.env.JWT_SECRET) { res.status(403).json({ error: 'Forbidden' }); return; }
-  const users = db.prepare(`SELECT id, email, username, name, role, created_at,
-    (SELECT COUNT(*) FROM transactions WHERE user_id = users.id) as tx_count,
-    (SELECT COUNT(*) FROM accounts WHERE user_id = users.id) as acct_count
-    FROM users ORDER BY created_at DESC`).all();
-  res.json(users);
-});
-
 // GET /me
 router.get('/me', authMiddleware, (req: Request, res: Response) => {
   try {
