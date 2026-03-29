@@ -1092,6 +1092,94 @@ export function InsightsPage() {
     </div>
   )
 
+  // Detect zero-data users: no income, no expenses, no meaningful data
+  const hasNoData =
+    data.monthlyView.totalIncome === 0 &&
+    data.monthlyView.totalExpenses === 0 &&
+    data.annualView.totalIncome === 0 &&
+    data.annualView.totalExpenses === 0
+
+  if (hasNoData) {
+    return (
+      <div className="space-y-6">
+        <PageHeader
+          title="Financial Insights"
+          description="AI-powered analysis of your financial health"
+          action={
+            <div className="flex items-center gap-1.5 bg-gradient-to-r from-primary/20 to-purple-500/20 rounded-full px-3 py-1.5">
+              <Sparkles className="w-3.5 h-3.5 text-primary" />
+              <span className="text-xs font-medium text-primary">AI Advisor</span>
+            </div>
+          }
+        />
+
+        {/* Empty Health Score */}
+        <div className="bg-card rounded-2xl border border-border/50 p-6 lg:p-8">
+          <div className="flex items-center gap-2 mb-6">
+            <Shield className="w-5 h-5 text-muted-foreground" />
+            <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
+              Financial Health Score
+            </h2>
+          </div>
+          <div className="flex flex-col lg:flex-row items-center gap-8 lg:gap-12">
+            <div className="flex flex-col items-center">
+              <div className="relative">
+                <svg height={180} width={180} className="transform -rotate-90">
+                  <circle stroke="hsl(240 10% 15%)" fill="transparent" strokeWidth={12} r={84} cx={90} cy={90} />
+                </svg>
+                <div className="absolute inset-0 flex flex-col items-center justify-center">
+                  <span className="text-4xl font-bold tabular-nums text-muted-foreground">--</span>
+                  <span className="text-lg font-bold mt-0.5 text-muted-foreground">--</span>
+                </div>
+              </div>
+              <p className="text-sm text-muted-foreground mt-3">No data yet</p>
+            </div>
+            <div className="flex-1 w-full space-y-3">
+              {['Savings Rate', 'Budget Adherence', 'Debt Ratio', 'Emergency Fund', 'Income Stability', 'Goal Progress'].map((name) => (
+                <div key={name} className="flex items-center gap-3">
+                  <span className="text-sm font-medium text-muted-foreground w-32 shrink-0 truncate">{name}</span>
+                  <div className="flex-1 h-2 rounded-full bg-muted overflow-hidden">
+                    <div className="h-full rounded-full bg-muted/50" style={{ width: '0%' }} />
+                  </div>
+                  <span className="text-sm font-semibold tabular-nums w-10 text-right text-muted-foreground">--</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Empty Financial Overview */}
+        <div className="space-y-4">
+          <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Financial Overview</h2>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            {[
+              { label: 'Savings Rate', value: '--' },
+              { label: 'Budget Adherence', value: '--' },
+              { label: 'Monthly Burn', value: '$0.00' },
+              { label: 'Net Cash Flow', value: '$0.00' },
+            ].map((stat) => (
+              <div key={stat.label} className="bg-card rounded-2xl border border-border/50 p-5 flex flex-col gap-3">
+                <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{stat.label}</p>
+                <p className="text-2xl font-bold tabular-nums text-muted-foreground">{stat.value}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Prompt to upload data */}
+        <div className="bg-card rounded-2xl border border-border/50 p-12 text-center">
+          <div className="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center mx-auto mb-4">
+            <Sparkles className="w-8 h-8 text-primary" />
+          </div>
+          <h3 className="text-lg font-semibold">Upload Transactions to Get Started</h3>
+          <p className="text-sm text-muted-foreground mt-2 max-w-sm mx-auto">
+            Once you upload your financial data, we'll analyze your spending habits and provide personalized insights, health scores, and recommendations.
+          </p>
+        </div>
+      </div>
+    )
+  }
+
   const budgetAdherence =
     activePeriod && activePeriod.totalExpenses > 0 && activePeriod.totalIncome > 0
       ? Math.min(
