@@ -279,53 +279,16 @@ router.post('/cleanup-demo', (req: Request, res: Response) => {
     const { secret, userId } = req.body;
     if (secret !== 'finbudget-seed-2024') { res.status(403).json({ error: 'Forbidden' }); return; }
 
-    // Keep only accounts that have transactions linked to them
-    const accountsWithTx = db.prepare(`SELECT DISTINCT account_id FROM transactions WHERE user_id = ?`).all(userId) as any[];
-    const keepIds = new Set(accountsWithTx.map((r: any) => r.account_id));
-
-    // Get all accounts for user
-    const allAccounts = db.prepare(`SELECT id, name FROM accounts WHERE user_id = ?`).all(userId) as any[];
-
-    // For accounts with no transactions, keep only the first of each name
-    const seenNames = new Set<string>();
-    const toDelete: string[] = [];
-    for (const acct of allAccounts) {
-      if (keepIds.has(acct.id)) continue; // has transactions, keep it
-      if (seenNames.has(acct.name)) {
-        toDelete.push(acct.id);
-      } else {
-        seenNames.add(acct.name);
-      }
-    }
-
-    // Delete the duplicates
-    if (toDelete.length > 0) {
-      const placeholders = toDelete.map(() => '?').join(',');
-      db.prepare(`DELETE FROM accounts WHERE id IN (${placeholders})`).run(...toDelete);
-    }
-
-    // Also delete any duplicate categories (keep first of each name)
-    const allCats = db.prepare(`SELECT id, name FROM categories WHERE user_id = ? ORDER BY rowid`).all(userId) as any[];
-    const seenCatNames = new Set<string>();
-    const catDeletes: string[] = [];
-    for (const cat of allCats) {
-      if (seenCatNames.has(cat.name)) {
-        catDeletes.push(cat.id);
-      } else {
-        seenCatNames.add(cat.name);
-      }
-    }
-    if (catDeletes.length > 0) {
-      const placeholders = catDeletes.map(() => '?').join(',');
-      db.prepare(`DELETE FROM categories WHERE id IN (${placeholders})`).run(...catDeletes);
-    }
+    // Delete all accounts that have ZERO transactions
+    const result = db.prepare(`
+      DELETE FROM accounts WHERE user_id = ? AND id NOT IN (
+        SELECT DISTINCT account_id FROM transactions WHERE user_id = ?
+      )
+    `).run(userId, userId);
 
     res.json({
       success: true,
-      accountsDeleted: toDelete.length,
-      categoriesDeleted: catDeletes.length,
-      accountsRemaining: allAccounts.length - toDelete.length,
-      categoriesRemaining: allCats.length - catDeletes.length
+      accountsDeleted: result.changes,
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
