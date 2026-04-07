@@ -273,26 +273,4 @@ router.put('/change-password', authMiddleware, (req: Request, res: Response) => 
   }
 });
 
-// TEMP: cleanup duplicate accounts for demo user
-router.post('/cleanup-demo', (req: Request, res: Response) => {
-  try {
-    const { secret, userId } = req.body;
-    if (secret !== 'finbudget-seed-2024') { res.status(403).json({ error: 'Forbidden' }); return; }
-
-    // Delete all accounts that have ZERO transactions
-    const result = db.prepare(`
-      DELETE FROM accounts WHERE user_id = ? AND id NOT IN (
-        SELECT DISTINCT account_id FROM transactions WHERE user_id = ?
-      )
-    `).run(userId, userId);
-
-    res.json({
-      success: true,
-      accountsDeleted: result.changes,
-    });
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
 export default router;
