@@ -332,7 +332,7 @@ router.post('/seed-demo', (req: Request, res: Response) => {
     }
 
     // ── 3. Generate 6 months of transactions (Oct 2025 – Mar 2026) ──
-    const insertTx = db.prepare(`INSERT INTO transactions (id, user_id, account_id, name, amount, category_id, date, notes, is_pending, is_recurring, source, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,0,?,?,?,?)`);
+    const insertTx = db.prepare(`INSERT INTO transactions (id, user_id, account_id, name, amount, category_id, date, notes, is_pending, is_recurring, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,0,?,?,?)`);
 
     const months = ['2025-10', '2025-11', '2025-12', '2026-01', '2026-02', '2026-03'];
 
@@ -350,28 +350,28 @@ router.post('/seed-demo', (req: Request, res: Response) => {
     for (const m of months) {
       // ── INCOME ──
       // Salary (bi-weekly, 1st and 15th)
-      insertTx.run(uuid(), uid, checkingId, 'ACME CORP PAYROLL', 3750.00, cats['Salary'], `${m}-01`, 'Bi-weekly salary', 0, 1, 'seed', now, now);
-      insertTx.run(uuid(), uid, checkingId, 'ACME CORP PAYROLL', 3750.00, cats['Salary'], `${m}-15`, 'Bi-weekly salary', 0, 1, 'seed', now, now);
+      insertTx.run(uuid(), uid, checkingId, 'ACME CORP PAYROLL', 3750.00, cats['Salary'], `${m}-01`, 'Bi-weekly salary', 1, now, now);
+      insertTx.run(uuid(), uid, checkingId, 'ACME CORP PAYROLL', 3750.00, cats['Salary'], `${m}-15`, 'Bi-weekly salary', 1, now, now);
       txCount += 2;
 
       // Occasional freelance (some months)
       if (['2025-10', '2025-12', '2026-02'].includes(m)) {
-        insertTx.run(uuid(), uid, checkingId, 'UPWORK PAYMENT', ramt(850, 200), cats['Freelance'], rday(m, 8, 22), 'Freelance web dev project', 0, 0, 'seed', now, now);
+        insertTx.run(uuid(), uid, checkingId, 'UPWORK PAYMENT', ramt(850, 200), cats['Freelance'], rday(m, 8, 22), 'Freelance web dev project', 0, now, now);
         txCount++;
       }
 
       // ── HOUSING ──
-      insertTx.run(uuid(), uid, checkingId, 'CITYWIDE PROPERTY MGMT', -2200.00, cats['Housing'], `${m}-01`, 'Monthly rent', 0, 1, 'seed', now, now);
+      insertTx.run(uuid(), uid, checkingId, 'CITYWIDE PROPERTY MGMT', -2200.00, cats['Housing'], `${m}-01`, 'Monthly rent', 1, now, now);
       txCount++;
 
       // ── UTILITIES ──
-      insertTx.run(uuid(), uid, checkingId, 'CONSOLIDATED EDISON', ramt(-135, 30), cats['Utilities'], rday(m, 5, 12), 'Electric bill', 0, 1, 'seed', now, now);
-      insertTx.run(uuid(), uid, checkingId, 'NATIONAL GRID GAS', ramt(-75, 20), cats['Utilities'], rday(m, 8, 15), 'Gas bill', 0, 1, 'seed', now, now);
-      insertTx.run(uuid(), uid, checkingId, 'VERIZON FIOS', -89.99, cats['Utilities'], rday(m, 18, 22), 'Internet', 0, 1, 'seed', now, now);
+      insertTx.run(uuid(), uid, checkingId, 'CONSOLIDATED EDISON', ramt(-135, 30), cats['Utilities'], rday(m, 5, 12), 'Electric bill', 1, now, now);
+      insertTx.run(uuid(), uid, checkingId, 'NATIONAL GRID GAS', ramt(-75, 20), cats['Utilities'], rday(m, 8, 15), 'Gas bill', 1, now, now);
+      insertTx.run(uuid(), uid, checkingId, 'VERIZON FIOS', -89.99, cats['Utilities'], rday(m, 18, 22), 'Internet', 1, now, now);
       txCount += 3;
 
       // ── INSURANCE ──
-      insertTx.run(uuid(), uid, checkingId, 'STATE FARM INSURANCE', -178.50, cats['Insurance'], rday(m, 1, 5), 'Auto + renters insurance', 0, 1, 'seed', now, now);
+      insertTx.run(uuid(), uid, checkingId, 'STATE FARM INSURANCE', -178.50, cats['Insurance'], rday(m, 1, 5), 'Auto + renters insurance', 1, now, now);
       txCount++;
 
       // ── GROCERIES (4-6 trips per month) ──
@@ -380,7 +380,7 @@ router.post('/seed-demo', (req: Request, res: Response) => {
       for (let g = 0; g < groceryTrips; g++) {
         const store = groceryStores[Math.floor(Math.random() * groceryStores.length)];
         const amt = store === 'COSTCO WHOLESALE' ? ramt(-145, 35) : ramt(-78, 25);
-        insertTx.run(uuid(), uid, checkingId, store, amt, cats['Groceries'], rday(m, 1, 28), null, 0, 0, 'seed', now, now);
+        insertTx.run(uuid(), uid, checkingId, store, amt, cats['Groceries'], rday(m, 1, 28), null, 0, now, now);
         txCount++;
       }
 
@@ -391,25 +391,25 @@ router.post('/seed-demo', (req: Request, res: Response) => {
         const rest = restaurants[Math.floor(Math.random() * restaurants.length)];
         const amt = rest.includes('STARBUCKS') ? ramt(-6.50, 2) : ramt(-38, 15);
         const acct = Math.random() > 0.5 ? creditId : checkingId;
-        insertTx.run(uuid(), uid, acct, rest, amt, cats['Restaurants'], rday(m, 1, 28), null, 0, 0, 'seed', now, now);
+        insertTx.run(uuid(), uid, acct, rest, amt, cats['Restaurants'], rday(m, 1, 28), null, 0, now, now);
         txCount++;
       }
 
       // ── TRANSPORTATION ──
-      insertTx.run(uuid(), uid, checkingId, 'SHELL GAS STATION', ramt(-52, 8), cats['Transportation'], rday(m, 3, 10), null, 0, 0, 'seed', now, now);
-      insertTx.run(uuid(), uid, checkingId, 'EXXON MOBIL', ramt(-48, 8), cats['Transportation'], rday(m, 17, 24), null, 0, 0, 'seed', now, now);
+      insertTx.run(uuid(), uid, checkingId, 'SHELL GAS STATION', ramt(-52, 8), cats['Transportation'], rday(m, 3, 10), null, 0, now, now);
+      insertTx.run(uuid(), uid, checkingId, 'EXXON MOBIL', ramt(-48, 8), cats['Transportation'], rday(m, 17, 24), null, 0, now, now);
       if (Math.random() > 0.5) {
-        insertTx.run(uuid(), uid, checkingId, 'JIFFY LUBE OIL CHANGE', -79.99, cats['Transportation'], rday(m, 10, 20), 'Oil change', 0, 0, 'seed', now, now);
+        insertTx.run(uuid(), uid, checkingId, 'JIFFY LUBE OIL CHANGE', -79.99, cats['Transportation'], rday(m, 10, 20), 'Oil change', 0, now, now);
         txCount++;
       }
       txCount += 2;
 
       // ── SUBSCRIPTIONS (recurring, on credit card) ──
-      insertTx.run(uuid(), uid, creditId, 'NETFLIX SUBSCRIPTION', -15.99, cats['Subscriptions'], `${m}-05`, null, 0, 1, 'seed', now, now);
-      insertTx.run(uuid(), uid, creditId, 'SPOTIFY PREMIUM', -10.99, cats['Subscriptions'], `${m}-07`, null, 0, 1, 'seed', now, now);
-      insertTx.run(uuid(), uid, creditId, 'PLANET FITNESS', -24.99, cats['Subscriptions'], `${m}-15`, null, 0, 1, 'seed', now, now);
-      insertTx.run(uuid(), uid, creditId, 'ICLOUD STORAGE', -2.99, cats['Subscriptions'], `${m}-12`, null, 0, 1, 'seed', now, now);
-      insertTx.run(uuid(), uid, creditId, 'CHATGPT PLUS', -20.00, cats['Subscriptions'], `${m}-18`, null, 0, 1, 'seed', now, now);
+      insertTx.run(uuid(), uid, creditId, 'NETFLIX SUBSCRIPTION', -15.99, cats['Subscriptions'], `${m}-05`, null, 1, now, now);
+      insertTx.run(uuid(), uid, creditId, 'SPOTIFY PREMIUM', -10.99, cats['Subscriptions'], `${m}-07`, null, 1, now, now);
+      insertTx.run(uuid(), uid, creditId, 'PLANET FITNESS', -24.99, cats['Subscriptions'], `${m}-15`, null, 1, now, now);
+      insertTx.run(uuid(), uid, creditId, 'ICLOUD STORAGE', -2.99, cats['Subscriptions'], `${m}-12`, null, 1, now, now);
+      insertTx.run(uuid(), uid, creditId, 'CHATGPT PLUS', -20.00, cats['Subscriptions'], `${m}-18`, null, 1, now, now);
       txCount += 5;
 
       // ── SHOPPING (2-4 per month, on credit card) ──
@@ -418,7 +418,7 @@ router.post('/seed-demo', (req: Request, res: Response) => {
       for (let s = 0; s < shopTrips; s++) {
         const shop = shops[Math.floor(Math.random() * shops.length)];
         const amt = shop === 'BEST BUY' ? ramt(-120, 60) : ramt(-55, 30);
-        insertTx.run(uuid(), uid, creditId, shop, amt, cats['Shopping'], rday(m, 1, 28), null, 0, 0, 'seed', now, now);
+        insertTx.run(uuid(), uid, creditId, shop, amt, cats['Shopping'], rday(m, 1, 28), null, 0, now, now);
         txCount++;
       }
 
@@ -426,7 +426,7 @@ router.post('/seed-demo', (req: Request, res: Response) => {
       if (Math.random() > 0.4) {
         const hcNames = ['CVS PHARMACY', 'WALGREENS PHARMACY', 'DR JOHNSON OFFICE', 'QUEST DIAGNOSTICS'];
         const hc = hcNames[Math.floor(Math.random() * hcNames.length)];
-        insertTx.run(uuid(), uid, checkingId, hc, ramt(-45, 25), cats['Healthcare'], rday(m, 5, 25), null, 0, 0, 'seed', now, now);
+        insertTx.run(uuid(), uid, checkingId, hc, ramt(-45, 25), cats['Healthcare'], rday(m, 5, 25), null, 0, now, now);
         txCount++;
       }
 
@@ -434,13 +434,13 @@ router.post('/seed-demo', (req: Request, res: Response) => {
       if (Math.random() > 0.3) {
         const entNames = ['AMC THEATRES', 'TICKETMASTER', 'BARNES AND NOBLE', 'BOWLERO BOWLING'];
         const ent = entNames[Math.floor(Math.random() * entNames.length)];
-        insertTx.run(uuid(), uid, creditId, ent, ramt(-35, 15), cats['Entertainment'], rday(m, 10, 25), null, 0, 0, 'seed', now, now);
+        insertTx.run(uuid(), uid, creditId, ent, ramt(-35, 15), cats['Entertainment'], rday(m, 10, 25), null, 0, now, now);
         txCount++;
       }
 
       // ── PERSONAL CARE ──
       if (Math.random() > 0.5) {
-        insertTx.run(uuid(), uid, checkingId, 'SUPERCUTS HAIRCUT', -28.00, cats['Personal Care'], rday(m, 10, 25), null, 0, 0, 'seed', now, now);
+        insertTx.run(uuid(), uid, checkingId, 'SUPERCUTS HAIRCUT', -28.00, cats['Personal Care'], rday(m, 10, 25), null, 0, now, now);
         txCount++;
       }
 
@@ -448,29 +448,29 @@ router.post('/seed-demo', (req: Request, res: Response) => {
       if (['2025-11', '2026-01', '2026-03'].includes(m)) {
         const hiNames = ['HOME DEPOT', 'LOWES HOME IMPROVEMENT', 'ACE HARDWARE'];
         const hi = hiNames[Math.floor(Math.random() * hiNames.length)];
-        insertTx.run(uuid(), uid, checkingId, hi, ramt(-125, 50), cats['Home Improvements'], rday(m, 5, 20), null, 0, 0, 'seed', now, now);
+        insertTx.run(uuid(), uid, checkingId, hi, ramt(-125, 50), cats['Home Improvements'], rday(m, 5, 20), null, 0, now, now);
         txCount++;
       }
 
       // ── GIFTS & DONATIONS ──
       if (['2025-12', '2026-02'].includes(m)) {
-        insertTx.run(uuid(), uid, creditId, 'AMAZON GIFT PURCHASE', ramt(-85, 30), cats['Gifts & Donations'], rday(m, 10, 22), 'Birthday gift', 0, 0, 'seed', now, now);
+        insertTx.run(uuid(), uid, creditId, 'AMAZON GIFT PURCHASE', ramt(-85, 30), cats['Gifts & Donations'], rday(m, 10, 22), 'Birthday gift', 0, now, now);
         txCount++;
       }
       if (m === '2025-12') {
-        insertTx.run(uuid(), uid, checkingId, 'RED CROSS DONATION', -100.00, cats['Gifts & Donations'], '2025-12-20', 'Holiday donation', 0, 0, 'seed', now, now);
+        insertTx.run(uuid(), uid, checkingId, 'RED CROSS DONATION', -100.00, cats['Gifts & Donations'], '2025-12-20', 'Holiday donation', 0, now, now);
         txCount++;
       }
 
       // ── TRANSFERS & CC PAYMENT ──
-      insertTx.run(uuid(), uid, checkingId, 'TRANSFER TO SAVINGS', -500.00, cats['Transfer'], rday(m, 2, 5), 'Monthly savings', 0, 1, 'seed', now, now);
-      insertTx.run(uuid(), uid, savingsId, 'TRANSFER FROM CHECKING', 500.00, cats['Transfer'], rday(m, 2, 5), 'Monthly savings', 0, 1, 'seed', now, now);
-      insertTx.run(uuid(), uid, checkingId, 'CAPITAL ONE CC PAYMENT', ramt(-1200, 200), cats['CC PMT'], rday(m, 20, 25), 'Credit card payment', 0, 1, 'seed', now, now);
+      insertTx.run(uuid(), uid, checkingId, 'TRANSFER TO SAVINGS', -500.00, cats['Transfer'], rday(m, 2, 5), 'Monthly savings', 1, now, now);
+      insertTx.run(uuid(), uid, savingsId, 'TRANSFER FROM CHECKING', 500.00, cats['Transfer'], rday(m, 2, 5), 'Monthly savings', 1, now, now);
+      insertTx.run(uuid(), uid, checkingId, 'CAPITAL ONE CC PAYMENT', ramt(-1200, 200), cats['CC PMT'], rday(m, 20, 25), 'Credit card payment', 1, now, now);
       txCount += 3;
 
       // ── EDUCATION (some months) ──
       if (['2025-10', '2026-01'].includes(m)) {
-        insertTx.run(uuid(), uid, creditId, 'UDEMY COURSE PURCHASE', -14.99, cats['Education'], rday(m, 5, 15), 'Online course', 0, 0, 'seed', now, now);
+        insertTx.run(uuid(), uid, creditId, 'UDEMY COURSE PURCHASE', -14.99, cats['Education'], rday(m, 5, 15), 'Online course', 0, now, now);
         txCount++;
       }
     }
@@ -541,7 +541,7 @@ router.post('/seed-demo', (req: Request, res: Response) => {
     res.json({ success: true, message: `Seeded ${txCount} transactions + accounts, categories, budgets, goals, rules, recurring expenses for demo user`, userId: uid });
   } catch (error: any) {
     console.error('Seed demo error:', error);
-    res.status(500).json({ error: error.message || 'Failed to seed demo data' });
+    res.status(500).json({ error: error.message || 'Failed to seed demo data', stack: error.stack });
   }
 });
 
