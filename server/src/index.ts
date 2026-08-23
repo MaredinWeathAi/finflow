@@ -28,6 +28,7 @@ import clarificationsRoutes from './routes/clarifications.js';
 import adminRoutes from './routes/admin.js';
 import financialPlanningRoutes from './routes/financial-planning.js';
 import rulesRoutes from './routes/rules.js';
+import connectionsRoutes, { webhookRouter } from './routes/connections.js';
 
 import {
   ALLOWED_ORIGINS,
@@ -37,6 +38,7 @@ import {
   logSecurityPosture,
 } from './config/security.js';
 import { trimAuditLog } from './security/audit.js';
+import { applyProviderSchema } from './providers/schema.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -150,6 +152,12 @@ app.use('/api/auth/forgot-password', authLimiter);
 app.use('/api/auth/reset-password', authLimiter);
 app.use('/api/upload', uploadLimiter);
 
+// Provider webhooks are mounted BEFORE express.json on purpose: signature
+// verification is computed over the RAW request body, and express.json would
+// consume the stream first. This router is unauthenticated by design and
+// verifies the provider's signature before doing anything at all.
+app.use('/api/connections/webhook', webhookRouter);
+
 // Default JSON body cap is deliberately small; the upload route uses multer with
 // its own limits and does not go through express.json.
 app.use(express.json({ limit: '256kb' }));
@@ -208,6 +216,10 @@ if (getDriver() === 'postgres') {
 } else {
   console.log('[db] driver: sqlite');
 }
+
+// Bank-aggregation tables (provider connections, encrypted token vault, sync
+// cursors, liabilities). Additive and idempotent; safe on both engines.
+await applyProviderSchema(db);
 
 // Resolve and cache signing secrets. Must run after initDb() (it reads
 // app_config) and before any token is issued or verified.
@@ -285,6 +297,7 @@ app.use('/api/clarifications', authMiddleware, clarificationsRoutes);
 app.use('/api/admin', authMiddleware, adminMiddleware, adminRoutes);
 app.use('/api/financial-planning', authMiddleware, financialPlanningRoutes);
 app.use('/api/rules', authMiddleware, rulesRoutes);
+app.use('/api/connections', authMiddleware, connectionsRoutes);
 
 // ============================================================
 // ERROR HANDLING
