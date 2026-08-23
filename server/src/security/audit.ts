@@ -52,23 +52,10 @@ function redact(detail: Record<string, unknown> | undefined): string | null {
   try { return JSON.stringify(safe).slice(0, 4000); } catch { return null; }
 }
 
-export function audit(action: AuditAction, req: Request | null, ctx: AuditContext = {}): void {
+export async function audit(action: AuditAction, req: Request | null, ctx: AuditContext = {}): void {
   try {
-    db.prepare(
-      `INSERT INTO audit_log (id, user_id, actor_email, action, target_id, outcome, ip, user_agent, detail, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(
-      randomUUID(),
-      ctx.userId ?? req?.user?.id ?? null,
-      ctx.actorEmail ?? req?.user?.email ?? null,
-      action,
-      ctx.targetId ?? null,
-      ctx.outcome ?? 'success',
-      req ? clientIp(req) : null,
-      req?.get('user-agent')?.slice(0, 300) ?? null,
-      redact(ctx.detail),
-      new Date().toISOString()
-    );
+    await db.run(`INSERT INTO audit_log (id, user_id, actor_email, action, target_id, outcome, ip, user_agent, detail, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, randomUUID(), ctx.userId ?? req?.user?.id ?? null, ctx.actorEmail ?? req?.user?.email ?? null, action, ctx.targetId ?? null, ctx.outcome ?? 'success', req ? clientIp(req) : null, req?.get('user-agent')?.slice(0, 300) ?? null, redact(ctx.detail), new Date().toISOString());
   } catch (err) {
     // Never let audit failure break a request, but make it visible.
     console.error('[audit] write failed:', (err as Error).message);
@@ -76,9 +63,9 @@ export function audit(action: AuditAction, req: Request | null, ctx: AuditContex
 }
 
 /** Retention trim — keeps the log from growing without bound on a small volume. */
-export function trimAuditLog(keepDays = 400): void {
+export async function trimAuditLog(keepDays = 400): void {
   try {
     const cutoff = new Date(Date.now() - keepDays * 86400_000).toISOString();
-    db.prepare('DELETE FROM audit_log WHERE created_at < ?').run(cutoff);
+    await db.run('DELETE FROM audit_log WHERE created_at < ?', cutoff);
   } catch { /* table may not exist yet */ }
 }

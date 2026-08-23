@@ -126,20 +126,16 @@ function detectFrequency(dates: string[]): string {
 // Account Analysis
 // ---------------------------------------------------------------------------
 
-function analyzeAccounts(userId: string): { summaries: AccountSummary[]; totalAssets: number; totalLiabilities: number } {
+async function analyzeAccounts(userId: string): { summaries: AccountSummary[]; totalAssets: number; totalLiabilities: number } {
   const LIABILITY_TYPES = ['credit', 'loan', 'mortgage'];
 
-  const accounts = db.prepare(
-    `SELECT id, name, type, institution, balance, is_hidden FROM accounts WHERE user_id = ?`
-  ).all(userId) as any[];
+  const accounts = await db.all(`SELECT id, name, type, institution, balance, is_hidden FROM accounts WHERE user_id = ?`, userId) as any[];
 
   // Find accounts that have linked investment holdings — these accounts'
   // balances mirror the portfolio value, so we must NOT count them
   // separately in assets (the investment total covers them).
   const investmentAccountIds = new Set<string>();
-  const investments = db.prepare(
-    `SELECT account_id, shares, current_price FROM investments WHERE user_id = ?`
-  ).all(userId) as any[];
+  const investments = await db.all(`SELECT account_id, shares, current_price FROM investments WHERE user_id = ?`, userId) as any[];
   for (const inv of investments) {
     if (inv.account_id) investmentAccountIds.add(inv.account_id);
   }
@@ -154,15 +150,11 @@ function analyzeAccounts(userId: string): { summaries: AccountSummary[]; totalAs
   let totalLiabilities = 0;
 
   for (const acct of accounts) {
-    const inflows = (db.prepare(
-      `SELECT COALESCE(SUM(amount), 0) as total, COUNT(*) as cnt FROM transactions
-       WHERE user_id = ? AND account_id = ? AND amount > 0`
-    ).get(userId, acct.id) as any);
+    const inflows = (await db.get(`SELECT COALESCE(SUM(amount), 0) as total, COUNT(*) as cnt FROM transactions
+       WHERE user_id = ? AND account_id = ? AND amount > 0`, userId, acct.id) as any);
 
-    const outflows = (db.prepare(
-      `SELECT COALESCE(SUM(ABS(amount)), 0) as total, COUNT(*) as cnt FROM transactions
-       WHERE user_id = ? AND account_id = ? AND amount < 0`
-    ).get(userId, acct.id) as any);
+    const outflows = (await db.get(`SELECT COALESCE(SUM(ABS(amount)), 0) as total, COUNT(*) as cnt FROM transactions
+       WHERE user_id = ? AND account_id = ? AND amount < 0`, userId, acct.id) as any);
 
     summaries.push({
       accountId: acct.id,
@@ -197,13 +189,11 @@ function analyzeAccounts(userId: string): { summaries: AccountSummary[]; totalAs
 // Income Analysis
 // ---------------------------------------------------------------------------
 
-function analyzeIncome(userId: string): { sources: IncomeSource[]; total: number; avgMonthly: number } {
+async function analyzeIncome(userId: string): { sources: IncomeSource[]; total: number; avgMonthly: number } {
   // Get all income transactions (positive amounts)
-  const incomeTransactions = db.prepare(
-    `SELECT name, amount, date FROM transactions
+  const incomeTransactions = await db.all(`SELECT name, amount, date FROM transactions
      WHERE user_id = ? AND amount > 0
-     ORDER BY date DESC`
-  ).all(userId) as any[];
+     ORDER BY date DESC`, userId) as any[];
 
   // Group by normalized merchant name
   const grouped = new Map<string, { amounts: number[]; dates: string[] }>();
@@ -240,9 +230,7 @@ function analyzeIncome(userId: string): { sources: IncomeSource[]; total: number
   sources.sort((a, b) => b.totalAmount - a.totalAmount);
 
   // Calculate avg monthly based on date range
-  const dateRange = db.prepare(
-    `SELECT MIN(date) as minDate, MAX(date) as maxDate FROM transactions WHERE user_id = ? AND amount > 0`
-  ).get(userId) as any;
+  const dateRange = await db.get(`SELECT MIN(date) as minDate, MAX(date) as maxDate FROM transactions WHERE user_id = ? AND amount > 0`, userId) as any;
 
   let months = 1;
   if (dateRange.minDate && dateRange.maxDate) {
@@ -258,14 +246,12 @@ function analyzeIncome(userId: string): { sources: IncomeSource[]; total: number
 // Merchant / Expense Analysis
 // ---------------------------------------------------------------------------
 
-function analyzeExpenses(userId: string): { merchants: MerchantSummary[]; total: number; avgMonthly: number } {
-  const expenses = db.prepare(
-    `SELECT t.name, t.amount, t.date, c.name as category_name
+async function analyzeExpenses(userId: string): { merchants: MerchantSummary[]; total: number; avgMonthly: number } {
+  const expenses = await db.all(`SELECT t.name, t.amount, t.date, c.name as category_name
      FROM transactions t
      LEFT JOIN categories c ON t.category_id = c.id
      WHERE t.user_id = ? AND t.amount < 0
-     ORDER BY t.date DESC`
-  ).all(userId) as any[];
+     ORDER BY t.date DESC`, userId) as any[];
 
   const grouped = new Map<string, { amounts: number[]; dates: string[]; category?: string }>();
 
@@ -301,9 +287,7 @@ function analyzeExpenses(userId: string): { merchants: MerchantSummary[]; total:
 
   merchants.sort((a, b) => b.totalSpent - a.totalSpent);
 
-  const dateRange = db.prepare(
-    `SELECT MIN(date) as minDate, MAX(date) as maxDate FROM transactions WHERE user_id = ? AND amount < 0`
-  ).get(userId) as any;
+  const dateRange = await db.get(`SELECT MIN(date) as minDate, MAX(date) as maxDate FROM transactions WHERE user_id = ? AND amount < 0`, userId) as any;
 
   let months = 1;
   if (dateRange.minDate && dateRange.maxDate) {
@@ -319,7 +303,7 @@ function analyzeExpenses(userId: string): { merchants: MerchantSummary[]; total:
 // Transfer Analysis
 // ---------------------------------------------------------------------------
 
-function analyzeTransfers(userId: string): { transfers: TransferPair[]; total: number; count: number } {
+async function analyzeTransfers(userId: string): { transfers: TransferPair[]; total: number; count: number } {
   // Find transactions with transfer-like names
   const transferKeywords = [
     'transfer', 'xfer', 'online banking transfer', 'ach transfer',
@@ -328,14 +312,12 @@ function analyzeTransfers(userId: string): { transfers: TransferPair[]; total: n
     'mobile transfer', 'funds transfer',
   ];
 
-  const allTransactions = db.prepare(
-    `SELECT t.id, t.name, t.amount, t.date, t.account_id, t.notes,
+  const allTransactions = await db.all(`SELECT t.id, t.name, t.amount, t.date, t.account_id, t.notes,
             a.name as account_name, a.type as account_type
      FROM transactions t
      JOIN accounts a ON t.account_id = a.id
      WHERE t.user_id = ?
-     ORDER BY t.date DESC, ABS(t.amount) DESC`
-  ).all(userId) as any[];
+     ORDER BY t.date DESC, ABS(t.amount) DESC`, userId) as any[];
 
   const transfers: TransferPair[] = [];
   const matched = new Set<string>();
@@ -407,9 +389,8 @@ function analyzeTransfers(userId: string): { transfers: TransferPair[]; total: n
 // Monthly Cash Flow
 // ---------------------------------------------------------------------------
 
-function computeMonthlyCashFlow(userId: string): CashFlowMonth[] {
-  const rows = db.prepare(
-    `SELECT
+async function computeMonthlyCashFlow(userId: string): CashFlowMonth[] {
+  const rows = await db.all(`SELECT
        substr(date, 1, 7) as month,
        SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) as income,
        SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END) as expenses
@@ -417,19 +398,16 @@ function computeMonthlyCashFlow(userId: string): CashFlowMonth[] {
      WHERE user_id = ?
      GROUP BY substr(date, 1, 7)
      ORDER BY month DESC
-     LIMIT 12`
-  ).all(userId) as any[];
+     LIMIT 12`, userId) as any[];
 
   // Get transfer amounts per month
   const transferKeywords = ['transfer', 'xfer', 'internal', 'from savings', 'to savings', 'from checking', 'to checking'];
 
-  return rows.map(r => {
-    const transferAmount = (db.prepare(
-      `SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
+  return rows.map(async r => {
+    const transferAmount = (await db.get(`SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
        WHERE user_id = ? AND substr(date, 1, 7) = ? AND (
          ${transferKeywords.map(() => 'LOWER(name) LIKE ?').join(' OR ')}
-       )`
-    ).get(userId, r.month, ...transferKeywords.map(k => `%${k}%`)) as any).total;
+       )`, userId, r.month, ...transferKeywords.map(k => `%${k}%`)) as any).total;
 
     return {
       month: r.month,
@@ -445,7 +423,7 @@ function computeMonthlyCashFlow(userId: string): CashFlowMonth[] {
 // Spending Patterns
 // ---------------------------------------------------------------------------
 
-function detectPatterns(
+async function detectPatterns(
   userId: string,
   merchants: MerchantSummary[],
   incomeSources: IncomeSource[],
@@ -471,15 +449,13 @@ function detectPatterns(
   }
 
   // 2. Top category concentration
-  const categorySpending = db.prepare(
-    `SELECT c.name, SUM(ABS(t.amount)) as total
+  const categorySpending = await db.all(`SELECT c.name, SUM(ABS(t.amount)) as total
      FROM transactions t
      JOIN categories c ON t.category_id = c.id
      WHERE t.user_id = ? AND t.amount < 0
      GROUP BY c.id
      ORDER BY total DESC
-     LIMIT 5`
-  ).all(userId) as any[];
+     LIMIT 5`, userId) as any[];
 
   if (categorySpending.length >= 3 && totalSpending > 0) {
     const top3Total = categorySpending.slice(0, 3).reduce((s: number, c: any) => s + c.total, 0);
@@ -533,10 +509,8 @@ function detectPatterns(
   }
 
   // 5. Large transaction detection
-  const largeTxns = (db.prepare(
-    `SELECT COUNT(*) as cnt, SUM(ABS(amount)) as total FROM transactions
-     WHERE user_id = ? AND ABS(amount) > 500`
-  ).get(userId) as any);
+  const largeTxns = (await db.get(`SELECT COUNT(*) as cnt, SUM(ABS(amount)) as total FROM transactions
+     WHERE user_id = ? AND ABS(amount) > 500`, userId) as any);
 
   if (largeTxns.cnt > 0) {
     patterns.push({
@@ -555,8 +529,7 @@ function detectPatterns(
     const now = new Date();
     const currentMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 
-    const catMonthly = db.prepare(
-      `SELECT c.name as category, substr(t.date, 1, 7) as month,
+    const catMonthly = await db.all(`SELECT c.name as category, substr(t.date, 1, 7) as month,
               SUM(ABS(t.amount)) as total
        FROM transactions t
        JOIN categories c ON t.category_id = c.id
@@ -564,8 +537,7 @@ function detectPatterns(
          AND substr(t.date, 1, 7) != ?
          AND LOWER(c.name) NOT IN ('cc pmt', 'transfer')
        GROUP BY c.id, substr(t.date, 1, 7)
-       ORDER BY c.name, month`
-    ).all(userId, currentMonthKey) as any[];
+       ORDER BY c.name, month`, userId, currentMonthKey) as any[];
 
     // Build per-category arrays
     const catData = new Map<string, { months: string[]; totals: number[] }>();
@@ -636,8 +608,7 @@ function detectPatterns(
   // ---------------------------------------------------------------------------
   {
     // Find transactions that are statistical outliers within their category
-    const catStats = db.prepare(
-      `SELECT c.name as category, c.id as category_id,
+    const catStats = await db.all(`SELECT c.name as category, c.id as category_id,
               AVG(ABS(t.amount)) as avg_amount,
               COUNT(*) as cnt
        FROM transactions t
@@ -645,21 +616,18 @@ function detectPatterns(
        WHERE t.user_id = ? AND t.amount < 0
          AND LOWER(c.name) NOT IN ('cc pmt', 'transfer')
        GROUP BY c.id
-       HAVING cnt >= 5`
-    ).all(userId) as any[];
+       HAVING cnt >= 5`, userId) as any[];
 
     const outliers: { name: string; amount: number; category: string; date: string; ratio: number }[] = [];
 
     for (const cat of catStats) {
       // Find transactions > 3x the category average
-      const bigOnes = db.prepare(
-        `SELECT t.name, ABS(t.amount) as amount, t.date
+      const bigOnes = await db.all(`SELECT t.name, ABS(t.amount) as amount, t.date
          FROM transactions t
          WHERE t.user_id = ? AND t.category_id = ? AND t.amount < 0
            AND ABS(t.amount) > ? * 3
          ORDER BY ABS(t.amount) DESC
-         LIMIT 3`
-      ).all(userId, cat.category_id, cat.avg_amount) as any[];
+         LIMIT 3`, userId, cat.category_id, cat.avg_amount) as any[];
 
       for (const txn of bigOnes) {
         outliers.push({

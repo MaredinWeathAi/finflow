@@ -5,20 +5,16 @@ import { detectRecurring, recurringCoreName } from '../engine/recurring-detector
 const router = Router();
 
 // GET / - list recurring expenses with joined category info
-router.get('/', (req: Request, res: Response) => {
+router.get('/', async (req: Request, res: Response) => {
   try {
-    const recurring = db
-      .prepare(
-        `SELECT r.*,
+    const recurring = (await db.all(`SELECT r.*,
                 c.name as category_name, c.icon as category_icon, c.color as category_color,
                 a.name as account_name
          FROM recurring_expenses r
          LEFT JOIN categories c ON r.category_id = c.id
          LEFT JOIN accounts a ON r.account_id = a.id
          WHERE r.user_id = ?
-         ORDER BY r.next_date ASC`
-      )
-      .all(req.user!.id)
+         ORDER BY r.next_date ASC`, req.user!.id))
       .map((r: any) => ({
         ...r,
         price_history: JSON.parse(r.price_history || '[]'),
@@ -32,7 +28,7 @@ router.get('/', (req: Request, res: Response) => {
 });
 
 // POST / - create recurring expense
-router.post('/', (req: Request, res: Response) => {
+router.post('/', async (req: Request, res: Response) => {
   try {
     const {
       account_id,
@@ -56,34 +52,14 @@ router.post('/', (req: Request, res: Response) => {
     const now = new Date().toISOString();
     const priceHistory = JSON.stringify([{ date: now, amount }]);
 
-    db.prepare(
-      `INSERT INTO recurring_expenses (id, user_id, account_id, name, amount, category_id, frequency, next_date, is_active, notes, price_history, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(
-      id,
-      req.user!.id,
-      account_id || null,
-      name,
-      amount,
-      category_id || null,
-      frequency,
-      next_date,
-      is_active !== undefined ? (is_active ? 1 : 0) : 1,
-      notes || null,
-      priceHistory,
-      now,
-      now
-    );
+    await db.run(`INSERT INTO recurring_expenses (id, user_id, account_id, name, amount, category_id, frequency, next_date, is_active, notes, price_history, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, req.user!.id, account_id || null, name, amount, category_id || null, frequency, next_date, is_active !== undefined ? (is_active ? 1 : 0) : 1, notes || null, priceHistory, now, now);
 
-    const recurring = db
-      .prepare(
-        `SELECT r.*, c.name as category_name, c.icon as category_icon, c.color as category_color, a.name as account_name
+    const recurring = await db.get(`SELECT r.*, c.name as category_name, c.icon as category_icon, c.color as category_color, a.name as account_name
          FROM recurring_expenses r
          LEFT JOIN categories c ON r.category_id = c.id
          LEFT JOIN accounts a ON r.account_id = a.id
-         WHERE r.id = ?`
-      )
-      .get(id) as any;
+         WHERE r.id = ?`, id) as any;
 
     recurring.price_history = JSON.parse(recurring.price_history || '[]');
 
@@ -95,13 +71,11 @@ router.post('/', (req: Request, res: Response) => {
 });
 
 // PUT /:id - update recurring expense
-router.put('/:id', (req: Request, res: Response) => {
+router.put('/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
 
-    const existing = db
-      .prepare('SELECT * FROM recurring_expenses WHERE id = ? AND user_id = ?')
-      .get(id, req.user!.id) as any;
+    const existing = await db.get('SELECT * FROM recurring_expenses WHERE id = ? AND user_id = ?', id, req.user!.id) as any;
 
     if (!existing) {
       res.status(404).json({ error: 'Recurring expense not found' });
@@ -129,8 +103,7 @@ router.put('/:id', (req: Request, res: Response) => {
       priceHistory = JSON.stringify(history);
     }
 
-    db.prepare(
-      `UPDATE recurring_expenses SET
+    await db.run(`UPDATE recurring_expenses SET
         account_id = COALESCE(?, account_id),
         name = COALESCE(?, name),
         amount = COALESCE(?, amount),
@@ -142,32 +115,13 @@ router.put('/:id', (req: Request, res: Response) => {
         notes = COALESCE(?, notes),
         price_history = ?,
         updated_at = ?
-       WHERE id = ? AND user_id = ?`
-    ).run(
-      account_id !== undefined ? account_id : null,
-      name ?? null,
-      amount !== undefined ? amount : null,
-      category_id !== undefined ? category_id : null,
-      frequency ?? null,
-      next_date ?? null,
-      last_charged_date !== undefined ? last_charged_date : null,
-      is_active !== undefined ? (is_active ? 1 : 0) : null,
-      notes !== undefined ? notes : null,
-      priceHistory,
-      now,
-      id,
-      req.user!.id
-    );
+       WHERE id = ? AND user_id = ?`, account_id !== undefined ? account_id : null, name ?? null, amount !== undefined ? amount : null, category_id !== undefined ? category_id : null, frequency ?? null, next_date ?? null, last_charged_date !== undefined ? last_charged_date : null, is_active !== undefined ? (is_active ? 1 : 0) : null, notes !== undefined ? notes : null, priceHistory, now, id, req.user!.id);
 
-    const recurring = db
-      .prepare(
-        `SELECT r.*, c.name as category_name, c.icon as category_icon, c.color as category_color, a.name as account_name
+    const recurring = await db.get(`SELECT r.*, c.name as category_name, c.icon as category_icon, c.color as category_color, a.name as account_name
          FROM recurring_expenses r
          LEFT JOIN categories c ON r.category_id = c.id
          LEFT JOIN accounts a ON r.account_id = a.id
-         WHERE r.id = ?`
-      )
-      .get(id) as any;
+         WHERE r.id = ?`, id) as any;
 
     recurring.price_history = JSON.parse(recurring.price_history || '[]');
 
@@ -179,23 +133,18 @@ router.put('/:id', (req: Request, res: Response) => {
 });
 
 // DELETE /:id - delete recurring expense
-router.delete('/:id', (req: Request, res: Response) => {
+router.delete('/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
 
-    const existing = db
-      .prepare('SELECT * FROM recurring_expenses WHERE id = ? AND user_id = ?')
-      .get(id, req.user!.id);
+    const existing = await db.get('SELECT * FROM recurring_expenses WHERE id = ? AND user_id = ?', id, req.user!.id);
 
     if (!existing) {
       res.status(404).json({ error: 'Recurring expense not found' });
       return;
     }
 
-    db.prepare('DELETE FROM recurring_expenses WHERE id = ? AND user_id = ?').run(
-      id,
-      req.user!.id
-    );
+    await db.run('DELETE FROM recurring_expenses WHERE id = ? AND user_id = ?', id, req.user!.id);
 
     res.json({ message: 'Recurring expense deleted successfully' });
   } catch (error) {
@@ -210,7 +159,7 @@ router.delete('/:id', (req: Request, res: Response) => {
 // engine which requires: consistent amount + consistent interval + same merchant.
 // Also deactivates stale recurrings not seen in 4+ months.
 // ---------------------------------------------------------------------------
-router.post('/detect', (req: Request, res: Response) => {
+router.post('/detect', async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
     const now = new Date();
@@ -219,16 +168,12 @@ router.post('/detect', (req: Request, res: Response) => {
     const cutoff = twelveMonthsAgo.toISOString().slice(0, 10);
 
     // 1. Fetch transactions from the last 12 months
-    const transactions = db
-      .prepare(
-        `SELECT t.name, t.amount, t.date, t.category_id,
+    const transactions = await db.all(`SELECT t.name, t.amount, t.date, t.category_id,
                 c.name as category_name, c.icon as category_icon, c.color as category_color
          FROM transactions t
          LEFT JOIN categories c ON t.category_id = c.id
          WHERE t.user_id = ? AND t.date >= ?
-         ORDER BY t.date ASC`
-      )
-      .all(userId, cutoff) as Array<{
+         ORDER BY t.date ASC`, userId, cutoff) as Array<{
         name: string; amount: number; date: string; category_id: string | null;
         category_name: string | null; category_icon: string | null; category_color: string | null;
       }>;
@@ -237,9 +182,7 @@ router.post('/detect', (req: Request, res: Response) => {
     const candidates = detectRecurring(transactions);
 
     // 3. Check which candidates are already tracked
-    const existing = db
-      .prepare('SELECT id, name, amount, frequency, is_active FROM recurring_expenses WHERE user_id = ?')
-      .all(userId) as Array<{ id: string; name: string; amount: number; frequency: string; is_active: number }>;
+    const existing = await db.all('SELECT id, name, amount, frequency, is_active FROM recurring_expenses WHERE user_id = ?', userId) as Array<{ id: string; name: string; amount: number; frequency: string; is_active: number }>;
 
     const existingCores = new Set(existing.map(e => recurringCoreName(e.name)));
 
@@ -274,9 +217,7 @@ router.post('/detect', (req: Request, res: Response) => {
     fourMonthsAgo.setMonth(fourMonthsAgo.getMonth() - 4);
     const staleCutoff = fourMonthsAgo.toISOString().slice(0, 10);
 
-    const activeRecurrings = db
-      .prepare('SELECT id, name FROM recurring_expenses WHERE user_id = ? AND is_active = 1')
-      .all(userId) as Array<{ id: string; name: string }>;
+    const activeRecurrings = await db.all('SELECT id, name FROM recurring_expenses WHERE user_id = ? AND is_active = 1', userId) as Array<{ id: string; name: string }>;
 
     const deactivated: string[] = [];
     const deactivateStmt = db.prepare(

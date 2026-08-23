@@ -46,7 +46,7 @@ function normalizeEmail(v: unknown): string | null {
 // ---------------------------------------------------------------------------
 // POST /register
 // ---------------------------------------------------------------------------
-router.post('/register', (req: Request, res: Response) => {
+router.post('/register', async (req: Request, res: Response) => {
   try {
     if (!ALLOW_SELF_REGISTRATION) {
       audit('auth.register', req, { outcome: 'failure', detail: { reason: 'self_registration_disabled' } });
@@ -76,7 +76,7 @@ router.post('/register', (req: Request, res: Response) => {
       return;
     }
 
-    const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
+    const existing = await db.get('SELECT id FROM users WHERE email = ?', email);
     if (existing) {
       // Do not confirm existence. Respond as if it worked; the real owner is
       // unaffected and an enumerator learns nothing.
@@ -86,7 +86,7 @@ router.post('/register', (req: Request, res: Response) => {
     }
 
     if (username) {
-      const takenUsername = db.prepare('SELECT id FROM users WHERE username = ?').get(username);
+      const takenUsername = await db.get('SELECT id FROM users WHERE username = ?', username);
       if (takenUsername) {
         res.status(409).json({ error: 'Username already taken' });
         return;
@@ -100,16 +100,12 @@ router.post('/register', (req: Request, res: Response) => {
     // Role is server-assigned, always. Advisors are provisioned out-of-band.
     const userRole = 'client';
 
-    const admin = db
-      .prepare("SELECT id FROM users WHERE role = 'admin' ORDER BY created_at ASC LIMIT 1")
-      .get() as any;
+    const admin = await db.get("SELECT id FROM users WHERE role = 'admin' ORDER BY created_at ASC LIMIT 1") as any;
     const advisorId: string | null = admin?.id ?? null;
 
-    db.prepare(
-      `INSERT INTO users (id, email, username, password_hash, name, role, advisor_id, currency,
+    await db.run(`INSERT INTO users (id, email, username, password_hash, name, role, advisor_id, currency,
                           token_version, must_change_password, password_changed_at, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'USD', 0, 0, ?, ?, ?)`
-    ).run(id, email, username || null, password_hash, name.trim(), userRole, advisorId, now, now, now);
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'USD', 0, 0, ?, ?, ?)`, id, email, username || null, password_hash, name.trim(), userRole, advisorId, now, now, now);
 
     const token = generateToken(id, email, userRole, 0);
     audit('auth.register', req, { userId: id, actorEmail: email });
@@ -127,7 +123,7 @@ router.post('/register', (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 // POST /login
 // ---------------------------------------------------------------------------
-router.post('/login', (req: Request, res: Response) => {
+router.post('/login', async (req: Request, res: Response) => {
   try {
     const { password } = req.body ?? {};
     const rawIdentifier = req.body?.email ?? req.body?.username;
@@ -140,9 +136,7 @@ router.post('/login', (req: Request, res: Response) => {
     const identifier = rawIdentifier.trim();
     const asEmail = identifier.toLowerCase();
 
-    const user = db
-      .prepare('SELECT * FROM users WHERE lower(email) = ? OR username = ? LIMIT 1')
-      .get(asEmail, identifier) as any;
+    const user = await db.get('SELECT * FROM users WHERE lower(email) = ? OR username = ? LIMIT 1', asEmail, identifier) as any;
 
     if (!user) {
       // Burn equivalent CPU so response time doesn't reveal account existence.
@@ -174,8 +168,7 @@ router.post('/login', (req: Request, res: Response) => {
     // Opportunistically upgrade legacy bcrypt cost on successful login.
     try {
       if (bcrypt.getRounds(user.password_hash) < BCRYPT_ROUNDS) {
-        db.prepare('UPDATE users SET password_hash = ? WHERE id = ?')
-          .run(bcrypt.hashSync(password, BCRYPT_ROUNDS), user.id);
+        await db.run('UPDATE users SET password_hash = ? WHERE id = ?', bcrypt.hashSync(password, BCRYPT_ROUNDS), user.id);
       }
     } catch { /* non-fatal */ }
 
@@ -192,10 +185,9 @@ router.post('/login', (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 // POST /logout — revokes every live token for this account
 // ---------------------------------------------------------------------------
-router.post('/logout', authMiddleware, (req: Request, res: Response) => {
+router.post('/logout', authMiddleware, async (req: Request, res: Response) => {
   try {
-    db.prepare('UPDATE users SET token_version = COALESCE(token_version, 0) + 1 WHERE id = ?')
-      .run(req.user!.id);
+    await db.run('UPDATE users SET token_version = COALESCE(token_version, 0) + 1 WHERE id = ?', req.user!.id);
     audit('auth.logout', req);
     res.json({ message: 'Signed out everywhere' });
   } catch (error) {
@@ -207,15 +199,11 @@ router.post('/logout', authMiddleware, (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 // GET /me
 // ---------------------------------------------------------------------------
-router.get('/me', authMiddleware, (req: Request, res: Response) => {
+router.get('/me', authMiddleware, async (req: Request, res: Response) => {
   try {
-    const user = db
-      .prepare(
-        `SELECT id, email, username, name, role, currency, created_at, updated_at,
+    const user = await db.get(`SELECT id, email, username, name, role, currency, created_at, updated_at,
                 must_change_password, last_login_at, totp_enabled
-           FROM users WHERE id = ?`
-      )
-      .get(req.user!.id) as any;
+           FROM users WHERE id = ?`, req.user!.id) as any;
 
     if (!user) {
       res.status(404).json({ error: 'User not found' });
@@ -285,7 +273,7 @@ router.post('/forgot-password', async (req: Request, res: Response) => {
   }
 
   try {
-    const user = db.prepare('SELECT id, email FROM users WHERE lower(email) = ?').get(email) as any;
+    const user = await db.get('SELECT id, email FROM users WHERE lower(email) = ?', email) as any;
     if (!user) {
       audit('auth.password.reset.request', req, { outcome: 'failure', detail: { reason: 'no_such_account' } });
       res.json(RESET_ACK);
@@ -293,9 +281,7 @@ router.post('/forgot-password', async (req: Request, res: Response) => {
     }
 
     // Throttle: at most 3 outstanding unexpired codes per account.
-    const outstanding = db
-      .prepare('SELECT COUNT(*) as c FROM password_reset_tokens WHERE user_id = ? AND used = 0 AND expires_at > ?')
-      .get(user.id, new Date().toISOString()) as any;
+    const outstanding = await db.get('SELECT COUNT(*) as c FROM password_reset_tokens WHERE user_id = ? AND used = 0 AND expires_at > ?', user.id, new Date().toISOString()) as any;
     if ((outstanding?.c ?? 0) >= 3) {
       audit('auth.password.reset.request', req, { userId: user.id, outcome: 'failure', detail: { reason: 'throttled' } });
       res.json(RESET_ACK);
@@ -310,10 +296,8 @@ router.post('/forgot-password', async (req: Request, res: Response) => {
     const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
     const now = new Date().toISOString();
 
-    db.prepare(
-      `INSERT INTO password_reset_tokens (id, user_id, token, token_hash, expires_at, used, requested_ip, created_at)
-       VALUES (?, ?, ?, ?, ?, 0, ?, ?)`
-    ).run(randomUUID(), user.id, codeHash, codeHash, expiresAt, clientIp(req), now);
+    await db.run(`INSERT INTO password_reset_tokens (id, user_id, token, token_hash, expires_at, used, requested_ip, created_at)
+       VALUES (?, ?, ?, ?, ?, 0, ?, ?)`, randomUUID(), user.id, codeHash, codeHash, expiresAt, clientIp(req), now);
 
     await deliverResetCode(user.email, code, expiresAt);
     audit('auth.password.reset.request', req, { userId: user.id });
@@ -328,7 +312,7 @@ router.post('/forgot-password', async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 // POST /reset-password
 // ---------------------------------------------------------------------------
-router.post('/reset-password', (req: Request, res: Response) => {
+router.post('/reset-password', async (req: Request, res: Response) => {
   try {
     const { token, newPassword } = req.body ?? {};
     if (typeof token !== 'string' || !token || typeof newPassword !== 'string') {
@@ -338,9 +322,7 @@ router.post('/reset-password', (req: Request, res: Response) => {
 
     const codeHash = crypto.createHash('sha256').update(token.trim().toUpperCase()).digest('hex');
 
-    const resetToken = db
-      .prepare('SELECT * FROM password_reset_tokens WHERE token_hash = ? AND used = 0 AND expires_at > ?')
-      .get(codeHash, new Date().toISOString()) as any;
+    const resetToken = await db.get('SELECT * FROM password_reset_tokens WHERE token_hash = ? AND used = 0 AND expires_at > ?', codeHash, new Date().toISOString()) as any;
 
     if (!resetToken) {
       audit('auth.password.reset.complete', req, { outcome: 'failure', detail: { reason: 'invalid_or_expired' } });
@@ -348,7 +330,7 @@ router.post('/reset-password', (req: Request, res: Response) => {
       return;
     }
 
-    const owner = db.prepare('SELECT email FROM users WHERE id = ?').get(resetToken.user_id) as any;
+    const owner = await db.get('SELECT email FROM users WHERE id = ?', resetToken.user_id) as any;
     const strength = validatePassword(newPassword, owner?.email);
     if (!strength.ok) {
       res.status(400).json({ error: strength.reason });
@@ -358,18 +340,15 @@ router.post('/reset-password', (req: Request, res: Response) => {
     const now = new Date().toISOString();
     const passwordHash = bcrypt.hashSync(newPassword, BCRYPT_ROUNDS);
 
-    db.transaction(() => {
-      db.prepare(
-        `UPDATE users
+    db.transaction(async () => {
+      await db.run(`UPDATE users
             SET password_hash = ?, updated_at = ?, password_changed_at = ?,
                 must_change_password = 0, failed_login_count = 0, locked_until = NULL,
                 token_version = COALESCE(token_version, 0) + 1
-          WHERE id = ?`
-      ).run(passwordHash, now, now, resetToken.user_id);
-      db.prepare('UPDATE password_reset_tokens SET used = 1 WHERE id = ?').run(resetToken.id);
+          WHERE id = ?`, passwordHash, now, now, resetToken.user_id);
+      await db.run('UPDATE password_reset_tokens SET used = 1 WHERE id = ?', resetToken.id);
       // Invalidate every other outstanding code for this account.
-      db.prepare('UPDATE password_reset_tokens SET used = 1 WHERE user_id = ? AND used = 0')
-        .run(resetToken.user_id);
+      await db.run('UPDATE password_reset_tokens SET used = 1 WHERE user_id = ? AND used = 0', resetToken.user_id);
     })();
 
     audit('auth.password.reset.complete', req, { userId: resetToken.user_id });
@@ -383,7 +362,7 @@ router.post('/reset-password', (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 // PUT /update-profile
 // ---------------------------------------------------------------------------
-router.put('/update-profile', authMiddleware, (req: Request, res: Response) => {
+router.put('/update-profile', authMiddleware, async (req: Request, res: Response) => {
   try {
     const { username, name } = req.body ?? {};
     const email = req.body?.email !== undefined ? normalizeEmail(req.body.email) : undefined;
@@ -401,11 +380,11 @@ router.put('/update-profile', authMiddleware, (req: Request, res: Response) => {
     }
 
     if (username) {
-      const existing = db.prepare('SELECT id FROM users WHERE username = ? AND id != ?').get(username, userId) as any;
+      const existing = await db.get('SELECT id FROM users WHERE username = ? AND id != ?', username, userId) as any;
       if (existing) { res.status(409).json({ error: 'Username already taken' }); return; }
     }
     if (email) {
-      const existing = db.prepare('SELECT id FROM users WHERE lower(email) = ? AND id != ?').get(email, userId) as any;
+      const existing = await db.get('SELECT id FROM users WHERE lower(email) = ? AND id != ?', email, userId) as any;
       if (existing) { res.status(409).json({ error: 'Email already in use' }); return; }
     }
 
@@ -418,13 +397,11 @@ router.put('/update-profile', authMiddleware, (req: Request, res: Response) => {
     values.push(userId);
 
     if (updates.length > 1) {
-      db.prepare(`UPDATE users SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+      await db.run(`UPDATE users SET ${updates.join(', ')} WHERE id = ?`, ...values);
       audit('auth.profile.update', req, { detail: { fields: updates.slice(0, -1) } });
     }
 
-    const user = db
-      .prepare('SELECT id, email, username, name, role, currency, created_at, must_change_password FROM users WHERE id = ?')
-      .get(userId) as any;
+    const user = await db.get('SELECT id, email, username, name, role, currency, created_at, must_change_password FROM users WHERE id = ?', userId) as any;
     res.json(publicUser(user));
   } catch (error) {
     console.error('Update profile error:', error);
@@ -435,7 +412,7 @@ router.put('/update-profile', authMiddleware, (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 // PUT /change-password
 // ---------------------------------------------------------------------------
-router.put('/change-password', authMiddleware, (req: Request, res: Response) => {
+router.put('/change-password', authMiddleware, async (req: Request, res: Response) => {
   try {
     const { currentPassword, newPassword } = req.body ?? {};
     const userId = req.user!.id;
@@ -445,7 +422,7 @@ router.put('/change-password', authMiddleware, (req: Request, res: Response) => 
       return;
     }
 
-    const user = db.prepare('SELECT password_hash, email FROM users WHERE id = ?').get(userId) as any;
+    const user = await db.get('SELECT password_hash, email FROM users WHERE id = ?', userId) as any;
     if (!user || !bcrypt.compareSync(currentPassword, user.password_hash)) {
       audit('auth.password.change', req, { outcome: 'failure', detail: { reason: 'wrong_current_password' } });
       res.status(400).json({ error: 'Current password is incorrect' });
@@ -466,19 +443,17 @@ router.put('/change-password', authMiddleware, (req: Request, res: Response) => 
     const now = new Date().toISOString();
     const hash = bcrypt.hashSync(newPassword, BCRYPT_ROUNDS);
 
-    db.prepare(
-      `UPDATE users
+    await db.run(`UPDATE users
           SET password_hash = ?, updated_at = ?, password_changed_at = ?,
               must_change_password = 0, failed_login_count = 0, locked_until = NULL,
               token_version = COALESCE(token_version, 0) + 1
-        WHERE id = ?`
-    ).run(hash, now, now, userId);
+        WHERE id = ?`, hash, now, now, userId);
 
     audit('auth.password.change', req, { userId });
 
     // Old sessions (including any attacker's) are now dead. Issue a fresh token
     // so the caller isn't logged out of the tab they just changed it in.
-    const updated = db.prepare('SELECT id, email, role, token_version FROM users WHERE id = ?').get(userId) as any;
+    const updated = await db.get('SELECT id, email, role, token_version FROM users WHERE id = ?', userId) as any;
     const token = generateToken(updated.id, updated.email, updated.role || 'client', updated.token_version ?? 0);
 
     res.json({ message: 'Password changed. All other sessions have been signed out.', token });
@@ -491,14 +466,10 @@ router.put('/change-password', authMiddleware, (req: Request, res: Response) => 
 // ---------------------------------------------------------------------------
 // GET /security-log — the account's own recent security events
 // ---------------------------------------------------------------------------
-router.get('/security-log', authMiddleware, (req: Request, res: Response) => {
+router.get('/security-log', authMiddleware, async (req: Request, res: Response) => {
   try {
-    const rows = db
-      .prepare(
-        `SELECT action, outcome, ip, user_agent, created_at
-           FROM audit_log WHERE user_id = ? ORDER BY created_at DESC LIMIT 100`
-      )
-      .all(req.user!.id);
+    const rows = await db.all(`SELECT action, outcome, ip, user_agent, created_at
+           FROM audit_log WHERE user_id = ? ORDER BY created_at DESC LIMIT 100`, req.user!.id);
     res.json(rows);
   } catch (error) {
     console.error('Security log error:', error);

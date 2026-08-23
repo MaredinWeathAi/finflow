@@ -180,7 +180,7 @@ if (!process.env.DATABASE_PATH && process.env.NODE_ENV === 'production') {
 // Auto-seed if database is truly empty (fresh volume or first deploy)
 // SAFETY: Never seed over real user data (uploaded transactions, etc.)
 try {
-  const userCount = (db.prepare('SELECT COUNT(*) as count FROM users').get() as any).count;
+  const userCount = (await db.get('SELECT COUNT(*) as count FROM users') as any).count;
   if (userCount === 0) {
     if (hasRealUserData()) {
       console.warn('⚠️  WARNING: Database has 0 users but contains real upload data!');

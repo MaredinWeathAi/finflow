@@ -105,7 +105,7 @@ function classifyIncomeType(name: string, amount: number): string {
 }
 
 // Helper: auto-create account from statement metadata
-function autoCreateAccount(userId: string, statementMeta: any): string {
+async function autoCreateAccount(userId: string, statementMeta: any): string {
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
 
@@ -138,23 +138,17 @@ function autoCreateAccount(userId: string, statementMeta: any): string {
 
   // Most specific: same institution + same last 4
   if (institution && institution !== 'Unknown' && lastFour) {
-    existing = db.prepare(
-      `SELECT id, type FROM accounts WHERE user_id = ? AND institution LIKE ? AND last_four = ?`
-    ).get(userId, `%${institution}%`, lastFour) as any;
+    existing = await db.get(`SELECT id, type FROM accounts WHERE user_id = ? AND institution LIKE ? AND last_four = ?`, userId, `%${institution}%`, lastFour) as any;
   }
 
   // Same institution + same type
   if (!existing && institution && institution !== 'Unknown') {
-    existing = db.prepare(
-      `SELECT id, type FROM accounts WHERE user_id = ? AND institution LIKE ? AND type = ?`
-    ).get(userId, `%${institution}%`, accountType) as any;
+    existing = await db.get(`SELECT id, type FROM accounts WHERE user_id = ? AND institution LIKE ? AND type = ?`, userId, `%${institution}%`, accountType) as any;
   }
 
   // Exact name match
   if (!existing) {
-    existing = db.prepare(
-      `SELECT id, type FROM accounts WHERE user_id = ? AND name = ?`
-    ).get(userId, accountName) as any;
+    existing = await db.get(`SELECT id, type FROM accounts WHERE user_id = ? AND name = ?`, userId, accountName) as any;
   }
 
   if (existing) {
@@ -162,9 +156,7 @@ function autoCreateAccount(userId: string, statementMeta: any): string {
     // update it to the correct type if we have higher confidence now
     if (existing.type !== accountType && accountType !== 'checking') {
       const icon = accountType === 'credit' ? '💳' : accountType === 'savings' ? '💰' : accountType === 'investment' ? '📊' : '🏦';
-      db.prepare(
-        `UPDATE accounts SET type = ?, icon = ?, institution = COALESCE(NULLIF(?, 'Unknown'), institution), last_four = COALESCE(NULLIF(?, ''), last_four), updated_at = ? WHERE id = ?`
-      ).run(accountType, icon, institution, lastFour, now, existing.id);
+      await db.run(`UPDATE accounts SET type = ?, icon = ?, institution = COALESCE(NULLIF(?, 'Unknown'), institution), last_four = COALESCE(NULLIF(?, ''), last_four), updated_at = ? WHERE id = ?`, accountType, icon, institution, lastFour, now, existing.id);
       console.log(`Updated account ${existing.id} type from ${existing.type} to ${accountType}`);
     }
     return existing.id;
@@ -172,18 +164,16 @@ function autoCreateAccount(userId: string, statementMeta: any): string {
 
   // Create new account (marked as 'upload' source so it's protected from re-seeding)
   const icon = accountType === 'credit' ? '💳' : accountType === 'savings' ? '💰' : accountType === 'investment' ? '📊' : '🏦';
-  db.prepare(
-    `INSERT INTO accounts (id, user_id, name, type, institution, balance, last_four, icon, is_hidden, source, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 'upload', ?, ?)`
-  ).run(id, userId, accountName, accountType, institution, balance, lastFour || null, icon, now, now);
+  await db.run(`INSERT INTO accounts (id, user_id, name, type, institution, balance, last_four, icon, is_hidden, source, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 'upload', ?, ?)`, id, userId, accountName, accountType, institution, balance, lastFour || null, icon, now, now);
 
   console.log(`Auto-created account: ${accountName} (${accountType}) at ${institution} for user ${userId}`);
   return id;
 }
 
 // Ensure user has default categories
-function ensureDefaultCategories(userId: string): void {
-  const existingCount = (db.prepare('SELECT COUNT(*) as count FROM categories WHERE user_id = ?').get(userId) as any).count;
+async function ensureDefaultCategories(userId: string): void {
+  const existingCount = (await db.get('SELECT COUNT(*) as count FROM categories WHERE user_id = ?', userId) as any).count;
   if (existingCount > 0) return;
 
   const defaults = [
@@ -239,10 +229,8 @@ router.post('/', upload.array('files', MAX_FILES), enforceTotalSize, async (req:
     const sessionId = crypto.randomUUID();
 
     // Create upload session
-    db.prepare(
-      `INSERT INTO upload_sessions (id, user_id, status, file_count, created_at)
-       VALUES (?, ?, 'processing', ?, ?)`
-    ).run(sessionId, userId, files.length, now);
+    await db.run(`INSERT INTO upload_sessions (id, user_id, status, file_count, created_at)
+       VALUES (?, ?, 'processing', ?, ?)`, sessionId, userId, files.length, now);
 
     let allPendingItems: PendingItemData[] = [];
     const fileResults: any[] = [];
@@ -254,10 +242,8 @@ router.post('/', upload.array('files', MAX_FILES), enforceTotalSize, async (req:
       const fileType = ext === 'xls' ? 'xlsx' : ext;
 
       // Insert file record
-      db.prepare(
-        `INSERT INTO uploaded_files (id, session_id, user_id, filename, file_type, file_size, status, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'parsing', ?)`
-      ).run(fileId, sessionId, userId, file.originalname, fileType, file.size, now);
+      await db.run(`INSERT INTO uploaded_files (id, session_id, user_id, filename, file_type, file_size, status, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'parsing', ?)`, fileId, sessionId, userId, file.originalname, fileType, file.size, now);
 
       try {
         // Parse the file
@@ -271,21 +257,17 @@ router.post('/', upload.array('files', MAX_FILES), enforceTotalSize, async (req:
 
         // If user has no accounts at all, create a default checking account
         if (!autoAccountId) {
-          const accountCount = (db.prepare('SELECT COUNT(*) as count FROM accounts WHERE user_id = ?').get(userId) as any).count;
+          const accountCount = (await db.get('SELECT COUNT(*) as count FROM accounts WHERE user_id = ?', userId) as any).count;
           if (accountCount === 0) {
             const defaultAcctId = crypto.randomUUID();
-            db.prepare(
-              `INSERT INTO accounts (id, user_id, name, type, institution, balance, icon, is_hidden, created_at, updated_at)
-               VALUES (?, ?, 'Main Account', 'checking', 'My Bank', 0, '🏦', 0, ?, ?)`
-            ).run(defaultAcctId, userId, now, now);
+            await db.run(`INSERT INTO accounts (id, user_id, name, type, institution, balance, icon, is_hidden, created_at, updated_at)
+               VALUES (?, ?, 'Main Account', 'checking', 'My Bank', 0, '🏦', 0, ?, ?)`, defaultAcctId, userId, now, now);
             autoAccountId = defaultAcctId;
           }
         }
 
         // Update file record
-        db.prepare(
-          `UPDATE uploaded_files SET row_count = ?, status = 'parsed' WHERE id = ?`
-        ).run(result.rowCount, fileId);
+        await db.run(`UPDATE uploaded_files SET row_count = ?, status = 'parsed' WHERE id = ?`, result.rowCount, fileId);
 
         // Create pending items from parsed rows
         const insertPending = db.prepare(
@@ -308,9 +290,7 @@ router.post('/', upload.array('files', MAX_FILES), enforceTotalSize, async (req:
           let finalCategoryId = catResult.categoryId;
           let finalCategoryName = catResult.categoryName;
           if (transferInfo.isTransfer || row.isTransfer) {
-            const transferCat = db.prepare(
-              `SELECT id, name FROM categories WHERE user_id = ? AND LOWER(name) = 'transfer'`
-            ).get(userId) as any;
+            const transferCat = await db.get(`SELECT id, name FROM categories WHERE user_id = ? AND LOWER(name) = 'transfer'`, userId) as any;
             if (transferCat) {
               finalCategoryId = transferCat.id;
               finalCategoryName = transferCat.name;
@@ -387,9 +367,7 @@ router.post('/', upload.array('files', MAX_FILES), enforceTotalSize, async (req:
           autoAccountId,
         });
       } catch (parseError: any) {
-        db.prepare(
-          `UPDATE uploaded_files SET status = 'error', error_message = ? WHERE id = ?`
-        ).run(parseError.message, fileId);
+        await db.run(`UPDATE uploaded_files SET status = 'error', error_message = ? WHERE id = ?`, parseError.message, fileId);
 
         fileResults.push({
           id: fileId,
@@ -418,9 +396,7 @@ router.post('/', upload.array('files', MAX_FILES), enforceTotalSize, async (req:
 
     for (const dup of allDuplicateMatches) {
       if (dup.score >= 70) {
-        db.prepare(
-          `UPDATE pending_items SET status = 'duplicate', duplicate_of = ?, confidence = ? WHERE id = ?`
-        ).run(dup.matchedTransactionId, dup.score / 100, dup.itemId);
+        await db.run(`UPDATE pending_items SET status = 'duplicate', duplicate_of = ?, confidence = ? WHERE id = ?`, dup.matchedTransactionId, dup.score / 100, dup.itemId);
         duplicateCount++;
       }
     }
@@ -428,24 +404,13 @@ router.post('/', upload.array('files', MAX_FILES), enforceTotalSize, async (req:
     // Generate clarifications for uncategorized items
     const uncategorized = allPendingItems.filter(item => !item.matched_category_id);
     for (const item of uncategorized.slice(0, 20)) {
-      db.prepare(
-        `INSERT INTO clarifications (id, user_id, source, item_type, title, description, context, status, created_at)
-         VALUES (?, ?, 'upload', 'category', ?, ?, ?, 'pending', ?)`
-      ).run(
-        crypto.randomUUID(),
-        userId,
-        `Categorize: ${item.parsed_name}`,
-        `We couldn't auto-categorize "${item.parsed_name}" ($${Math.abs(item.parsed_amount).toFixed(2)}). Please select a category.`,
-        JSON.stringify({ itemId: item.id, name: item.parsed_name, amount: item.parsed_amount, date: item.parsed_date }),
-        now
-      );
+      await db.run(`INSERT INTO clarifications (id, user_id, source, item_type, title, description, context, status, created_at)
+         VALUES (?, ?, 'upload', 'category', ?, ?, ?, 'pending', ?)`, crypto.randomUUID(), userId, `Categorize: ${item.parsed_name}`, `We couldn't auto-categorize "${item.parsed_name}" ($${Math.abs(item.parsed_amount).toFixed(2)}). Please select a category.`, JSON.stringify({ itemId: item.id, name: item.parsed_name, amount: item.parsed_amount, date: item.parsed_date }), now);
     }
 
     // Update session totals
     const totalItems = allPendingItems.length;
-    db.prepare(
-      `UPDATE upload_sessions SET status = 'review', total_items = ?, duplicate_items = ? WHERE id = ?`
-    ).run(totalItems, duplicateCount, sessionId);
+    await db.run(`UPDATE upload_sessions SET status = 'review', total_items = ?, duplicate_items = ? WHERE id = ?`, totalItems, duplicateCount, sessionId);
 
     // Return session summary
     res.json({
@@ -471,14 +436,10 @@ router.post('/', upload.array('files', MAX_FILES), enforceTotalSize, async (req:
 });
 
 // GET /sessions - list upload sessions
-router.get('/sessions', (req: Request, res: Response) => {
+router.get('/sessions', async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
-    const sessions = db
-      .prepare(
-        `SELECT * FROM upload_sessions WHERE user_id = ? ORDER BY created_at DESC LIMIT 20`
-      )
-      .all(userId) as any[];
+    const sessions = await db.all(`SELECT * FROM upload_sessions WHERE user_id = ? ORDER BY created_at DESC LIMIT 20`, userId) as any[];
 
     const getFiles = db.prepare('SELECT * FROM uploaded_files WHERE session_id = ?');
     const enriched = sessions.map(s => ({
@@ -493,32 +454,24 @@ router.get('/sessions', (req: Request, res: Response) => {
 });
 
 // GET /sessions/:id - get session with pending items
-router.get('/sessions/:id', (req: Request, res: Response) => {
+router.get('/sessions/:id', async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
     const { id } = req.params;
 
-    const session = db
-      .prepare('SELECT * FROM upload_sessions WHERE id = ? AND user_id = ?')
-      .get(id, userId) as any;
+    const session = await db.get('SELECT * FROM upload_sessions WHERE id = ? AND user_id = ?', id, userId) as any;
 
     if (!session) {
       return res.status(404).json({ error: 'Session not found' });
     }
 
-    const files = db
-      .prepare('SELECT * FROM uploaded_files WHERE session_id = ?')
-      .all(id);
+    const files = await db.all('SELECT * FROM uploaded_files WHERE session_id = ?', id);
 
-    const items = db
-      .prepare(
-        `SELECT pi.*, c.name as category_name, c.icon as category_icon, c.color as category_color
+    const items = (await db.all(`SELECT pi.*, c.name as category_name, c.icon as category_icon, c.color as category_color
          FROM pending_items pi
          LEFT JOIN categories c ON pi.matched_category_id = c.id
          WHERE pi.session_id = ?
-         ORDER BY pi.parsed_date DESC, pi.parsed_name ASC`
-      )
-      .all(id)
+         ORDER BY pi.parsed_date DESC, pi.parsed_name ASC`, id))
       .map((item: any) => ({
         ...item,
         raw_data: JSON.parse(item.raw_data || '{}'),
@@ -569,12 +522,10 @@ router.put('/items/bulk-update', (req: Request, res: Response) => {
       return res.status(400).json({ error: 'No valid fields to update' });
     }
 
-    const bulkUpdate = db.transaction((ids: string[]) => {
+    const bulkUpdate = db.transaction(async (ids: string[]) => {
       let updated = 0;
       for (const id of ids) {
-        const result = db.prepare(
-          `UPDATE pending_items SET ${fields.join(', ')} WHERE id = ? AND user_id = ?`
-        ).run(...vals, id, userId);
+        const result = await db.run(`UPDATE pending_items SET ${fields.join(', ')} WHERE id = ? AND user_id = ?`, ...vals, id, userId);
         updated += result.changes;
       }
       return updated;
@@ -588,15 +539,13 @@ router.put('/items/bulk-update', (req: Request, res: Response) => {
 });
 
 // PUT /items/:id - approve/skip/edit a pending item (with smart learn-and-apply)
-router.put('/items/:id', (req: Request, res: Response) => {
+router.put('/items/:id', async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
     const { id } = req.params;
     const body = req.body;
 
-    const existing = db
-      .prepare('SELECT * FROM pending_items WHERE id = ? AND user_id = ?')
-      .get(id, userId) as any;
+    const existing = await db.get('SELECT * FROM pending_items WHERE id = ? AND user_id = ?', id, userId) as any;
 
     if (!existing) {
       return res.status(404).json({ error: 'Item not found' });
@@ -618,9 +567,7 @@ router.put('/items/:id', (req: Request, res: Response) => {
 
     if (fields.length > 0) {
       values.push(id, userId);
-      db.prepare(
-        `UPDATE pending_items SET ${fields.join(', ')} WHERE id = ? AND user_id = ?`
-      ).run(...values);
+      await db.run(`UPDATE pending_items SET ${fields.join(', ')} WHERE id = ? AND user_id = ?`, ...values);
     }
 
     // Re-read for smart learn-and-apply below
@@ -643,14 +590,10 @@ router.put('/items/:id', (req: Request, res: Response) => {
       // 2. Find similar pending items in the same session
       const coreName = extractCoreName(existing.parsed_name);
       if (coreName.length >= 3) {
-        const siblings = db
-          .prepare(
-            `SELECT id, parsed_name FROM pending_items
+        const siblings = await db.all(`SELECT id, parsed_name FROM pending_items
              WHERE session_id = ? AND user_id = ? AND id != ?
                AND status IN ('pending', 'duplicate')
-               AND (matched_category_id IS NULL OR matched_category_id = '')`
-          )
-          .all(existing.session_id, userId, id) as Array<{ id: string; parsed_name: string }>;
+               AND (matched_category_id IS NULL OR matched_category_id = '')`, existing.session_id, userId, id) as Array<{ id: string; parsed_name: string }>;
 
         const toUpdate: string[] = [];
         for (const sib of siblings) {
@@ -690,15 +633,13 @@ router.put('/items/:id', (req: Request, res: Response) => {
 });
 
 // POST /sessions/:id/import - import approved/pending items as transactions
-router.post('/sessions/:id/import', (req: Request, res: Response) => {
+router.post('/sessions/:id/import', async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
     const { id } = req.params;
     const { importAll } = req.body;
 
-    const session = db
-      .prepare('SELECT * FROM upload_sessions WHERE id = ? AND user_id = ?')
-      .get(id, userId) as any;
+    const session = await db.get('SELECT * FROM upload_sessions WHERE id = ? AND user_id = ?', id, userId) as any;
 
     if (!session) {
       return res.status(404).json({ error: 'Session not found' });
@@ -709,17 +650,9 @@ router.post('/sessions/:id/import', (req: Request, res: Response) => {
     // - default (Import Approved): import approved items AND pending items that have a category assigned
     let items: any[];
     if (importAll) {
-      items = db
-        .prepare(
-          `SELECT * FROM pending_items WHERE session_id = ? AND user_id = ? AND status NOT IN ('skipped', 'imported')`
-        )
-        .all(id, userId) as any[];
+      items = await db.all(`SELECT * FROM pending_items WHERE session_id = ? AND user_id = ? AND status NOT IN ('skipped', 'imported')`, id, userId) as any[];
     } else {
-      items = db
-        .prepare(
-          `SELECT * FROM pending_items WHERE session_id = ? AND user_id = ? AND (status = 'approved' OR (status = 'pending' AND matched_category_id IS NOT NULL AND matched_category_id != ''))`
-        )
-        .all(id, userId) as any[];
+      items = await db.all(`SELECT * FROM pending_items WHERE session_id = ? AND user_id = ? AND (status = 'approved' OR (status = 'pending' AND matched_category_id IS NOT NULL AND matched_category_id != ''))`, id, userId) as any[];
     }
 
     if (items.length === 0) {
@@ -727,25 +660,21 @@ router.post('/sessions/:id/import', (req: Request, res: Response) => {
     }
 
     // Get or create default account
-    let defaultAccount = db
-      .prepare("SELECT id FROM accounts WHERE user_id = ? ORDER BY CASE WHEN type = 'checking' THEN 0 ELSE 1 END, created_at ASC LIMIT 1")
-      .get(userId) as any;
+    let defaultAccount = await db.get("SELECT id FROM accounts WHERE user_id = ? ORDER BY CASE WHEN type = 'checking' THEN 0 ELSE 1 END, created_at ASC LIMIT 1", userId) as any;
 
     if (!defaultAccount) {
       // Auto-create a default account
       const accId = crypto.randomUUID();
       const now2 = new Date().toISOString();
-      db.prepare(
-        `INSERT INTO accounts (id, user_id, name, type, institution, balance, icon, is_hidden, source, created_at, updated_at)
-         VALUES (?, ?, 'Main Account', 'checking', 'My Bank', 0, '🏦', 0, 'upload', ?, ?)`
-      ).run(accId, userId, now2, now2);
+      await db.run(`INSERT INTO accounts (id, user_id, name, type, institution, balance, icon, is_hidden, source, created_at, updated_at)
+         VALUES (?, ?, 'Main Account', 'checking', 'My Bank', 0, '🏦', 0, 'upload', ?, ?)`, accId, userId, now2, now2);
       defaultAccount = { id: accId };
     }
 
     const now = new Date().toISOString();
     let importedCount = 0;
 
-    const importTransaction = db.transaction(() => {
+    const importTransaction = db.transaction(async () => {
       const insertTx = db.prepare(
         `INSERT INTO transactions (id, user_id, account_id, name, amount, category_id, date, notes, is_pending, is_recurring, tags, source, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, '[]', 'upload', ?, ?)`
@@ -772,8 +701,7 @@ router.post('/sessions/:id/import', (req: Request, res: Response) => {
         updateItem.run(item.id);
 
         // Update account balance
-        db.prepare('UPDATE accounts SET balance = balance + ?, updated_at = ? WHERE id = ?')
-          .run(item.parsed_amount, now, accountId);
+        await db.run('UPDATE accounts SET balance = balance + ?, updated_at = ? WHERE id = ?', item.parsed_amount, now, accountId);
 
         importedCount++;
       }
@@ -782,9 +710,7 @@ router.post('/sessions/:id/import', (req: Request, res: Response) => {
     importTransaction();
 
     // Update session
-    db.prepare(
-      `UPDATE upload_sessions SET status = 'completed', imported_items = ?, completed_at = ? WHERE id = ?`
-    ).run(importedCount, now, id);
+    await db.run(`UPDATE upload_sessions SET status = 'completed', imported_items = ?, completed_at = ? WHERE id = ?`, importedCount, now, id);
 
     res.json({
       message: `Successfully imported ${importedCount} transactions`,
@@ -797,14 +723,14 @@ router.post('/sessions/:id/import', (req: Request, res: Response) => {
 });
 
 // DELETE /sessions/:id - delete an upload session
-router.delete('/sessions/:id', (req: Request, res: Response) => {
+router.delete('/sessions/:id', async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
     const { id } = req.params;
 
-    db.prepare('DELETE FROM pending_items WHERE session_id = ? AND user_id = ?').run(id, userId);
-    db.prepare('DELETE FROM uploaded_files WHERE session_id = ? AND user_id = ?').run(id, userId);
-    db.prepare('DELETE FROM upload_sessions WHERE id = ? AND user_id = ?').run(id, userId);
+    await db.run('DELETE FROM pending_items WHERE session_id = ? AND user_id = ?', id, userId);
+    await db.run('DELETE FROM uploaded_files WHERE session_id = ? AND user_id = ?', id, userId);
+    await db.run('DELETE FROM upload_sessions WHERE id = ? AND user_id = ?', id, userId);
 
     res.json({ message: 'Session deleted' });
   } catch (error) {

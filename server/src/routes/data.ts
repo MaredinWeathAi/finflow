@@ -268,47 +268,29 @@ router.post('/seed-sample', (req: Request, res: Response) => {
 });
 
 // GET /export - return all user data as JSON
-router.get('/export', (req: Request, res: Response) => {
+router.get('/export', async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
 
-    const user = db
-      .prepare('SELECT id, email, name, currency, created_at, updated_at FROM users WHERE id = ?')
-      .get(userId);
+    const user = await db.get('SELECT id, email, name, currency, created_at, updated_at FROM users WHERE id = ?', userId);
 
-    const accounts = db
-      .prepare('SELECT * FROM accounts WHERE user_id = ?')
-      .all(userId);
+    const accounts = await db.all('SELECT * FROM accounts WHERE user_id = ?', userId);
 
-    const categories = db
-      .prepare('SELECT * FROM categories WHERE user_id = ?')
-      .all(userId);
+    const categories = await db.all('SELECT * FROM categories WHERE user_id = ?', userId);
 
-    const transactions = db
-      .prepare('SELECT * FROM transactions WHERE user_id = ?')
-      .all(userId)
+    const transactions = (await db.all('SELECT * FROM transactions WHERE user_id = ?', userId))
       .map((t: any) => ({ ...t, tags: JSON.parse(t.tags || '[]') }));
 
-    const budgets = db
-      .prepare('SELECT * FROM budgets WHERE user_id = ?')
-      .all(userId);
+    const budgets = await db.all('SELECT * FROM budgets WHERE user_id = ?', userId);
 
-    const goals = db
-      .prepare('SELECT * FROM goals WHERE user_id = ?')
-      .all(userId);
+    const goals = await db.all('SELECT * FROM goals WHERE user_id = ?', userId);
 
-    const recurring = db
-      .prepare('SELECT * FROM recurring_expenses WHERE user_id = ?')
-      .all(userId)
+    const recurring = (await db.all('SELECT * FROM recurring_expenses WHERE user_id = ?', userId))
       .map((r: any) => ({ ...r, price_history: JSON.parse(r.price_history || '[]') }));
 
-    const investments = db
-      .prepare('SELECT * FROM investments WHERE user_id = ?')
-      .all(userId);
+    const investments = await db.all('SELECT * FROM investments WHERE user_id = ?', userId);
 
-    const netWorthSnapshots = db
-      .prepare('SELECT * FROM net_worth_snapshots WHERE user_id = ?')
-      .all(userId)
+    const netWorthSnapshots = (await db.all('SELECT * FROM net_worth_snapshots WHERE user_id = ?', userId))
       .map((s: any) => ({ ...s, breakdown: JSON.parse(s.breakdown || '{}') }));
 
     res.json({
@@ -334,22 +316,22 @@ router.delete('/reset', (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
 
-    const resetData = db.transaction(() => {
+    const resetData = db.transaction(async () => {
       // Clear upload/processing tables first (foreign key dependencies)
-      db.prepare('DELETE FROM pending_items WHERE user_id = ?').run(userId);
-      db.prepare('DELETE FROM uploaded_files WHERE user_id = ?').run(userId);
-      db.prepare('DELETE FROM upload_sessions WHERE user_id = ?').run(userId);
-      db.prepare('DELETE FROM clarifications WHERE user_id = ?').run(userId);
-      db.prepare('DELETE FROM category_rules WHERE user_id = ?').run(userId);
+      await db.run('DELETE FROM pending_items WHERE user_id = ?', userId);
+      await db.run('DELETE FROM uploaded_files WHERE user_id = ?', userId);
+      await db.run('DELETE FROM upload_sessions WHERE user_id = ?', userId);
+      await db.run('DELETE FROM clarifications WHERE user_id = ?', userId);
+      await db.run('DELETE FROM category_rules WHERE user_id = ?', userId);
       // Clear financial data
-      db.prepare('DELETE FROM net_worth_snapshots WHERE user_id = ?').run(userId);
-      db.prepare('DELETE FROM investments WHERE user_id = ?').run(userId);
-      db.prepare('DELETE FROM recurring_expenses WHERE user_id = ?').run(userId);
-      db.prepare('DELETE FROM goals WHERE user_id = ?').run(userId);
-      db.prepare('DELETE FROM budgets WHERE user_id = ?').run(userId);
-      db.prepare('DELETE FROM transactions WHERE user_id = ?').run(userId);
-      db.prepare('DELETE FROM categories WHERE user_id = ?').run(userId);
-      db.prepare('DELETE FROM accounts WHERE user_id = ?').run(userId);
+      await db.run('DELETE FROM net_worth_snapshots WHERE user_id = ?', userId);
+      await db.run('DELETE FROM investments WHERE user_id = ?', userId);
+      await db.run('DELETE FROM recurring_expenses WHERE user_id = ?', userId);
+      await db.run('DELETE FROM goals WHERE user_id = ?', userId);
+      await db.run('DELETE FROM budgets WHERE user_id = ?', userId);
+      await db.run('DELETE FROM transactions WHERE user_id = ?', userId);
+      await db.run('DELETE FROM categories WHERE user_id = ?', userId);
+      await db.run('DELETE FROM accounts WHERE user_id = ?', userId);
     });
 
     resetData();
@@ -370,22 +352,20 @@ router.post('/quality-check', (req: Request, res: Response) => {
     // Dynamic import of categorizer
     const { categorizeItem } = require('../engine/categorizer.js');
 
-    const improvements = db.transaction(() => {
+    const improvements = db.transaction(async () => {
       let recategorized = 0;
       const duplicatesFound: any[] = [];
       const missingTransferCategory: any[] = [];
 
       // 1. Find all uncategorized transactions
-      const uncategorized = db.prepare(
-        `SELECT t.id, t.name, t.amount, t.date, t.account_id, a.name as account_name
+      const uncategorized = await db.all(`SELECT t.id, t.name, t.amount, t.date, t.account_id, a.name as account_name
          FROM transactions t
          JOIN accounts a ON t.account_id = a.id
          WHERE t.user_id = ? AND (t.category_id IS NULL
            OR t.category_id IN (
              SELECT id FROM categories WHERE user_id = ? AND LOWER(name) LIKE '%uncategorized%'
            ))
-         ORDER BY t.date DESC`
-      ).all(userId, userId) as any[];
+         ORDER BY t.date DESC`, userId, userId) as any[];
 
       // Try to recategorize each uncategorized transaction
       const updateTxCategory = db.prepare(
@@ -403,8 +383,7 @@ router.post('/quality-check', (req: Request, res: Response) => {
       }
 
       // 2. Find cross-account duplicates (same name, amount, date, different accounts)
-      const duplicates = db.prepare(
-        `SELECT t1.id, t1.name, t1.amount, t1.date, t1.account_id, a1.name as account_name,
+      const duplicates = await db.all(`SELECT t1.id, t1.name, t1.amount, t1.date, t1.account_id, a1.name as account_name,
                 t2.id as duplicate_id, a2.name as duplicate_account
          FROM transactions t1
          JOIN accounts a1 ON t1.account_id = a1.id
@@ -416,8 +395,7 @@ router.post('/quality-check', (req: Request, res: Response) => {
            AND ABS(t1.amount) = ABS(t2.amount)
            AND t1.date = t2.date
            AND t1.account_id != t2.account_id
-         ORDER BY t1.date DESC`
-      ).all(userId) as any[];
+         ORDER BY t1.date DESC`, userId) as any[];
 
       for (const dup of duplicates) {
         duplicatesFound.push({
@@ -432,15 +410,12 @@ router.post('/quality-check', (req: Request, res: Response) => {
       }
 
       // 3. Find CC payments not categorized as transfers
-      const transferCategory = db.prepare(
-        `SELECT id FROM categories WHERE user_id = ? AND LOWER(name) = 'transfer'`
-      ).get(userId) as any;
+      const transferCategory = await db.get(`SELECT id FROM categories WHERE user_id = ? AND LOWER(name) = 'transfer'`, userId) as any;
       const transferCategoryId = transferCategory?.id;
 
       if (transferCategoryId) {
         // Look for transactions from checking/savings to credit card accounts
-        const ccPayments = db.prepare(
-          `SELECT t.id, t.name, t.amount, t.date, a_from.name as from_account, a_to.name as to_account
+        const ccPayments = await db.all(`SELECT t.id, t.name, t.amount, t.date, a_from.name as from_account, a_to.name as to_account
            FROM transactions t
            JOIN accounts a_from ON t.account_id = a_from.id
            JOIN accounts a_to ON LOWER(a_to.name) LIKE '%' || LOWER(t.name) || '%' OR LOWER(t.name) LIKE '%credit%'
@@ -450,8 +425,7 @@ router.post('/quality-check', (req: Request, res: Response) => {
              AND a_to.type = 'credit'
              AND t.amount < 0
              AND (t.category_id IS NULL OR t.category_id != ?)
-           ORDER BY t.date DESC`
-        ).all(userId, userId, transferCategoryId) as any[];
+           ORDER BY t.date DESC`, userId, userId, transferCategoryId) as any[];
 
         for (const payment of ccPayments) {
           missingTransferCategory.push({

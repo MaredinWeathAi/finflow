@@ -7,19 +7,17 @@ const router = Router();
 // ---------------------------------------------------------------------------
 // GET / — list all rules for the user
 // ---------------------------------------------------------------------------
-router.get('/', (req: Request, res: Response) => {
+router.get('/', async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
-    const rules = db.prepare(
-      `SELECT r.*, c.name as category_name, c.icon as category_icon, c.color as category_color,
+    const rules = await db.all(`SELECT r.*, c.name as category_name, c.icon as category_icon, c.color as category_color,
               a.name as account_name, aa.name as assign_account_name
        FROM category_rules r
        LEFT JOIN categories c ON r.category_id = c.id
        LEFT JOIN accounts a ON r.account_id = a.id
        LEFT JOIN accounts aa ON r.assign_account_id = aa.id
        WHERE r.user_id = ?
-       ORDER BY r.priority DESC, r.created_at DESC`
-    ).all(userId);
+       ORDER BY r.priority DESC, r.created_at DESC`, userId);
     res.json(rules);
   } catch (error) {
     console.error('List rules error:', error);
@@ -30,7 +28,7 @@ router.get('/', (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 // Helper: apply a single rule to all matching transactions
 // ---------------------------------------------------------------------------
-function applySingleRule(userId: string, rule: any): number {
+async function applySingleRule(userId: string, rule: any): number {
   const now = new Date().toISOString();
   let totalUpdated = 0;
 
@@ -41,9 +39,7 @@ function applySingleRule(userId: string, rule: any): number {
     `UPDATE transactions SET category_id = ?, amount = ?, updated_at = ? WHERE id = ? AND user_id = ?`
   );
 
-  const transactions = db.prepare(
-    `SELECT id, name, amount, date, account_id, category_id FROM transactions WHERE user_id = ?`
-  ).all(userId) as any[];
+  const transactions = await db.all(`SELECT id, name, amount, date, account_id, category_id FROM transactions WHERE user_id = ?`, userId) as any[];
 
   for (const txn of transactions) {
     if (matchesRule(txn, rule)) {
@@ -81,7 +77,7 @@ function applySingleRule(userId: string, rule: any): number {
 // ---------------------------------------------------------------------------
 // POST / — create a new rule (auto-applies to existing transactions)
 // ---------------------------------------------------------------------------
-router.post('/', (req: Request, res: Response) => {
+router.post('/', async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
     const {
@@ -103,37 +99,17 @@ router.post('/', (req: Request, res: Response) => {
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
 
-    db.prepare(
-      `INSERT INTO category_rules
+    await db.run(`INSERT INTO category_rules
         (id, user_id, name, pattern, match_type, category_id, account_id,
          amount_min, amount_max, amount_exact,
          assign_account_id, assign_type,
          is_enabled, priority, description, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(
-      id, userId,
-      name || '',
-      pattern || '',
-      match_type || 'contains',
-      category_id,
-      account_id || null,
-      amount_min ?? null,
-      amount_max ?? null,
-      amount_exact ?? null,
-      assign_account_id || null,
-      assign_type || null,
-      is_enabled !== false ? 1 : 0,
-      priority || 0,
-      description || '',
-      now,
-    );
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, userId, name || '', pattern || '', match_type || 'contains', category_id, account_id || null, amount_min ?? null, amount_max ?? null, amount_exact ?? null, assign_account_id || null, assign_type || null, is_enabled !== false ? 1 : 0, priority || 0, description || '', now);
 
-    const rule = db.prepare(
-      `SELECT r.*, c.name as category_name, c.icon as category_icon, c.color as category_color
+    const rule = await db.get(`SELECT r.*, c.name as category_name, c.icon as category_icon, c.color as category_color
        FROM category_rules r
        LEFT JOIN categories c ON r.category_id = c.id
-       WHERE r.id = ?`
-    ).get(id) as any;
+       WHERE r.id = ?`, id) as any;
 
     // Auto-apply the new rule to existing transactions
     let applied = 0;
@@ -160,14 +136,12 @@ router.post('/', (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 // PUT /:id — update a rule
 // ---------------------------------------------------------------------------
-router.put('/:id', (req: Request, res: Response) => {
+router.put('/:id', async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
     const { id } = req.params;
 
-    const existing = db.prepare(
-      'SELECT * FROM category_rules WHERE id = ? AND user_id = ?'
-    ).get(id, userId);
+    const existing = await db.get('SELECT * FROM category_rules WHERE id = ? AND user_id = ?', id, userId);
     if (!existing) {
       res.status(404).json({ error: 'Rule not found' });
       return;
@@ -194,16 +168,12 @@ router.put('/:id', (req: Request, res: Response) => {
       return;
     }
 
-    db.prepare(
-      `UPDATE category_rules SET ${fields.join(', ')} WHERE id = ? AND user_id = ?`
-    ).run(...vals, id, userId);
+    await db.run(`UPDATE category_rules SET ${fields.join(', ')} WHERE id = ? AND user_id = ?`, ...vals, id, userId);
 
-    const rule = db.prepare(
-      `SELECT r.*, c.name as category_name, c.icon as category_icon, c.color as category_color
+    const rule = await db.get(`SELECT r.*, c.name as category_name, c.icon as category_icon, c.color as category_color
        FROM category_rules r
        LEFT JOIN categories c ON r.category_id = c.id
-       WHERE r.id = ?`
-    ).get(id) as any;
+       WHERE r.id = ?`, id) as any;
 
     // Auto-apply updated rule to existing transactions if enabled
     let applied = 0;
@@ -221,14 +191,12 @@ router.put('/:id', (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 // DELETE /:id — delete a rule
 // ---------------------------------------------------------------------------
-router.delete('/:id', (req: Request, res: Response) => {
+router.delete('/:id', async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
     const { id } = req.params;
 
-    const result = db.prepare(
-      'DELETE FROM category_rules WHERE id = ? AND user_id = ?'
-    ).run(id, userId);
+    const result = await db.run('DELETE FROM category_rules WHERE id = ? AND user_id = ?', id, userId);
 
     if (result.changes === 0) {
       res.status(404).json({ error: 'Rule not found' });
@@ -245,13 +213,11 @@ router.delete('/:id', (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 // POST /apply — run all enabled rules against existing transactions
 // ---------------------------------------------------------------------------
-router.post('/apply', (req: Request, res: Response) => {
+router.post('/apply', async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
-    const rules = db.prepare(
-      `SELECT * FROM category_rules WHERE user_id = ? AND is_enabled = 1
-       ORDER BY priority DESC, created_at ASC`
-    ).all(userId) as any[];
+    const rules = await db.all(`SELECT * FROM category_rules WHERE user_id = ? AND is_enabled = 1
+       ORDER BY priority DESC, created_at ASC`, userId) as any[];
 
     let totalUpdated = 0;
 
@@ -268,9 +234,7 @@ router.post('/apply', (req: Request, res: Response) => {
     const now = new Date().toISOString();
 
     // Get all user transactions
-    const transactions = db.prepare(
-      `SELECT id, name, amount, date, account_id, category_id FROM transactions WHERE user_id = ?`
-    ).all(userId) as any[];
+    const transactions = await db.all(`SELECT id, name, amount, date, account_id, category_id FROM transactions WHERE user_id = ?`, userId) as any[];
 
     const applied = db.transaction(() => {
       for (const txn of transactions) {
@@ -321,20 +285,18 @@ router.post('/apply', (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 // POST /test — preview which transactions a rule would match (without applying)
 // ---------------------------------------------------------------------------
-router.post('/test', (req: Request, res: Response) => {
+router.post('/test', async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
     const rule = req.body;
 
-    const transactions = db.prepare(
-      `SELECT t.id, t.name, t.amount, t.date, t.account_id, t.category_id,
+    const transactions = await db.all(`SELECT t.id, t.name, t.amount, t.date, t.account_id, t.category_id,
               c.name as category_name, a.name as account_name
        FROM transactions t
        LEFT JOIN categories c ON t.category_id = c.id
        LEFT JOIN accounts a ON t.account_id = a.id
        WHERE t.user_id = ?
-       ORDER BY t.date DESC`
-    ).all(userId) as any[];
+       ORDER BY t.date DESC`, userId) as any[];
 
     const matches = transactions.filter(txn => matchesRule(txn, rule));
     res.json({ matches: matches.slice(0, 50), totalMatches: matches.length });

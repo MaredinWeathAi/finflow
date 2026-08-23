@@ -4,13 +4,9 @@ import { db } from '../db/database.js';
 const router = Router();
 
 // GET / - get user settings
-router.get('/', (req: Request, res: Response) => {
+router.get('/', async (req: Request, res: Response) => {
   try {
-    const user = db
-      .prepare(
-        'SELECT id, email, name, currency, created_at, updated_at FROM users WHERE id = ?'
-      )
-      .get(req.user!.id) as any;
+    const user = await db.get('SELECT id, email, name, currency, created_at, updated_at FROM users WHERE id = ?', req.user!.id) as any;
 
     if (!user) {
       res.status(404).json({ error: 'User not found' });
@@ -34,24 +30,18 @@ router.get('/', (req: Request, res: Response) => {
 });
 
 // PUT / - update user settings
-router.put('/', (req: Request, res: Response) => {
+router.put('/', async (req: Request, res: Response) => {
   try {
     const { name, currency } = req.body;
     const now = new Date().toISOString();
 
-    db.prepare(
-      `UPDATE users SET
+    await db.run(`UPDATE users SET
         name = COALESCE(?, name),
         currency = COALESCE(?, currency),
         updated_at = ?
-       WHERE id = ?`
-    ).run(name ?? null, currency ?? null, now, req.user!.id);
+       WHERE id = ?`, name ?? null, currency ?? null, now, req.user!.id);
 
-    const user = db
-      .prepare(
-        'SELECT id, email, name, currency, created_at, updated_at FROM users WHERE id = ?'
-      )
-      .get(req.user!.id) as any;
+    const user = await db.get('SELECT id, email, name, currency, created_at, updated_at FROM users WHERE id = ?', req.user!.id) as any;
 
     res.json({
       settings: {

@@ -47,7 +47,7 @@ const STOP_WORDS = new Set([
 /**
  * Find duplicates between uploaded items and EXISTING transactions in the DB.
  */
-export function findDuplicates(
+export async function findDuplicates(
   items: PendingItemData[],
   userId: string,
 ): DuplicateMatch[] {
@@ -58,13 +58,9 @@ export function findDuplicates(
     const minDate = offsetDate(dateObj, -DATE_WINDOW_DAYS);
     const maxDate = offsetDate(dateObj, DATE_WINDOW_DAYS);
 
-    const rows = db
-      .prepare(
-        `SELECT id, name, amount, date, category_id
+    const rows = await db.all(`SELECT id, name, amount, date, category_id
          FROM transactions
-         WHERE user_id = ? AND date >= ? AND date <= ?`,
-      )
-      .all(userId, minDate, maxDate) as {
+         WHERE user_id = ? AND date >= ? AND date <= ?`, userId, minDate, maxDate) as {
       id: string;
       name: string;
       amount: number;

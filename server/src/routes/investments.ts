@@ -4,17 +4,13 @@ import { db } from '../db/database.js';
 const router = Router();
 
 // GET / - list investments with computed values
-router.get('/', (req: Request, res: Response) => {
+router.get('/', async (req: Request, res: Response) => {
   try {
-    const investments = db
-      .prepare(
-        `SELECT i.*, a.name as account_name
+    const investments = (await db.all(`SELECT i.*, a.name as account_name
          FROM investments i
          LEFT JOIN accounts a ON i.account_id = a.id AND a.user_id = i.user_id
          WHERE i.user_id = ?
-         ORDER BY i.name ASC`
-      )
-      .all(req.user!.id)
+         ORDER BY i.name ASC`, req.user!.id))
       .map((inv: any) => {
         const current_value = inv.shares * inv.current_price;
         const total_cost = inv.shares * inv.cost_basis;
@@ -52,7 +48,7 @@ router.get('/', (req: Request, res: Response) => {
 });
 
 // POST / - create investment
-router.post('/', (req: Request, res: Response) => {
+router.post('/', async (req: Request, res: Response) => {
   try {
     const { account_id, symbol, name, type, shares, cost_basis, current_price } =
       req.body;
@@ -74,9 +70,7 @@ router.post('/', (req: Request, res: Response) => {
     }
 
     // Verify account belongs to user
-    const account = db
-      .prepare('SELECT id FROM accounts WHERE id = ? AND user_id = ?')
-      .get(account_id, req.user!.id);
+    const account = await db.get('SELECT id FROM accounts WHERE id = ? AND user_id = ?', account_id, req.user!.id);
 
     if (!account) {
       res.status(404).json({ error: 'Account not found' });
@@ -86,23 +80,10 @@ router.post('/', (req: Request, res: Response) => {
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
 
-    db.prepare(
-      `INSERT INTO investments (id, user_id, account_id, symbol, name, type, shares, cost_basis, current_price, last_updated)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(
-      id,
-      req.user!.id,
-      account_id,
-      symbol.toUpperCase(),
-      name,
-      type,
-      shares,
-      cost_basis,
-      current_price,
-      now
-    );
+    await db.run(`INSERT INTO investments (id, user_id, account_id, symbol, name, type, shares, cost_basis, current_price, last_updated)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, req.user!.id, account_id, symbol.toUpperCase(), name, type, shares, cost_basis, current_price, now);
 
-    const investment = db.prepare('SELECT * FROM investments WHERE id = ?').get(id);
+    const investment = await db.get('SELECT * FROM investments WHERE id = ?', id);
     res.status(201).json({ investment });
   } catch (error) {
     console.error('Create investment error:', error);
@@ -111,13 +92,11 @@ router.post('/', (req: Request, res: Response) => {
 });
 
 // PUT /:id - update investment
-router.put('/:id', (req: Request, res: Response) => {
+router.put('/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
 
-    const existing = db
-      .prepare('SELECT * FROM investments WHERE id = ? AND user_id = ?')
-      .get(id, req.user!.id);
+    const existing = await db.get('SELECT * FROM investments WHERE id = ? AND user_id = ?', id, req.user!.id);
 
     if (!existing) {
       res.status(404).json({ error: 'Investment not found' });
@@ -128,8 +107,7 @@ router.put('/:id', (req: Request, res: Response) => {
       req.body;
     const now = new Date().toISOString();
 
-    db.prepare(
-      `UPDATE investments SET
+    await db.run(`UPDATE investments SET
         account_id = COALESCE(?, account_id),
         symbol = COALESCE(?, symbol),
         name = COALESCE(?, name),
@@ -138,21 +116,9 @@ router.put('/:id', (req: Request, res: Response) => {
         cost_basis = COALESCE(?, cost_basis),
         current_price = COALESCE(?, current_price),
         last_updated = ?
-       WHERE id = ? AND user_id = ?`
-    ).run(
-      account_id ?? null,
-      symbol ? symbol.toUpperCase() : null,
-      name ?? null,
-      type ?? null,
-      shares !== undefined ? shares : null,
-      cost_basis !== undefined ? cost_basis : null,
-      current_price !== undefined ? current_price : null,
-      now,
-      id,
-      req.user!.id
-    );
+       WHERE id = ? AND user_id = ?`, account_id ?? null, symbol ? symbol.toUpperCase() : null, name ?? null, type ?? null, shares !== undefined ? shares : null, cost_basis !== undefined ? cost_basis : null, current_price !== undefined ? current_price : null, now, id, req.user!.id);
 
-    const investment = db.prepare('SELECT * FROM investments WHERE id = ?').get(id);
+    const investment = await db.get('SELECT * FROM investments WHERE id = ?', id);
     res.json({ investment });
   } catch (error) {
     console.error('Update investment error:', error);
@@ -161,23 +127,18 @@ router.put('/:id', (req: Request, res: Response) => {
 });
 
 // DELETE /:id - delete investment
-router.delete('/:id', (req: Request, res: Response) => {
+router.delete('/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
 
-    const existing = db
-      .prepare('SELECT * FROM investments WHERE id = ? AND user_id = ?')
-      .get(id, req.user!.id);
+    const existing = await db.get('SELECT * FROM investments WHERE id = ? AND user_id = ?', id, req.user!.id);
 
     if (!existing) {
       res.status(404).json({ error: 'Investment not found' });
       return;
     }
 
-    db.prepare('DELETE FROM investments WHERE id = ? AND user_id = ?').run(
-      id,
-      req.user!.id
-    );
+    await db.run('DELETE FROM investments WHERE id = ? AND user_id = ?', id, req.user!.id);
 
     res.json({ message: 'Investment deleted successfully' });
   } catch (error) {

@@ -8,11 +8,9 @@ const router = Router();
  * Returns the supplied id only if it belongs to this user; otherwise the
  * caller's own fallback account.
  */
-function resolveOwnedAccountId(userId: string, candidate: unknown, fallback: string): string {
+async function resolveOwnedAccountId(userId: string, candidate: unknown, fallback: string): string {
   if (typeof candidate !== 'string' || !candidate) return fallback;
-  const owned = db
-    .prepare('SELECT id FROM accounts WHERE id = ? AND user_id = ?')
-    .get(candidate, userId) as { id: string } | undefined;
+  const owned = await db.get('SELECT id FROM accounts WHERE id = ? AND user_id = ?', candidate, userId) as { id: string } | undefined;
   return owned?.id ?? fallback;
 }
 
@@ -121,14 +119,12 @@ function getMonthBounds(monthStr: string): { monthStart: string; monthEnd: strin
 }
 
 // GET /client-profile - Returns client info (user profile, accounts summary)
-router.get('/client-profile', (req: Request, res: Response) => {
+router.get('/client-profile', async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
 
     // Get user info
-    const user = db
-      .prepare('SELECT id, name, email, role FROM users WHERE id = ?')
-      .get(userId) as any;
+    const user = await db.get('SELECT id, name, email, role FROM users WHERE id = ?', userId) as any;
 
     if (!user) {
       res.status(404).json({ error: 'User not found' });
@@ -136,13 +132,9 @@ router.get('/client-profile', (req: Request, res: Response) => {
     }
 
     // Get accounts summary
-    const accounts = db
-      .prepare(
-        `SELECT id, name, type, institution, balance, last_four, icon, is_hidden
+    const accounts = await db.all(`SELECT id, name, type, institution, balance, last_four, icon, is_hidden
          FROM accounts WHERE user_id = ?
-         ORDER BY created_at DESC`
-      )
-      .all(userId) as any[];
+         ORDER BY created_at DESC`, userId) as any[];
 
     // Get account count by type
     const accountsByType = accounts.reduce(
@@ -176,35 +168,27 @@ router.get('/client-profile', (req: Request, res: Response) => {
 });
 
 // GET /living-expenses - Returns current month's expenses by category + recurring expenses
-router.get('/living-expenses', (req: Request, res: Response) => {
+router.get('/living-expenses', async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
     const currentMonth = getCurrentMonth();
     const { monthStart, monthEnd } = getMonthBounds(currentMonth);
 
     // Get current month transactions
-    const transactions = db
-      .prepare(
-        `SELECT t.id, t.amount, t.category_id, t.name, t.date,
+    const transactions = await db.all(`SELECT t.id, t.amount, t.category_id, t.name, t.date,
                 c.name as category_name, c.icon as category_icon, c.color as category_color
          FROM transactions t
          LEFT JOIN categories c ON t.category_id = c.id
          WHERE t.user_id = ? AND t.date BETWEEN ? AND ? AND t.amount < 0
-         ORDER BY t.date DESC`
-      )
-      .all(userId, monthStart, monthEnd) as any[];
+         ORDER BY t.date DESC`, userId, monthStart, monthEnd) as any[];
 
     // Get recurring expenses
-    const recurring = db
-      .prepare(
-        `SELECT r.id, r.name, r.amount, r.category_id, r.frequency, r.next_date, r.is_active,
+    const recurring = await db.all(`SELECT r.id, r.name, r.amount, r.category_id, r.frequency, r.next_date, r.is_active,
                 c.name as category_name, c.icon as category_icon, c.color as category_color
          FROM recurring_expenses r
          LEFT JOIN categories c ON r.category_id = c.id
          WHERE r.user_id = ? AND r.is_active = 1
-         ORDER BY r.next_date ASC`
-      )
-      .all(userId) as any[];
+         ORDER BY r.next_date ASC`, userId) as any[];
 
     // Group transactions by category
     const expensesByCategory: any = {};
@@ -282,18 +266,14 @@ router.get('/living-expenses', (req: Request, res: Response) => {
 });
 
 // GET /goals-summary - Returns all goals with progress
-router.get('/goals-summary', (req: Request, res: Response) => {
+router.get('/goals-summary', async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
 
-    const goals = db
-      .prepare(
-        `SELECT id, name, target_amount, current_amount, target_date, icon, color, is_completed
+    const goals = await db.all(`SELECT id, name, target_amount, current_amount, target_date, icon, color, is_completed
          FROM goals
          WHERE user_id = ?
-         ORDER BY is_completed ASC, target_date ASC`
-      )
-      .all(userId) as any[];
+         ORDER BY is_completed ASC, target_date ASC`, userId) as any[];
 
     const summary = goals.map((goal: any) => ({
       ...goal,
@@ -322,20 +302,16 @@ router.get('/goals-summary', (req: Request, res: Response) => {
 });
 
 // GET /investments-portfolio - Returns investments with current values and allocation
-router.get('/investments-portfolio', (req: Request, res: Response) => {
+router.get('/investments-portfolio', async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
 
-    const investments = db
-      .prepare(
-        `SELECT i.id, i.symbol, i.name, i.type, i.shares, i.cost_basis, i.current_price, i.last_updated,
+    const investments = await db.all(`SELECT i.id, i.symbol, i.name, i.type, i.shares, i.cost_basis, i.current_price, i.last_updated,
                 a.name as account_name, a.id as account_id
          FROM investments i
          LEFT JOIN accounts a ON i.account_id = a.id
          WHERE i.user_id = ?
-         ORDER BY i.name ASC`
-      )
-      .all(userId) as any[];
+         ORDER BY i.name ASC`, userId) as any[];
 
     // Calculate values for each investment
     const investmentDetails = investments.map((inv: any) => {
@@ -410,18 +386,14 @@ router.get('/investments-portfolio', (req: Request, res: Response) => {
 });
 
 // GET /liabilities - Returns credit accounts and loans (negative balances)
-router.get('/liabilities', (req: Request, res: Response) => {
+router.get('/liabilities', async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
 
-    const liabilities = db
-      .prepare(
-        `SELECT id, name, type, institution, balance, last_four, icon
+    const liabilities = await db.all(`SELECT id, name, type, institution, balance, last_four, icon
          FROM accounts
          WHERE user_id = ? AND (type = 'credit' OR balance < 0)
-         ORDER BY type ASC, name ASC`
-      )
-      .all(userId) as any[];
+         ORDER BY type ASC, name ASC`, userId) as any[];
 
     // Calculate summary
     const summary = {
@@ -460,28 +432,20 @@ router.get('/liabilities', (req: Request, res: Response) => {
 });
 
 // GET /assets - Returns all positive-balance accounts plus investment portfolio value (no double-counting)
-router.get('/assets', (req: Request, res: Response) => {
+router.get('/assets', async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
 
     // Get all non-liability accounts with positive balances
-    const accounts = db
-      .prepare(
-        `SELECT id, name, type, institution, balance, last_four, icon
+    const accounts = await db.all(`SELECT id, name, type, institution, balance, last_four, icon
          FROM accounts
          WHERE user_id = ? AND type NOT IN ('credit', 'loan', 'mortgage') AND balance > 0
-         ORDER BY type ASC, name ASC`
-      )
-      .all(userId) as any[];
+         ORDER BY type ASC, name ASC`, userId) as any[];
 
     // Get investments with account linkage
-    const investments = db
-      .prepare(
-        `SELECT i.id, i.symbol, i.name, i.shares, i.current_price, i.account_id
+    const investments = await db.all(`SELECT i.id, i.symbol, i.name, i.shares, i.current_price, i.account_id
          FROM investments i
-         WHERE i.user_id = ?`
-      )
-      .all(userId) as any[];
+         WHERE i.user_id = ?`, userId) as any[];
 
     // Build set of account IDs that have linked investment holdings
     const investmentAccountIds = new Set<string>();
@@ -540,17 +504,13 @@ router.get('/assets', (req: Request, res: Response) => {
 });
 
 // GET /net-worth - Comprehensive net worth calculation (no double-counting)
-router.get('/net-worth', (req: Request, res: Response) => {
+router.get('/net-worth', async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
 
-    const accounts = db
-      .prepare('SELECT id, name, type, balance FROM accounts WHERE user_id = ?')
-      .all(userId) as any[];
+    const accounts = await db.all('SELECT id, name, type, balance FROM accounts WHERE user_id = ?', userId) as any[];
 
-    const investments = db
-      .prepare('SELECT account_id, shares, current_price FROM investments WHERE user_id = ?')
-      .all(userId) as any[];
+    const investments = await db.all('SELECT account_id, shares, current_price FROM investments WHERE user_id = ?', userId) as any[];
 
     const nw = calculateNetWorth(accounts, investments);
 
@@ -578,69 +538,47 @@ router.get('/net-worth', (req: Request, res: Response) => {
 });
 
 // GET /comprehensive - Returns everything combined for financial planning software
-router.get('/comprehensive', (req: Request, res: Response) => {
+router.get('/comprehensive', async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
     const currentMonth = getCurrentMonth();
     const { monthStart, monthEnd } = getMonthBounds(currentMonth);
 
     // 1. User profile
-    const user = db
-      .prepare('SELECT id, name, email, role FROM users WHERE id = ?')
-      .get(userId) as any;
+    const user = await db.get('SELECT id, name, email, role FROM users WHERE id = ?', userId) as any;
 
     // 2. Accounts
-    const accounts = db
-      .prepare(
-        `SELECT id, name, type, institution, balance, last_four, icon, is_hidden
+    const accounts = await db.all(`SELECT id, name, type, institution, balance, last_four, icon, is_hidden
          FROM accounts WHERE user_id = ?
-         ORDER BY created_at DESC`
-      )
-      .all(userId) as any[];
+         ORDER BY created_at DESC`, userId) as any[];
 
     // 3. Current month transactions
-    const transactions = db
-      .prepare(
-        `SELECT t.id, t.amount, t.category_id, t.name, t.date,
+    const transactions = await db.all(`SELECT t.id, t.amount, t.category_id, t.name, t.date,
                 c.name as category_name, c.icon as category_icon, c.color as category_color
          FROM transactions t
          LEFT JOIN categories c ON t.category_id = c.id
          WHERE t.user_id = ? AND t.date BETWEEN ? AND ?
-         ORDER BY t.date DESC`
-      )
-      .all(userId, monthStart, monthEnd) as any[];
+         ORDER BY t.date DESC`, userId, monthStart, monthEnd) as any[];
 
     // 4. Recurring expenses
-    const recurring = db
-      .prepare(
-        `SELECT r.id, r.name, r.amount, r.category_id, r.frequency, r.next_date, r.is_active,
+    const recurring = await db.all(`SELECT r.id, r.name, r.amount, r.category_id, r.frequency, r.next_date, r.is_active,
                 c.name as category_name, c.icon as category_icon, c.color as category_color
          FROM recurring_expenses r
          LEFT JOIN categories c ON r.category_id = c.id
-         WHERE r.user_id = ? AND r.is_active = 1`
-      )
-      .all(userId) as any[];
+         WHERE r.user_id = ? AND r.is_active = 1`, userId) as any[];
 
     // 5. Goals
-    const goals = db
-      .prepare(
-        `SELECT id, name, target_amount, current_amount, target_date, icon, color, is_completed
+    const goals = await db.all(`SELECT id, name, target_amount, current_amount, target_date, icon, color, is_completed
          FROM goals WHERE user_id = ?
-         ORDER BY is_completed ASC, target_date ASC`
-      )
-      .all(userId) as any[];
+         ORDER BY is_completed ASC, target_date ASC`, userId) as any[];
 
     // 6. Investments
-    const investments = db
-      .prepare(
-        `SELECT i.id, i.account_id, i.symbol, i.name, i.type, i.shares, i.cost_basis, i.current_price, i.last_updated,
+    const investments = await db.all(`SELECT i.id, i.account_id, i.symbol, i.name, i.type, i.shares, i.cost_basis, i.current_price, i.last_updated,
                 a.name as account_name
          FROM investments i
          LEFT JOIN accounts a ON i.account_id = a.id
          WHERE i.user_id = ?
-         ORDER BY i.name ASC`
-      )
-      .all(userId) as any[];
+         ORDER BY i.name ASC`, userId) as any[];
 
     // Calculate metrics for comprehensive response
 
@@ -777,7 +715,7 @@ router.get('/comprehensive', (req: Request, res: Response) => {
 // ============================================================
 
 // POST /sync/investments — Receive investment data from the Financial Planning portal
-router.post('/sync/investments', (req: Request, res: Response) => {
+router.post('/sync/investments', async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
     const { investments: incomingInvestments, source } = req.body;
@@ -795,28 +733,20 @@ router.post('/sync/investments', (req: Request, res: Response) => {
     };
 
     // Get existing investments for this user
-    const existingInvestments = db
-      .prepare('SELECT id, symbol, account_id FROM investments WHERE user_id = ?')
-      .all(userId) as any[];
+    const existingInvestments = await db.all('SELECT id, symbol, account_id FROM investments WHERE user_id = ?', userId) as any[];
 
     const existingBySymbol = new Map(
       existingInvestments.map((inv: any) => [inv.symbol, inv])
     );
 
     // Get user's first investment-type account, or create one
-    let investmentAccount = db
-      .prepare(
-        `SELECT id FROM accounts WHERE user_id = ? AND type = 'investment' LIMIT 1`
-      )
-      .get(userId) as any;
+    let investmentAccount = await db.get(`SELECT id FROM accounts WHERE user_id = ? AND type = 'investment' LIMIT 1`, userId) as any;
 
     if (!investmentAccount) {
       const accountId = crypto.randomUUID();
       const now = new Date().toISOString();
-      db.prepare(
-        `INSERT INTO accounts (id, user_id, name, type, institution, balance, last_four, icon, is_hidden, created_at, updated_at)
-         VALUES (?, ?, ?, 'investment', ?, 0, '', '', 0, ?, ?)`
-      ).run(accountId, userId, 'Synced Investments', source || 'Financial Planning Portal', now, now);
+      await db.run(`INSERT INTO accounts (id, user_id, name, type, institution, balance, last_four, icon, is_hidden, created_at, updated_at)
+         VALUES (?, ?, ?, 'investment', ?, 0, '', '', 0, ?, ?)`, accountId, userId, 'Synced Investments', source || 'Financial Planning Portal', now, now);
       investmentAccount = { id: accountId };
     }
 
@@ -833,45 +763,21 @@ router.post('/sync/investments', (req: Request, res: Response) => {
         const existing = existingBySymbol.get(inv.symbol.toUpperCase());
 
         if (existing) {
-          db.prepare(
-            `UPDATE investments SET
+          await db.run(`UPDATE investments SET
               shares = COALESCE(?, shares),
               cost_basis = COALESCE(?, cost_basis),
               current_price = COALESCE(?, current_price),
               name = COALESCE(?, name),
               type = COALESCE(?, type),
               last_updated = ?
-             WHERE id = ? AND user_id = ?`
-          ).run(
-            inv.shares ?? null,
-            inv.cost_basis ?? null,
-            inv.current_price ?? null,
-            inv.name ?? null,
-            inv.type ?? null,
-            now,
-            existing.id,
-            userId
-          );
+             WHERE id = ? AND user_id = ?`, inv.shares ?? null, inv.cost_basis ?? null, inv.current_price ?? null, inv.name ?? null, inv.type ?? null, now, existing.id, userId);
           results.updated++;
         } else {
           const id = crypto.randomUUID();
-          db.prepare(
-            `INSERT INTO investments (id, user_id, account_id, symbol, name, type, shares, cost_basis, current_price, last_updated)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-          ).run(
-            id,
-            userId,
-            // SECURITY: a client-supplied account_id must belong to the caller;
-            // otherwise fall back to their own detected investment account.
-            resolveOwnedAccountId(userId, inv.account_id, investmentAccount.id),
-            inv.symbol.toUpperCase(),
-            inv.name,
-            inv.type || 'stock',
-            inv.shares || 0,
-            inv.cost_basis || 0,
-            inv.current_price || 0,
-            now
-          );
+          await db.run(`INSERT INTO investments (id, user_id, account_id, symbol, name, type, shares, cost_basis, current_price, last_updated)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, userId, // SECURITY: a client-supplied account_id must belong to the caller;
+                        // otherwise fall back to their own detected investment account.
+                        resolveOwnedAccountId(userId, inv.account_id, investmentAccount.id), inv.symbol.toUpperCase(), inv.name, inv.type || 'stock', inv.shares || 0, inv.cost_basis || 0, inv.current_price || 0, now);
           results.created++;
         }
       } catch (err: any) {
@@ -881,16 +787,10 @@ router.post('/sync/investments', (req: Request, res: Response) => {
     }
 
     // Recalculate investment account balance
-    const portfolioValue = db
-      .prepare(
-        `SELECT COALESCE(SUM(shares * current_price), 0) as total
-         FROM investments WHERE user_id = ? AND account_id = ?`
-      )
-      .get(userId, investmentAccount.id) as any;
+    const portfolioValue = await db.get(`SELECT COALESCE(SUM(shares * current_price), 0) as total
+         FROM investments WHERE user_id = ? AND account_id = ?`, userId, investmentAccount.id) as any;
 
-    db.prepare('UPDATE accounts SET balance = ?, updated_at = ? WHERE id = ?').run(
-      portfolioValue.total, now, investmentAccount.id
-    );
+    await db.run('UPDATE accounts SET balance = ?, updated_at = ? WHERE id = ?', portfolioValue.total, now, investmentAccount.id);
 
     res.json({
       message: 'Investment sync completed',
@@ -904,20 +804,16 @@ router.post('/sync/investments', (req: Request, res: Response) => {
 });
 
 // GET /sync/investments — Export investment data for the Financial Planning portal to pull
-router.get('/sync/investments', (req: Request, res: Response) => {
+router.get('/sync/investments', async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
 
-    const investments = db
-      .prepare(
-        `SELECT i.id, i.symbol, i.name, i.type, i.shares, i.cost_basis, i.current_price, i.last_updated,
+    const investments = await db.all(`SELECT i.id, i.symbol, i.name, i.type, i.shares, i.cost_basis, i.current_price, i.last_updated,
                 a.name as account_name, a.institution as account_institution
          FROM investments i
          LEFT JOIN accounts a ON i.account_id = a.id
          WHERE i.user_id = ?
-         ORDER BY i.name ASC`
-      )
-      .all(userId) as any[];
+         ORDER BY i.name ASC`, userId) as any[];
 
     const holdings = investments.map((inv: any) => {
       const currentValue = inv.shares * inv.current_price;
@@ -964,7 +860,7 @@ router.get('/sync/investments', (req: Request, res: Response) => {
 });
 
 // POST /sync/accounts — Receive account data from the Financial Planning portal
-router.post('/sync/accounts', (req: Request, res: Response) => {
+router.post('/sync/accounts', async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
     const { accounts: incomingAccounts } = req.body;
@@ -985,23 +881,15 @@ router.post('/sync/accounts', (req: Request, res: Response) => {
           continue;
         }
 
-        const existing = db
-          .prepare(
-            `SELECT id FROM accounts WHERE user_id = ? AND LOWER(name) = LOWER(?) AND LOWER(COALESCE(institution, '')) = LOWER(?)`
-          )
-          .get(userId, acc.name, acc.institution || '') as any;
+        const existing = await db.get(`SELECT id FROM accounts WHERE user_id = ? AND LOWER(name) = LOWER(?) AND LOWER(COALESCE(institution, '')) = LOWER(?)`, userId, acc.name, acc.institution || '') as any;
 
         if (existing) {
-          db.prepare(
-            `UPDATE accounts SET balance = COALESCE(?, balance), updated_at = ? WHERE id = ?`
-          ).run(acc.balance ?? null, now, existing.id);
+          await db.run(`UPDATE accounts SET balance = COALESCE(?, balance), updated_at = ? WHERE id = ?`, acc.balance ?? null, now, existing.id);
           results.updated++;
         } else {
           const id = crypto.randomUUID();
-          db.prepare(
-            `INSERT INTO accounts (id, user_id, name, type, institution, balance, last_four, icon, is_hidden, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`
-          ).run(id, userId, acc.name, acc.type, acc.institution || '', acc.balance || 0, acc.last_four || '', acc.icon || '', now, now);
+          await db.run(`INSERT INTO accounts (id, user_id, name, type, institution, balance, last_four, icon, is_hidden, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`, id, userId, acc.name, acc.type, acc.institution || '', acc.balance || 0, acc.last_four || '', acc.icon || '', now, now);
           results.created++;
         }
       } catch (err: any) {
@@ -1018,18 +906,18 @@ router.post('/sync/accounts', (req: Request, res: Response) => {
 });
 
 // GET /sync/status — Check if client has data in both systems
-router.get('/sync/status', (req: Request, res: Response) => {
+router.get('/sync/status', async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
 
-    const accountCount = (db.prepare('SELECT COUNT(*) as count FROM accounts WHERE user_id = ?').get(userId) as any).count;
-    const investmentCount = (db.prepare('SELECT COUNT(*) as count FROM investments WHERE user_id = ?').get(userId) as any).count;
-    const transactionCount = (db.prepare('SELECT COUNT(*) as count FROM transactions WHERE user_id = ?').get(userId) as any).count;
-    const budgetCount = (db.prepare('SELECT COUNT(*) as count FROM budgets WHERE user_id = ?').get(userId) as any).count;
-    const goalCount = (db.prepare('SELECT COUNT(*) as count FROM goals WHERE user_id = ?').get(userId) as any).count;
+    const accountCount = (await db.get('SELECT COUNT(*) as count FROM accounts WHERE user_id = ?', userId) as any).count;
+    const investmentCount = (await db.get('SELECT COUNT(*) as count FROM investments WHERE user_id = ?', userId) as any).count;
+    const transactionCount = (await db.get('SELECT COUNT(*) as count FROM transactions WHERE user_id = ?', userId) as any).count;
+    const budgetCount = (await db.get('SELECT COUNT(*) as count FROM budgets WHERE user_id = ?', userId) as any).count;
+    const goalCount = (await db.get('SELECT COUNT(*) as count FROM goals WHERE user_id = ?', userId) as any).count;
 
-    const accounts = db.prepare('SELECT id, type, balance FROM accounts WHERE user_id = ?').all(userId) as any[];
-    const investments = db.prepare('SELECT account_id, shares, current_price FROM investments WHERE user_id = ?').all(userId) as any[];
+    const accounts = await db.all('SELECT id, type, balance FROM accounts WHERE user_id = ?', userId) as any[];
+    const investments = await db.all('SELECT account_id, shares, current_price FROM investments WHERE user_id = ?', userId) as any[];
     const nw = calculateNetWorth(accounts, investments);
 
     res.json({
@@ -1055,7 +943,7 @@ router.get('/sync/status', (req: Request, res: Response) => {
 });
 
 // POST /sync/price-update — Bulk update current prices for investments
-router.post('/sync/price-update', (req: Request, res: Response) => {
+router.post('/sync/price-update', async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
     const { prices } = req.body;
@@ -1071,23 +959,17 @@ router.post('/sync/price-update', (req: Request, res: Response) => {
 
     for (const { symbol, current_price } of prices) {
       if (!symbol || current_price === undefined) continue;
-      const result = db
-        .prepare(`UPDATE investments SET current_price = ?, last_updated = ? WHERE user_id = ? AND symbol = ?`)
-        .run(current_price, now, userId, symbol.toUpperCase());
+      const result = await db.run(`UPDATE investments SET current_price = ?, last_updated = ? WHERE user_id = ? AND symbol = ?`, current_price, now, userId, symbol.toUpperCase());
       if (result.changes > 0) updated++;
       else notFound++;
     }
 
     // Update investment account balances
-    const investmentAccounts = db
-      .prepare(`SELECT DISTINCT account_id FROM investments WHERE user_id = ?`)
-      .all(userId) as any[];
+    const investmentAccounts = await db.all(`SELECT DISTINCT account_id FROM investments WHERE user_id = ?`, userId) as any[];
 
     for (const { account_id } of investmentAccounts) {
-      const total = db
-        .prepare(`SELECT COALESCE(SUM(shares * current_price), 0) as total FROM investments WHERE user_id = ? AND account_id = ?`)
-        .get(userId, account_id) as any;
-      db.prepare('UPDATE accounts SET balance = ?, updated_at = ? WHERE id = ?').run(total.total, now, account_id);
+      const total = await db.get(`SELECT COALESCE(SUM(shares * current_price), 0) as total FROM investments WHERE user_id = ? AND account_id = ?`, userId, account_id) as any;
+      await db.run('UPDATE accounts SET balance = ?, updated_at = ? WHERE id = ?', total.total, now, account_id);
     }
 
     res.json({ message: 'Price update completed', updated, notFound, timestamp: now });

@@ -4,7 +4,7 @@ import { db } from '../db/database.js';
 const router = Router();
 
 // GET / - list transactions with filtering, sorting, pagination
-router.get('/', (req: Request, res: Response) => {
+router.get('/', async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
     const page = Math.max(1, parseInt(req.query.page as string) || 1);
@@ -98,23 +98,17 @@ router.get('/', (req: Request, res: Response) => {
     }
 
     // Get total count + aggregate income/expenses across ALL matching rows (not just page)
-    const countResult = db
-      .prepare(
-        `SELECT COUNT(*) as total,
+    const countResult = await db.get(`SELECT COUNT(*) as total,
                 COALESCE(SUM(CASE WHEN t.amount > 0 THEN t.amount ELSE 0 END), 0) as totalIncome,
                 COALESCE(SUM(CASE WHEN t.amount < 0 THEN ABS(t.amount) ELSE 0 END), 0) as totalExpenses
-         FROM transactions t WHERE ${whereClause}`
-      )
-      .get(...params) as any;
+         FROM transactions t WHERE ${whereClause}`, ...params) as any;
     const total = countResult.total;
     const totalIncome = Math.round(countResult.totalIncome * 100) / 100;
     const totalExpenses = Math.round(countResult.totalExpenses * 100) / 100;
     const totalPages = Math.ceil(total / limit);
 
     // Get paginated results with joined names
-    const transactions = db
-      .prepare(
-        `SELECT t.*,
+    const transactions = (await db.all(`SELECT t.*,
                 c.name as category_name, c.icon as category_icon, c.color as category_color,
                 a.name as account_name
          FROM transactions t
@@ -122,9 +116,7 @@ router.get('/', (req: Request, res: Response) => {
          LEFT JOIN accounts a ON t.account_id = a.id
          WHERE ${whereClause}
          ORDER BY ${orderBy}
-         LIMIT ? OFFSET ?`
-      )
-      .all(...params, limit, offset)
+         LIMIT ? OFFSET ?`, ...params, limit, offset))
       .map((t: any) => ({
         ...t,
         tags: JSON.parse(t.tags || '[]'),
@@ -138,7 +130,7 @@ router.get('/', (req: Request, res: Response) => {
 });
 
 // POST / - create transaction
-router.post('/', (req: Request, res: Response) => {
+router.post('/', async (req: Request, res: Response) => {
   try {
     const {
       account_id,
@@ -161,9 +153,7 @@ router.post('/', (req: Request, res: Response) => {
     }
 
     // Verify account belongs to user
-    const account = db
-      .prepare('SELECT id FROM accounts WHERE id = ? AND user_id = ?')
-      .get(account_id, req.user!.id);
+    const account = await db.get('SELECT id FROM accounts WHERE id = ? AND user_id = ?', account_id, req.user!.id);
 
     if (!account) {
       res.status(404).json({ error: 'Account not found' });
@@ -173,42 +163,17 @@ router.post('/', (req: Request, res: Response) => {
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
 
-    db.prepare(
-      `INSERT INTO transactions (id, user_id, account_id, name, amount, category_id, date, notes, is_pending, is_recurring, recurring_id, tags, source, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?)`
-    ).run(
-      id,
-      req.user!.id,
-      account_id,
-      name,
-      amount,
-      category_id || null,
-      date,
-      notes || null,
-      is_pending ? 1 : 0,
-      is_recurring ? 1 : 0,
-      recurring_id || null,
-      JSON.stringify(tags || []),
-      now,
-      now
-    );
+    await db.run(`INSERT INTO transactions (id, user_id, account_id, name, amount, category_id, date, notes, is_pending, is_recurring, recurring_id, tags, source, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?)`, id, req.user!.id, account_id, name, amount, category_id || null, date, notes || null, is_pending ? 1 : 0, is_recurring ? 1 : 0, recurring_id || null, JSON.stringify(tags || []), now, now);
 
     // Update account balance
-    db.prepare('UPDATE accounts SET balance = balance + ?, updated_at = ? WHERE id = ?').run(
-      amount,
-      now,
-      account_id
-    );
+    await db.run('UPDATE accounts SET balance = balance + ?, updated_at = ? WHERE id = ?', amount, now, account_id);
 
-    const transaction = db
-      .prepare(
-        `SELECT t.*, c.name as category_name, c.icon as category_icon, c.color as category_color, a.name as account_name
+    const transaction = await db.get(`SELECT t.*, c.name as category_name, c.icon as category_icon, c.color as category_color, a.name as account_name
          FROM transactions t
          LEFT JOIN categories c ON t.category_id = c.id
          LEFT JOIN accounts a ON t.account_id = a.id
-         WHERE t.id = ?`
-      )
-      .get(id) as any;
+         WHERE t.id = ?`, id) as any;
 
     transaction.tags = JSON.parse(transaction.tags || '[]');
 
@@ -220,13 +185,11 @@ router.post('/', (req: Request, res: Response) => {
 });
 
 // PUT /:id - update transaction
-router.put('/:id', (req: Request, res: Response) => {
+router.put('/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
 
-    const existing = db
-      .prepare('SELECT * FROM transactions WHERE id = ? AND user_id = ?')
-      .get(id, req.user!.id) as any;
+    const existing = await db.get('SELECT * FROM transactions WHERE id = ? AND user_id = ?', id, req.user!.id) as any;
 
     if (!existing) {
       res.status(404).json({ error: 'Transaction not found' });
@@ -251,41 +214,20 @@ router.put('/:id', (req: Request, res: Response) => {
     if (amount !== undefined && amount !== existing.amount) {
       const diff = amount - existing.amount;
       const targetAccountId = account_id || existing.account_id;
-      db.prepare('UPDATE accounts SET balance = balance + ?, updated_at = ? WHERE id = ?').run(
-        diff,
-        now,
-        targetAccountId
-      );
+      await db.run('UPDATE accounts SET balance = balance + ?, updated_at = ? WHERE id = ?', diff, now, targetAccountId);
 
       // If account changed, also adjust old account
       if (account_id && account_id !== existing.account_id) {
-        db.prepare('UPDATE accounts SET balance = balance - ?, updated_at = ? WHERE id = ?').run(
-          amount,
-          now,
-          account_id
-        );
-        db.prepare('UPDATE accounts SET balance = balance + ?, updated_at = ? WHERE id = ?').run(
-          existing.amount,
-          now,
-          existing.account_id
-        );
+        await db.run('UPDATE accounts SET balance = balance - ?, updated_at = ? WHERE id = ?', amount, now, account_id);
+        await db.run('UPDATE accounts SET balance = balance + ?, updated_at = ? WHERE id = ?', existing.amount, now, existing.account_id);
       }
     } else if (account_id && account_id !== existing.account_id) {
       // Account changed but amount same - move the amount
-      db.prepare('UPDATE accounts SET balance = balance - ?, updated_at = ? WHERE id = ?').run(
-        existing.amount,
-        now,
-        existing.account_id
-      );
-      db.prepare('UPDATE accounts SET balance = balance + ?, updated_at = ? WHERE id = ?').run(
-        existing.amount,
-        now,
-        account_id
-      );
+      await db.run('UPDATE accounts SET balance = balance - ?, updated_at = ? WHERE id = ?', existing.amount, now, existing.account_id);
+      await db.run('UPDATE accounts SET balance = balance + ?, updated_at = ? WHERE id = ?', existing.amount, now, account_id);
     }
 
-    db.prepare(
-      `UPDATE transactions SET
+    await db.run(`UPDATE transactions SET
         account_id = COALESCE(?, account_id),
         name = COALESCE(?, name),
         amount = COALESCE(?, amount),
@@ -297,32 +239,13 @@ router.put('/:id', (req: Request, res: Response) => {
         recurring_id = COALESCE(?, recurring_id),
         tags = COALESCE(?, tags),
         updated_at = ?
-       WHERE id = ? AND user_id = ?`
-    ).run(
-      account_id ?? null,
-      name ?? null,
-      amount !== undefined ? amount : null,
-      category_id !== undefined ? category_id : null,
-      date ?? null,
-      notes !== undefined ? notes : null,
-      is_pending !== undefined ? (is_pending ? 1 : 0) : null,
-      is_recurring !== undefined ? (is_recurring ? 1 : 0) : null,
-      recurring_id !== undefined ? recurring_id : null,
-      tags !== undefined ? JSON.stringify(tags) : null,
-      now,
-      id,
-      req.user!.id
-    );
+       WHERE id = ? AND user_id = ?`, account_id ?? null, name ?? null, amount !== undefined ? amount : null, category_id !== undefined ? category_id : null, date ?? null, notes !== undefined ? notes : null, is_pending !== undefined ? (is_pending ? 1 : 0) : null, is_recurring !== undefined ? (is_recurring ? 1 : 0) : null, recurring_id !== undefined ? recurring_id : null, tags !== undefined ? JSON.stringify(tags) : null, now, id, req.user!.id);
 
-    const transaction = db
-      .prepare(
-        `SELECT t.*, c.name as category_name, c.icon as category_icon, c.color as category_color, a.name as account_name
+    const transaction = await db.get(`SELECT t.*, c.name as category_name, c.icon as category_icon, c.color as category_color, a.name as account_name
          FROM transactions t
          LEFT JOIN categories c ON t.category_id = c.id
          LEFT JOIN accounts a ON t.account_id = a.id
-         WHERE t.id = ?`
-      )
-      .get(id) as any;
+         WHERE t.id = ?`, id) as any;
 
     transaction.tags = JSON.parse(transaction.tags || '[]');
 
@@ -334,13 +257,11 @@ router.put('/:id', (req: Request, res: Response) => {
 });
 
 // DELETE /:id - delete transaction
-router.delete('/:id', (req: Request, res: Response) => {
+router.delete('/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
 
-    const existing = db
-      .prepare('SELECT * FROM transactions WHERE id = ? AND user_id = ?')
-      .get(id, req.user!.id) as any;
+    const existing = await db.get('SELECT * FROM transactions WHERE id = ? AND user_id = ?', id, req.user!.id) as any;
 
     if (!existing) {
       res.status(404).json({ error: 'Transaction not found' });
@@ -349,16 +270,9 @@ router.delete('/:id', (req: Request, res: Response) => {
 
     // Reverse account balance
     const now = new Date().toISOString();
-    db.prepare('UPDATE accounts SET balance = balance - ?, updated_at = ? WHERE id = ?').run(
-      existing.amount,
-      now,
-      existing.account_id
-    );
+    await db.run('UPDATE accounts SET balance = balance - ?, updated_at = ? WHERE id = ?', existing.amount, now, existing.account_id);
 
-    db.prepare('DELETE FROM transactions WHERE id = ? AND user_id = ?').run(
-      id,
-      req.user!.id
-    );
+    await db.run('DELETE FROM transactions WHERE id = ? AND user_id = ?', id, req.user!.id);
 
     res.json({ message: 'Transaction deleted successfully' });
   } catch (error) {
@@ -368,7 +282,7 @@ router.delete('/:id', (req: Request, res: Response) => {
 });
 
 // POST /bulk-categorize
-router.post('/bulk-categorize', (req: Request, res: Response) => {
+router.post('/bulk-categorize', async (req: Request, res: Response) => {
   try {
     const { transactionIds, categoryId } = req.body;
 
@@ -380,9 +294,7 @@ router.post('/bulk-categorize', (req: Request, res: Response) => {
     }
 
     // Verify category belongs to user
-    const category = db
-      .prepare('SELECT id FROM categories WHERE id = ? AND user_id = ?')
-      .get(categoryId, req.user!.id);
+    const category = await db.get('SELECT id FROM categories WHERE id = ? AND user_id = ?', categoryId, req.user!.id);
 
     if (!category) {
       res.status(404).json({ error: 'Category not found' });
@@ -413,7 +325,7 @@ router.post('/bulk-categorize', (req: Request, res: Response) => {
 });
 
 // POST /recategorize - change category of a transaction and propagate to all similar ones
-router.post('/recategorize', (req: Request, res: Response) => {
+router.post('/recategorize', async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
     const { transactionId, categoryId, propagate } = req.body;
@@ -424,9 +336,7 @@ router.post('/recategorize', (req: Request, res: Response) => {
     }
 
     // Get the transaction
-    const transaction = db.prepare(
-      'SELECT * FROM transactions WHERE id = ? AND user_id = ?'
-    ).get(transactionId, userId) as any;
+    const transaction = await db.get('SELECT * FROM transactions WHERE id = ? AND user_id = ?', transactionId, userId) as any;
 
     if (!transaction) {
       res.status(404).json({ error: 'Transaction not found' });
@@ -434,9 +344,7 @@ router.post('/recategorize', (req: Request, res: Response) => {
     }
 
     // Verify category belongs to user
-    const category = db.prepare(
-      'SELECT id, name FROM categories WHERE id = ? AND user_id = ?'
-    ).get(categoryId, userId) as any;
+    const category = await db.get('SELECT id, name FROM categories WHERE id = ? AND user_id = ?', categoryId, userId) as any;
 
     if (!category) {
       res.status(404).json({ error: 'Category not found' });
@@ -447,8 +355,7 @@ router.post('/recategorize', (req: Request, res: Response) => {
     let updatedCount = 1;
 
     // Update the target transaction
-    db.prepare('UPDATE transactions SET category_id = ?, updated_at = ? WHERE id = ?')
-      .run(categoryId, now, transactionId);
+    await db.run('UPDATE transactions SET category_id = ?, updated_at = ? WHERE id = ?', categoryId, now, transactionId);
 
     // If propagate is true, update all similar transactions (same name pattern)
     if (propagate !== false) {
@@ -456,10 +363,8 @@ router.post('/recategorize', (req: Request, res: Response) => {
       const normalizedName = transaction.name.toLowerCase().trim();
 
       // Update all transactions with the same name (case-insensitive) that have a different category
-      const result = db.prepare(
-        `UPDATE transactions SET category_id = ?, updated_at = ?
-         WHERE user_id = ? AND LOWER(TRIM(name)) = ? AND id != ? AND (category_id IS NULL OR category_id != ?)`
-      ).run(categoryId, now, userId, normalizedName, transactionId, categoryId);
+      const result = await db.run(`UPDATE transactions SET category_id = ?, updated_at = ?
+         WHERE user_id = ? AND LOWER(TRIM(name)) = ? AND id != ? AND (category_id IS NULL OR category_id != ?)`, categoryId, now, userId, normalizedName, transactionId, categoryId);
 
       updatedCount += result.changes;
 
@@ -467,25 +372,19 @@ router.post('/recategorize', (req: Request, res: Response) => {
       let ruleCreated = false;
       try {
         // Check if a rule with this exact pattern already exists (any category)
-        const existingRule = db.prepare(
-          `SELECT id, category_id FROM category_rules WHERE user_id = ? AND LOWER(pattern) = ?`
-        ).get(userId, normalizedName) as any;
+        const existingRule = await db.get(`SELECT id, category_id FROM category_rules WHERE user_id = ? AND LOWER(pattern) = ?`, userId, normalizedName) as any;
 
         if (existingRule) {
           // Update existing rule to point to the new category
           if (existingRule.category_id !== categoryId) {
-            db.prepare(
-              `UPDATE category_rules SET category_id = ?, created_at = ? WHERE id = ?`
-            ).run(categoryId, now, existingRule.id);
+            await db.run(`UPDATE category_rules SET category_id = ?, created_at = ? WHERE id = ?`, categoryId, now, existingRule.id);
             ruleCreated = true;
           }
           // If same category already, rule exists — no action needed
         } else {
           // Create new rule
-          db.prepare(
-            `INSERT INTO category_rules (id, user_id, pattern, category_id, match_type, created_at)
-             VALUES (?, ?, ?, ?, 'contains', ?)`
-          ).run(crypto.randomUUID(), userId, normalizedName, categoryId, now);
+          await db.run(`INSERT INTO category_rules (id, user_id, pattern, category_id, match_type, created_at)
+             VALUES (?, ?, ?, ?, 'contains', ?)`, crypto.randomUUID(), userId, normalizedName, categoryId, now);
           ruleCreated = true;
         }
       } catch (e) {

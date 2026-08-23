@@ -288,18 +288,14 @@ export function categorizeItem(
 // User custom rules matching
 // ---------------------------------------------------------------------------
 
-function matchUserRules(lowerName: string, userId: string, amount?: number): CategorizationResult | null {
-  const rules = db
-    .prepare(
-      `SELECT cr.pattern, cr.category_id, cr.match_type, c.name as category_name,
+async function matchUserRules(lowerName: string, userId: string, amount?: number): CategorizationResult | null {
+  const rules = await db.all(`SELECT cr.pattern, cr.category_id, cr.match_type, c.name as category_name,
               cr.amount_min, cr.amount_max, cr.amount_exact, cr.account_id, cr.is_enabled, cr.priority,
               cr.assign_type
        FROM category_rules cr
        JOIN categories c ON c.id = cr.category_id
        WHERE cr.user_id = ? AND (cr.is_enabled = 1 OR cr.is_enabled IS NULL)
-       ORDER BY cr.priority DESC, cr.match_type ASC`
-    )
-    .all(userId) as any[];
+       ORDER BY cr.priority DESC, cr.match_type ASC`, userId) as any[];
 
   for (const rule of rules) {
     const pattern = (rule.pattern || '').toLowerCase().trim();
@@ -396,7 +392,7 @@ function matchKeywordMap(lowerName: string, userId: string): CategorizationResul
 // Learn a new categorization rule
 // ---------------------------------------------------------------------------
 
-export function learnRule(
+export async function learnRule(
   userId: string,
   pattern: string,
   categoryId: string,
@@ -405,36 +401,26 @@ export function learnRule(
   const id = crypto.randomUUID();
   const createdAt = new Date().toISOString();
 
-  db.prepare(
-    `INSERT INTO category_rules (id, user_id, pattern, category_id, match_type, created_at)
-     VALUES (?, ?, ?, ?, ?, ?)`
-  ).run(id, userId, pattern, categoryId, matchType, createdAt);
+  await db.run(`INSERT INTO category_rules (id, user_id, pattern, category_id, match_type, created_at)
+     VALUES (?, ?, ?, ?, ?, ?)`, id, userId, pattern, categoryId, matchType, createdAt);
 }
 
 // ---------------------------------------------------------------------------
 // Helper: look up a category ID by matching the keyword to category name
 // ---------------------------------------------------------------------------
 
-export function getCategoryByKeyword(keyword: string, userId: string): string | null {
+export async function getCategoryByKeyword(keyword: string, userId: string): string | null {
   const lowerKeyword = keyword.toLowerCase();
 
   // Try exact match first
-  const exact = db
-    .prepare(
-      `SELECT id, name FROM categories WHERE user_id = ? AND LOWER(name) = ?`
-    )
-    .get(userId, lowerKeyword) as { id: string; name: string } | undefined;
+  const exact = await db.get(`SELECT id, name FROM categories WHERE user_id = ? AND LOWER(name) = ?`, userId, lowerKeyword) as { id: string; name: string } | undefined;
 
   if (exact) {
     return exact.id;
   }
 
   // Try LIKE match (partial / contains)
-  const partial = db
-    .prepare(
-      `SELECT id, name FROM categories WHERE user_id = ? AND LOWER(name) LIKE ?`
-    )
-    .get(userId, `%${lowerKeyword}%`) as { id: string; name: string } | undefined;
+  const partial = await db.get(`SELECT id, name FROM categories WHERE user_id = ? AND LOWER(name) LIKE ?`, userId, `%${lowerKeyword}%`) as { id: string; name: string } | undefined;
 
   if (partial) {
     return partial.id;

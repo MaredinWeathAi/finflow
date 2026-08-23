@@ -100,8 +100,7 @@ try {
 }
 
 // 1. Create admin user
-db.prepare(`INSERT INTO users (id, email, username, password_hash, name, role, currency, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-  .run(userId, adminEmail, BOOTSTRAP_USERNAME, passwordHash, BOOTSTRAP_NAME, 'admin', 'USD', now, now);
+await db.run(`INSERT INTO users (id, email, username, password_hash, name, role, currency, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, userId, adminEmail, BOOTSTRAP_USERNAME, passwordHash, BOOTSTRAP_NAME, 'admin', 'USD', now, now);
 // Never log the password in production.
 console.log(`✅ Created admin user (${adminEmail})`);
 
@@ -346,7 +345,7 @@ if (!SEED_DEMO_DATA) {
   console.log('⏭  Skipping demo client accounts (set SEED_DEMO_DATA=true in a non-production env to create them).');
 }
 for (const c of SEED_DEMO_DATA ? clients : []) {
-  const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(c.email) as any;
+  const existing = await db.get('SELECT id FROM users WHERE email = ?', c.email) as any;
   if (!existing) {
     const cId = crypto.randomUUID();
     // Random per-account password; demo accounts are never usable by anyone
@@ -355,22 +354,19 @@ for (const c of SEED_DEMO_DATA ? clients : []) {
     const cHash = bcrypt.hashSync(cPlain, BCRYPT_ROUNDS);
     console.log(`   demo client ${c.email} / ${cPlain}`);
     const cNow = new Date().toISOString();
-    db.prepare(`INSERT INTO users (id, email, username, password_hash, name, phone, role, advisor_id, currency, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, 'client', ?, 'USD', ?, ?)`)
-      .run(cId, c.email, c.username, cHash, c.name, c.phone, adminUser, cNow, cNow);
+    await db.run(`INSERT INTO users (id, email, username, password_hash, name, phone, role, advisor_id, currency, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, 'client', ?, 'USD', ?, ?)`, cId, c.email, c.username, cHash, c.name, c.phone, adminUser, cNow, cNow);
 
     // Create some sample data for each client
     // Add 1 checking account
     const accId = crypto.randomUUID();
-    db.prepare(`INSERT INTO accounts (id, user_id, name, type, institution, balance, source, created_at, updated_at)
-      VALUES (?, ?, 'Main Checking', 'checking', 'Chase', ?, 'seed', ?, ?)`)
-      .run(accId, cId, Math.round(Math.random() * 15000 + 2000), cNow, cNow);
+    await db.run(`INSERT INTO accounts (id, user_id, name, type, institution, balance, source, created_at, updated_at)
+      VALUES (?, ?, 'Main Checking', 'checking', 'Chase', ?, 'seed', ?, ?)`, accId, cId, Math.round(Math.random() * 15000 + 2000), cNow, cNow);
 
     // Add 1 savings account
     const savId = crypto.randomUUID();
-    db.prepare(`INSERT INTO accounts (id, user_id, name, type, institution, balance, source, created_at, updated_at)
-      VALUES (?, ?, 'Savings', 'savings', 'Ally', ?, 'seed', ?, ?)`)
-      .run(savId, cId, Math.round(Math.random() * 30000 + 5000), cNow, cNow);
+    await db.run(`INSERT INTO accounts (id, user_id, name, type, institution, balance, source, created_at, updated_at)
+      VALUES (?, ?, 'Savings', 'savings', 'Ally', ?, 'seed', ?, ?)`, savId, cId, Math.round(Math.random() * 30000 + 5000), cNow, cNow);
 
     // Add some default categories
     const catNames = ['Housing', 'Food & Dining', 'Transportation', 'Entertainment', 'Healthcare', 'Salary'];
@@ -380,9 +376,8 @@ for (const c of SEED_DEMO_DATA ? clients : []) {
     for (let i = 0; i < catNames.length; i++) {
       const catId = crypto.randomUUID();
       catIds.push(catId);
-      db.prepare(`INSERT INTO categories (id, user_id, name, icon, color, is_income, sort_order)
-        VALUES (?, ?, ?, ?, ?, ?, ?)`)
-        .run(catId, cId, catNames[i], catIcons[i], catColors[i], catNames[i] === 'Salary' ? 1 : 0, i);
+      await db.run(`INSERT INTO categories (id, user_id, name, icon, color, is_income, sort_order)
+        VALUES (?, ?, ?, ?, ?, ?, ?)`, catId, cId, catNames[i], catIcons[i], catColors[i], catNames[i] === 'Salary' ? 1 : 0, i);
     }
 
     // Add some transactions for last 3 months
@@ -393,9 +388,8 @@ for (const c of SEED_DEMO_DATA ? clients : []) {
 
       // Salary
       const salDate = `${monthStr}-01`;
-      db.prepare(`INSERT INTO transactions (id, user_id, account_id, name, amount, category_id, date, source, created_at, updated_at)
-        VALUES (?, ?, ?, 'Salary', ?, ?, ?, 'seed', ?, ?)`)
-        .run(crypto.randomUUID(), cId, accId, 4500 + Math.random() * 1000, catIds[5], salDate, cNow, cNow);
+      await db.run(`INSERT INTO transactions (id, user_id, account_id, name, amount, category_id, date, source, created_at, updated_at)
+        VALUES (?, ?, ?, 'Salary', ?, ?, ?, 'seed', ?, ?)`, crypto.randomUUID(), cId, accId, 4500 + Math.random() * 1000, catIds[5], salDate, cNow, cNow);
 
       // Expenses
       const expenseItems = [
@@ -407,17 +401,15 @@ for (const c of SEED_DEMO_DATA ? clients : []) {
       ];
       for (const exp of expenseItems) {
         const expDate = `${monthStr}-${String(Math.floor(Math.random() * 25 + 1)).padStart(2, '0')}`;
-        db.prepare(`INSERT INTO transactions (id, user_id, account_id, name, amount, category_id, date, source, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, 'seed', ?, ?)`)
-          .run(crypto.randomUUID(), cId, accId, exp.name, Math.round(exp.amt * 100) / 100, catIds[exp.cat], expDate, cNow, cNow);
+        await db.run(`INSERT INTO transactions (id, user_id, account_id, name, amount, category_id, date, source, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 'seed', ?, ?)`, crypto.randomUUID(), cId, accId, exp.name, Math.round(exp.amt * 100) / 100, catIds[exp.cat], expDate, cNow, cNow);
       }
     }
 
     // Add a budget
     const budgetMonth = new Date().toISOString().substring(0, 7) + '-01';
     for (let i = 0; i < 5; i++) {
-      db.prepare(`INSERT INTO budgets (id, user_id, category_id, month, amount) VALUES (?, ?, ?, ?, ?)`)
-        .run(crypto.randomUUID(), cId, catIds[i], budgetMonth, [1500, 500, 200, 100, 200][i]);
+      await db.run(`INSERT INTO budgets (id, user_id, category_id, month, amount) VALUES (?, ?, ?, ?, ?)`, crypto.randomUUID(), cId, catIds[i], budgetMonth, [1500, 500, 200, 100, 200][i]);
     }
   }
 }

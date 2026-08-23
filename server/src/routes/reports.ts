@@ -4,7 +4,7 @@ import { db } from '../db/database.js';
 const router = Router();
 
 // GET /monthly?month=YYYY-MM-DD - monthly report
-router.get('/monthly', (req: Request, res: Response) => {
+router.get('/monthly', async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
     const month = (req.query.month as string) || new Date().toISOString().substring(0, 10);
@@ -15,22 +15,14 @@ router.get('/monthly', (req: Request, res: Response) => {
     const endDate = `${year}-${String(mon).padStart(2, '0')}-${String(endOfMonth.getDate()).padStart(2, '0')}`;
 
     // Total income (positive amounts)
-    const incomeResult = db
-      .prepare(
-        `SELECT COALESCE(SUM(amount), 0) as total
+    const incomeResult = await db.get(`SELECT COALESCE(SUM(amount), 0) as total
          FROM transactions
-         WHERE user_id = ? AND amount > 0 AND date >= ? AND date <= ?`
-      )
-      .get(userId, monthStr, endDate) as any;
+         WHERE user_id = ? AND amount > 0 AND date >= ? AND date <= ?`, userId, monthStr, endDate) as any;
 
     // Total expenses (negative amounts)
-    const expenseResult = db
-      .prepare(
-        `SELECT COALESCE(SUM(ABS(amount)), 0) as total
+    const expenseResult = await db.get(`SELECT COALESCE(SUM(ABS(amount)), 0) as total
          FROM transactions
-         WHERE user_id = ? AND amount < 0 AND date >= ? AND date <= ?`
-      )
-      .get(userId, monthStr, endDate) as any;
+         WHERE user_id = ? AND amount < 0 AND date >= ? AND date <= ?`, userId, monthStr, endDate) as any;
 
     const income = Math.round(incomeResult.total * 100) / 100;
     const expenses = Math.round(expenseResult.total * 100) / 100;
@@ -38,9 +30,7 @@ router.get('/monthly', (req: Request, res: Response) => {
     const savingsRate = income > 0 ? Math.round(((income - expenses) / income) * 10000) / 100 : 0;
 
     // Top expense categories
-    const topCategories = db
-      .prepare(
-        `SELECT c.id, c.name, c.icon, c.color,
+    const topCategories = await db.all(`SELECT c.id, c.name, c.icon, c.color,
                 COALESCE(SUM(ABS(t.amount)), 0) as total,
                 COUNT(t.id) as transaction_count
          FROM transactions t
@@ -48,17 +38,11 @@ router.get('/monthly', (req: Request, res: Response) => {
          WHERE t.user_id = ? AND t.amount < 0 AND t.date >= ? AND t.date <= ?
          GROUP BY c.id
          ORDER BY total DESC
-         LIMIT 10`
-      )
-      .all(userId, monthStr, endDate);
+         LIMIT 10`, userId, monthStr, endDate);
 
     // Transaction count
-    const txCount = db
-      .prepare(
-        `SELECT COUNT(*) as count FROM transactions
-         WHERE user_id = ? AND date >= ? AND date <= ?`
-      )
-      .get(userId, monthStr, endDate) as any;
+    const txCount = await db.get(`SELECT COUNT(*) as count FROM transactions
+         WHERE user_id = ? AND date >= ? AND date <= ?`, userId, monthStr, endDate) as any;
 
     res.json({
       month: monthStr,
@@ -83,7 +67,7 @@ router.get('/monthly', (req: Request, res: Response) => {
 });
 
 // GET /annual?year=YYYY - annual report with monthly breakdown
-router.get('/annual', (req: Request, res: Response) => {
+router.get('/annual', async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
     const year = (req.query.year as string) || String(new Date().getFullYear());
@@ -91,18 +75,14 @@ router.get('/annual', (req: Request, res: Response) => {
     const endDate = `${year}-12-31`;
 
     // Monthly breakdown
-    const monthlyData = db
-      .prepare(
-        `SELECT
+    const monthlyData = (await db.all(`SELECT
            substr(date, 1, 7) as month,
            SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) as income,
            SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END) as expenses
          FROM transactions
          WHERE user_id = ? AND date >= ? AND date <= ?
          GROUP BY substr(date, 1, 7)
-         ORDER BY month ASC`
-      )
-      .all(userId, startDate, endDate)
+         ORDER BY month ASC`, userId, startDate, endDate))
       .map((row: any) => ({
         month: row.month,
         income: Math.round(row.income * 100) / 100,
@@ -111,16 +91,12 @@ router.get('/annual', (req: Request, res: Response) => {
       }));
 
     // Annual totals
-    const totalsResult = db
-      .prepare(
-        `SELECT
+    const totalsResult = await db.get(`SELECT
            SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) as total_income,
            SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END) as total_expenses,
            COUNT(*) as transaction_count
          FROM transactions
-         WHERE user_id = ? AND date >= ? AND date <= ?`
-      )
-      .get(userId, startDate, endDate) as any;
+         WHERE user_id = ? AND date >= ? AND date <= ?`, userId, startDate, endDate) as any;
 
     const totalIncome = Math.round((totalsResult.total_income || 0) * 100) / 100;
     const totalExpenses = Math.round((totalsResult.total_expenses || 0) * 100) / 100;
@@ -129,9 +105,7 @@ router.get('/annual', (req: Request, res: Response) => {
     const avgMonthlyExpenses = Math.round((totalExpenses / 12) * 100) / 100;
 
     // Top categories for the year
-    const topCategories = db
-      .prepare(
-        `SELECT c.id, c.name, c.icon, c.color,
+    const topCategories = await db.all(`SELECT c.id, c.name, c.icon, c.color,
                 COALESCE(SUM(ABS(t.amount)), 0) as total,
                 COUNT(t.id) as transaction_count
          FROM transactions t
@@ -139,9 +113,7 @@ router.get('/annual', (req: Request, res: Response) => {
          WHERE t.user_id = ? AND t.amount < 0 AND t.date >= ? AND t.date <= ?
          GROUP BY c.id
          ORDER BY total DESC
-         LIMIT 10`
-      )
-      .all(userId, startDate, endDate);
+         LIMIT 10`, userId, startDate, endDate);
 
     res.json({
       year,
@@ -164,7 +136,7 @@ router.get('/annual', (req: Request, res: Response) => {
 // GET /cashflow?period=6m - cash flow data (income vs expenses by month)
 // Returns the last N COMPLETE calendar months (excludes current partial month).
 // Always returns exactly N months, filling months with no data as $0.
-router.get('/cashflow', (req: Request, res: Response) => {
+router.get('/cashflow', async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
     const period = (req.query.period as string) || '6m';
@@ -178,9 +150,7 @@ router.get('/cashflow', (req: Request, res: Response) => {
 
     // Get Transfer category to exclude from expenses (internal moves, not real expenses)
     // CC PMT is a real expense — it represents paying off credit card debt
-    const transferCat = db.prepare(
-      `SELECT id FROM categories WHERE user_id = ? AND LOWER(name) = 'transfer'`
-    ).get(userId) as any;
+    const transferCat = await db.get(`SELECT id FROM categories WHERE user_id = ? AND LOWER(name) = 'transfer'`, userId) as any;
     const cfExpExcludeIds = [transferCat?.id].filter(Boolean);
     const cfExpExcludeClause = cfExpExcludeIds.length > 0
       ? `AND (category_id IS NULL OR category_id NOT IN (${cfExpExcludeIds.map(() => '?').join(', ')}))`
@@ -191,19 +161,15 @@ router.get('/cashflow', (req: Request, res: Response) => {
     const now = new Date();
     const currentMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 
-    let recentDataMonths = db.prepare(
-      `SELECT DISTINCT substr(date, 1, 7) as ym FROM transactions
+    let recentDataMonths = await db.all(`SELECT DISTINCT substr(date, 1, 7) as ym FROM transactions
        WHERE user_id = ? AND substr(date, 1, 7) < ?
        ORDER BY ym DESC
-       LIMIT ?`
-    ).all(userId, currentMonthKey, months + 1) as { ym: string }[];
+       LIMIT ?`, userId, currentMonthKey, months + 1) as { ym: string }[];
 
     // Drop the oldest month if it's partial (first transaction after day 10)
     if (recentDataMonths.length > 0) {
       const oldestCandidate = recentDataMonths[recentDataMonths.length - 1].ym;
-      const minDateResult = db.prepare(
-        `SELECT MIN(date) as minDate FROM transactions WHERE user_id = ? AND substr(date, 1, 7) = ?`
-      ).get(userId, oldestCandidate) as any;
+      const minDateResult = await db.get(`SELECT MIN(date) as minDate FROM transactions WHERE user_id = ? AND substr(date, 1, 7) = ?`, userId, oldestCandidate) as any;
       if (minDateResult?.minDate) {
         const day = parseInt(minDateResult.minDate.substring(8, 10));
         if (day > 10) {
@@ -232,19 +198,15 @@ router.get('/cashflow', (req: Request, res: Response) => {
 
     // Income: ALL positive amounts (no exclusions)
     // Expenses: exclude Transfer only (internal account moves)
-    const incomeRows = db.prepare(
-      `SELECT substr(date, 1, 7) as month, SUM(amount) as income
+    const incomeRows = await db.all(`SELECT substr(date, 1, 7) as month, SUM(amount) as income
        FROM transactions
        WHERE user_id = ? AND amount > 0 AND date >= ? AND date <= ?
-       GROUP BY substr(date, 1, 7)`
-    ).all(userId, startStr, endStr) as any[];
+       GROUP BY substr(date, 1, 7)`, userId, startStr, endStr) as any[];
 
-    const expenseRows = db.prepare(
-      `SELECT substr(date, 1, 7) as month, SUM(ABS(amount)) as expenses
+    const expenseRows = await db.all(`SELECT substr(date, 1, 7) as month, SUM(ABS(amount)) as expenses
        FROM transactions
        WHERE user_id = ? AND amount < 0 AND date >= ? AND date <= ? ${cfExpExcludeClause}
-       GROUP BY substr(date, 1, 7)`
-    ).all(userId, startStr, endStr, ...cfExpExcludeIds) as any[];
+       GROUP BY substr(date, 1, 7)`, userId, startStr, endStr, ...cfExpExcludeIds) as any[];
 
     // Merge income and expense rows by month
     const monthMap = new Map<string, { income: number; expenses: number }>();
@@ -282,13 +244,9 @@ router.get('/cashflow', (req: Request, res: Response) => {
 });
 
 // GET /networth-history - return net_worth_snapshots
-router.get('/networth-history', (req: Request, res: Response) => {
+router.get('/networth-history', async (req: Request, res: Response) => {
   try {
-    const snapshots = db
-      .prepare(
-        'SELECT * FROM net_worth_snapshots WHERE user_id = ? ORDER BY date ASC'
-      )
-      .all(req.user!.id)
+    const snapshots = (await db.all('SELECT * FROM net_worth_snapshots WHERE user_id = ? ORDER BY date ASC', req.user!.id))
       .map((s: any) => ({
         ...s,
         breakdown: JSON.parse(s.breakdown || '{}'),
@@ -302,7 +260,7 @@ router.get('/networth-history', (req: Request, res: Response) => {
 });
 
 // GET /summary - comprehensive financial summary for reports page
-router.get('/summary', (req: Request, res: Response) => {
+router.get('/summary', async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
     const month = (req.query.month as string) || new Date().toISOString().substring(0, 7);
@@ -312,19 +270,15 @@ router.get('/summary', (req: Request, res: Response) => {
     const monthEnd = `${year}-${String(mon).padStart(2, '0')}-${String(endOfMonth.getDate()).padStart(2, '0')}`;
 
     // Income and expenses
-    const incomeResult = db.prepare(
-      `SELECT COALESCE(SUM(amount), 0) as total FROM transactions WHERE user_id = ? AND amount > 0 AND date >= ? AND date <= ?`
-    ).get(userId, monthStart, monthEnd) as any;
+    const incomeResult = await db.get(`SELECT COALESCE(SUM(amount), 0) as total FROM transactions WHERE user_id = ? AND amount > 0 AND date >= ? AND date <= ?`, userId, monthStart, monthEnd) as any;
 
-    const expenseResult = db.prepare(
-      `SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions WHERE user_id = ? AND amount < 0 AND date >= ? AND date <= ?`
-    ).get(userId, monthStart, monthEnd) as any;
+    const expenseResult = await db.get(`SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions WHERE user_id = ? AND amount < 0 AND date >= ? AND date <= ?`, userId, monthStart, monthEnd) as any;
 
     const income = Math.round(incomeResult.total * 100) / 100;
     const expenses = Math.round(expenseResult.total * 100) / 100;
 
     // Category breakdown (expenses)
-    const expenseCategories = db.prepare(`
+    const expenseCategories = await db.all(`
       SELECT c.id, c.name, c.icon, c.color,
         COALESCE(SUM(ABS(t.amount)), 0) as total,
         COUNT(t.id) as count
@@ -332,10 +286,10 @@ router.get('/summary', (req: Request, res: Response) => {
       JOIN categories c ON t.category_id = c.id
       WHERE t.user_id = ? AND t.amount < 0 AND t.date >= ? AND t.date <= ?
       GROUP BY c.id ORDER BY total DESC
-    `).all(userId, monthStart, monthEnd) as any[];
+    `, userId, monthStart, monthEnd) as any[];
 
     // Category breakdown (income)
-    const incomeCategories = db.prepare(`
+    const incomeCategories = await db.all(`
       SELECT c.id, c.name, c.icon, c.color,
         COALESCE(SUM(t.amount), 0) as total,
         COUNT(t.id) as count
@@ -343,20 +297,16 @@ router.get('/summary', (req: Request, res: Response) => {
       JOIN categories c ON t.category_id = c.id
       WHERE t.user_id = ? AND t.amount > 0 AND t.date >= ? AND t.date <= ?
       GROUP BY c.id ORDER BY total DESC
-    `).all(userId, monthStart, monthEnd) as any[];
+    `, userId, monthStart, monthEnd) as any[];
 
     // Account balances
-    const accounts = db.prepare(
-      'SELECT id, name, type, institution, balance, icon FROM accounts WHERE user_id = ? AND is_hidden = 0 ORDER BY type, name'
-    ).all(userId) as any[];
+    const accounts = await db.all('SELECT id, name, type, institution, balance, icon FROM accounts WHERE user_id = ? AND is_hidden = 0 ORDER BY type, name', userId) as any[];
 
     // Goals progress
-    const goals = db.prepare(
-      'SELECT id, name, target_amount, current_amount, target_date, icon, color FROM goals WHERE user_id = ? AND is_completed = 0'
-    ).all(userId) as any[];
+    const goals = await db.all('SELECT id, name, target_amount, current_amount, target_date, icon, color FROM goals WHERE user_id = ? AND is_completed = 0', userId) as any[];
 
     // Budget performance
-    const budgets = db.prepare(`
+    const budgets = await db.all(`
       SELECT b.*, c.name as category_name, c.icon as category_icon, c.color as category_color,
         (SELECT COALESCE(SUM(ABS(t.amount)), 0) FROM transactions t
          WHERE t.user_id = ? AND t.category_id = b.category_id AND t.amount < 0
@@ -364,22 +314,22 @@ router.get('/summary', (req: Request, res: Response) => {
       FROM budgets b
       LEFT JOIN categories c ON b.category_id = c.id
       WHERE b.user_id = ? AND b.month = ?
-    `).all(userId, monthStart, monthStart, userId, monthStart) as any[];
+    `, userId, monthStart, monthStart, userId, monthStart) as any[];
 
     // Daily spending trend for this month
-    const dailySpending = db.prepare(`
+    const dailySpending = await db.all(`
       SELECT date,
         SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) as income,
         SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END) as expenses
       FROM transactions
       WHERE user_id = ? AND date >= ? AND date <= ?
       GROUP BY date ORDER BY date ASC
-    `).all(userId, monthStart, monthEnd) as any[];
+    `, userId, monthStart, monthEnd) as any[];
 
     // Last 6 months trend
     const sixMonthsAgo = new Date(year, mon - 7, 1);
     const trendStart = `${sixMonthsAgo.getFullYear()}-${String(sixMonthsAgo.getMonth() + 1).padStart(2, '0')}-01`;
-    const monthlyTrend = db.prepare(`
+    const monthlyTrend = await db.all(`
       SELECT substr(date, 1, 7) as month,
         SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) as income,
         SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END) as expenses
@@ -387,21 +337,19 @@ router.get('/summary', (req: Request, res: Response) => {
       WHERE user_id = ? AND date >= ? AND date <= ?
       GROUP BY substr(date, 1, 7)
       ORDER BY month ASC
-    `).all(userId, trendStart, monthEnd) as any[];
+    `, userId, trendStart, monthEnd) as any[];
 
     // Top merchants
-    const topMerchants = db.prepare(`
+    const topMerchants = await db.all(`
       SELECT name, COUNT(*) as count, SUM(ABS(amount)) as total
       FROM transactions
       WHERE user_id = ? AND amount < 0 AND date >= ? AND date <= ?
       GROUP BY LOWER(TRIM(name))
       ORDER BY total DESC LIMIT 10
-    `).all(userId, monthStart, monthEnd) as any[];
+    `, userId, monthStart, monthEnd) as any[];
 
     // Transaction count
-    const txCount = (db.prepare(
-      'SELECT COUNT(*) as count FROM transactions WHERE user_id = ? AND date >= ? AND date <= ?'
-    ).get(userId, monthStart, monthEnd) as any).count;
+    const txCount = (await db.get('SELECT COUNT(*) as count FROM transactions WHERE user_id = ? AND date >= ? AND date <= ?', userId, monthStart, monthEnd) as any).count;
 
     res.json({
       month,
@@ -431,7 +379,7 @@ router.get('/summary', (req: Request, res: Response) => {
 });
 
 // GET /dashboard-summary - comprehensive data for improved dashboard
-router.get('/dashboard-summary', (req: Request, res: Response) => {
+router.get('/dashboard-summary', async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
     const month = (req.query.month as string) || new Date().toISOString().substring(0, 7);
@@ -442,14 +390,10 @@ router.get('/dashboard-summary', (req: Request, res: Response) => {
 
     // Get Transfer category — excluded from expenses (internal account moves, not real expenses)
     // CC PMT is a real expense — it represents paying off credit card debt, so it counts.
-    const transferCategory = db.prepare(
-      `SELECT id FROM categories WHERE user_id = ? AND LOWER(name) = 'transfer'`
-    ).get(userId) as any;
+    const transferCategory = await db.get(`SELECT id FROM categories WHERE user_id = ? AND LOWER(name) = 'transfer'`, userId) as any;
     const transferCategoryId = transferCategory?.id;
 
-    const ccPmtCategory = db.prepare(
-      `SELECT id FROM categories WHERE user_id = ? AND LOWER(name) = 'cc pmt'`
-    ).get(userId) as any;
+    const ccPmtCategory = await db.get(`SELECT id FROM categories WHERE user_id = ? AND LOWER(name) = 'cc pmt'`, userId) as any;
     const ccPmtCategoryId = ccPmtCategory?.id;
 
     // Only exclude Transfer from expenses — CC PMT is a real expense
@@ -461,17 +405,13 @@ router.get('/dashboard-summary', (req: Request, res: Response) => {
     };
 
     // Income: ALL positive amounts, no exclusions
-    const incomeResult = db.prepare(
-      `SELECT COALESCE(SUM(amount), 0) as total FROM transactions
-       WHERE user_id = ? AND amount > 0 AND date >= ? AND date <= ?`
-    ).get(userId, monthStart, monthEnd) as any;
+    const incomeResult = await db.get(`SELECT COALESCE(SUM(amount), 0) as total FROM transactions
+       WHERE user_id = ? AND amount > 0 AND date >= ? AND date <= ?`, userId, monthStart, monthEnd) as any;
 
     // Expenses: exclude Transfer only (internal account moves)
     const expenseExcludeParams = [userId, monthStart, monthEnd, ...expenseExcludeIds];
-    const expenseResult = db.prepare(
-      `SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
-       WHERE user_id = ? AND amount < 0 AND date >= ? AND date <= ? ${buildExpenseExcludeClause()}`
-    ).get(...expenseExcludeParams) as any;
+    const expenseResult = await db.get(`SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
+       WHERE user_id = ? AND amount < 0 AND date >= ? AND date <= ? ${buildExpenseExcludeClause()}`, ...expenseExcludeParams) as any;
 
     const income = Math.round(incomeResult.total * 100) / 100;
     const expenses = Math.round(expenseResult.total * 100) / 100;
@@ -483,60 +423,48 @@ router.get('/dashboard-summary', (req: Request, res: Response) => {
     const overspendAmount = isOverspending ? Math.round((expenses - income) * 100) / 100 : 0;
 
     // Credit cards (accounts where type = 'credit')
-    const creditCards = db.prepare(
-      `SELECT id, name, balance, institution, icon FROM accounts
+    const creditCards = await db.all(`SELECT id, name, balance, institution, icon FROM accounts
        WHERE user_id = ? AND type = 'credit' AND is_hidden = 0
-       ORDER BY name`
-    ).all(userId) as any[];
+       ORDER BY name`, userId) as any[];
 
     // CC debt should be a positive number representing how much is owed.
     // Credit card balances are stored as negative values in the DB.
     const totalCCDebt = creditCards.reduce((sum, cc) => sum + Math.abs(cc.balance || 0), 0);
 
     // CC spending this month (charges on CC accounts)
-    const ccSpendingResult = db.prepare(
-      `SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
+    const ccSpendingResult = await db.get(`SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
        WHERE user_id = ? AND account_id IN (
          SELECT id FROM accounts WHERE user_id = ? AND type = 'credit'
-       ) AND amount < 0 AND date >= ? AND date <= ?`
-    ).get(userId, userId, monthStart, monthEnd) as any;
+       ) AND amount < 0 AND date >= ? AND date <= ?`, userId, userId, monthStart, monthEnd) as any;
     const ccSpendingThisMonth = Math.round(ccSpendingResult.total * 100) / 100;
 
     // CC interest/fees (transactions on CC accounts with names matching patterns)
-    const ccInterestFeesResult = db.prepare(
-      `SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
+    const ccInterestFeesResult = await db.get(`SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
        WHERE user_id = ? AND account_id IN (
          SELECT id FROM accounts WHERE user_id = ? AND type = 'credit'
        ) AND amount < 0 AND date >= ? AND date <= ?
        AND (LOWER(name) LIKE '%interest%' OR LOWER(name) LIKE '%finance charge%'
             OR LOWER(name) LIKE '%late fee%' OR LOWER(name) LIKE '%annual fee%'
-            OR LOWER(name) LIKE '%penalty%')`
-    ).get(userId, userId, monthStart, monthEnd) as any;
+            OR LOWER(name) LIKE '%penalty%')`, userId, userId, monthStart, monthEnd) as any;
     const ccInterestFees = Math.round(ccInterestFeesResult.total * 100) / 100;
 
     // Transfers in/out
     let transfersInResult = { total: 0 };
     let transfersOutResult = { total: 0 };
     if (transferCategoryId) {
-      transfersInResult = db.prepare(
-        `SELECT COALESCE(SUM(amount), 0) as total FROM transactions
-         WHERE user_id = ? AND category_id = ? AND amount > 0 AND date >= ? AND date <= ?`
-      ).get(userId, transferCategoryId, monthStart, monthEnd) as any;
+      transfersInResult = await db.get(`SELECT COALESCE(SUM(amount), 0) as total FROM transactions
+         WHERE user_id = ? AND category_id = ? AND amount > 0 AND date >= ? AND date <= ?`, userId, transferCategoryId, monthStart, monthEnd) as any;
 
-      transfersOutResult = db.prepare(
-        `SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
-         WHERE user_id = ? AND category_id = ? AND amount < 0 AND date >= ? AND date <= ?`
-      ).get(userId, transferCategoryId, monthStart, monthEnd) as any;
+      transfersOutResult = await db.get(`SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
+         WHERE user_id = ? AND category_id = ? AND amount < 0 AND date >= ? AND date <= ?`, userId, transferCategoryId, monthStart, monthEnd) as any;
     }
     const transfersIn = Math.round(transfersInResult.total * 100) / 100;
     const transfersOut = Math.round(transfersOutResult.total * 100) / 100;
 
     // Cash accounts (checking, savings, etc.)
-    const cashAccounts = db.prepare(
-      `SELECT id, name, balance, type FROM accounts
+    const cashAccounts = await db.all(`SELECT id, name, balance, type FROM accounts
        WHERE user_id = ? AND type IN ('checking', 'savings') AND is_hidden = 0
-       ORDER BY name`
-    ).all(userId) as any[];
+       ORDER BY name`, userId) as any[];
 
     const totalCash = cashAccounts.reduce((sum, acc) => sum + (acc.balance || 0), 0);
 
@@ -545,8 +473,7 @@ router.get('/dashboard-summary', (req: Request, res: Response) => {
     const topExpenseExcludeClause = topExpenseExcludeIds.length > 0
       ? `AND c.id NOT IN (${topExpenseExcludeIds.map(() => '?').join(', ')})`
       : 'AND 1=1';
-    const topExpenses = db.prepare(
-      `SELECT c.id, c.name, c.icon, c.color,
+    const topExpenses = await db.all(`SELECT c.id, c.name, c.icon, c.color,
               COALESCE(SUM(ABS(t.amount)), 0) as total,
               COUNT(t.id) as transaction_count
        FROM transactions t
@@ -556,12 +483,10 @@ router.get('/dashboard-summary', (req: Request, res: Response) => {
              ${topExpenseExcludeClause}
        GROUP BY c.id
        ORDER BY CASE WHEN LOWER(c.name) = 'uncategorized' THEN 1 ELSE 0 END ASC, total DESC
-       LIMIT 10`
-    ).all(userId, monthStart, monthEnd, ...topExpenseExcludeIds) as any[];
+       LIMIT 10`, userId, monthStart, monthEnd, ...topExpenseExcludeIds) as any[];
 
     // Top income categories (this month)
-    const topIncome = db.prepare(
-      `SELECT c.id, c.name, c.icon, c.color,
+    const topIncome = await db.all(`SELECT c.id, c.name, c.icon, c.color,
               COALESCE(SUM(t.amount), 0) as total,
               COUNT(t.id) as transaction_count
        FROM transactions t
@@ -569,26 +494,21 @@ router.get('/dashboard-summary', (req: Request, res: Response) => {
        WHERE t.user_id = ? AND t.amount > 0 AND t.date >= ? AND t.date <= ?
        GROUP BY c.id
        ORDER BY total DESC
-       LIMIT 10`
-    ).all(userId, monthStart, monthEnd) as any[];
+       LIMIT 10`, userId, monthStart, monthEnd) as any[];
 
     // Uncategorized transactions
-    const uncategorizedResult = db.prepare(
-      `SELECT COUNT(*) as count, COALESCE(SUM(ABS(amount)), 0) as total
+    const uncategorizedResult = await db.get(`SELECT COUNT(*) as count, COALESCE(SUM(ABS(amount)), 0) as total
        FROM transactions
        WHERE user_id = ? AND date >= ? AND date <= ?
              AND (category_id IS NULL OR category_id IN (
                SELECT id FROM categories WHERE user_id = ? AND LOWER(name) LIKE '%uncategorized%'
-             ))`
-    ).get(userId, monthStart, monthEnd, userId) as any;
+             ))`, userId, monthStart, monthEnd, userId) as any;
 
     const uncategorizedCount = uncategorizedResult.count || 0;
     const uncategorizedTotal = Math.round(uncategorizedResult.total * 100) / 100;
 
     // Investment portfolio value
-    const investments = db.prepare(
-      `SELECT shares, current_price FROM investments WHERE user_id = ?`
-    ).all(userId) as any[];
+    const investments = await db.all(`SELECT shares, current_price FROM investments WHERE user_id = ?`, userId) as any[];
 
     const investmentPortfolioValue = investments.reduce(
       (sum: number, inv: any) => sum + (inv.shares * inv.current_price), 0
@@ -609,19 +529,15 @@ router.get('/dashboard-summary', (req: Request, res: Response) => {
 
     // Find distinct months with data, excluding the current (partial) month, most recent first
     // Fetch 7 so we can drop a partial first month and still have up to 6
-    let recentMonths = db.prepare(
-      `SELECT DISTINCT substr(date, 1, 7) as ym FROM transactions
+    let recentMonths = await db.all(`SELECT DISTINCT substr(date, 1, 7) as ym FROM transactions
        WHERE user_id = ? AND substr(date, 1, 7) < ?
        ORDER BY ym DESC
-       LIMIT 7`
-    ).all(userId, currentYM) as { ym: string }[];
+       LIMIT 7`, userId, currentYM) as { ym: string }[];
 
     // Drop the oldest month if it's partial (first transaction after day 10)
     if (recentMonths.length > 0) {
       const oldestCandidate = recentMonths[recentMonths.length - 1].ym;
-      const minDateResult = db.prepare(
-        `SELECT MIN(date) as minDate FROM transactions WHERE user_id = ? AND substr(date, 1, 7) = ?`
-      ).get(userId, oldestCandidate) as any;
+      const minDateResult = await db.get(`SELECT MIN(date) as minDate FROM transactions WHERE user_id = ? AND substr(date, 1, 7) = ?`, userId, oldestCandidate) as any;
       if (minDateResult?.minDate) {
         const day = parseInt(minDateResult.minDate.substring(8, 10));
         if (day > 10) {
@@ -651,17 +567,13 @@ router.get('/dashboard-summary', (req: Request, res: Response) => {
     }
 
     // 6-month income: ALL positive amounts, no exclusions
-    const avgIncomeResult = db.prepare(
-      `SELECT COALESCE(SUM(amount), 0) as total FROM transactions
-       WHERE user_id = ? AND amount > 0 AND date >= ? AND date <= ?`
-    ).get(userId, sixMonthStart, sixMonthEnd) as any;
+    const avgIncomeResult = await db.get(`SELECT COALESCE(SUM(amount), 0) as total FROM transactions
+       WHERE user_id = ? AND amount > 0 AND date >= ? AND date <= ?`, userId, sixMonthStart, sixMonthEnd) as any;
 
     // 6-month expenses: exclude Transfer only
     const sixMoExpenseParams = [userId, sixMonthStart, sixMonthEnd, ...expenseExcludeIds];
-    const avgExpenseResult = db.prepare(
-      `SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
-       WHERE user_id = ? AND amount < 0 AND date >= ? AND date <= ? ${buildExpenseExcludeClause()}`
-    ).get(...sixMoExpenseParams) as any;
+    const avgExpenseResult = await db.get(`SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
+       WHERE user_id = ? AND amount < 0 AND date >= ? AND date <= ? ${buildExpenseExcludeClause()}`, ...sixMoExpenseParams) as any;
 
     const avgMonthlyIncome = Math.round((avgIncomeResult.total / monthCount) * 100) / 100;
     const avgMonthlyExpenses = Math.round((avgExpenseResult.total / monthCount) * 100) / 100;
@@ -681,17 +593,13 @@ router.get('/dashboard-summary', (req: Request, res: Response) => {
       const lmLastDay = new Date(ly, lm, 0).getDate();
       const lmEnd = `${lastYM}-${String(lmLastDay).padStart(2, '0')}`;
       // Last month income: ALL positive amounts, no exclusions
-      const lmIncomeResult = db.prepare(
-        `SELECT COALESCE(SUM(amount), 0) as total FROM transactions
-         WHERE user_id = ? AND amount > 0 AND date >= ? AND date <= ?`
-      ).get(userId, lmStart, lmEnd) as any;
+      const lmIncomeResult = await db.get(`SELECT COALESCE(SUM(amount), 0) as total FROM transactions
+         WHERE user_id = ? AND amount > 0 AND date >= ? AND date <= ?`, userId, lmStart, lmEnd) as any;
 
       // Last month expenses: exclude Transfer only
       const lmExpenseParams = [userId, lmStart, lmEnd, ...expenseExcludeIds];
-      const lmExpenseResult = db.prepare(
-        `SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
-         WHERE user_id = ? AND amount < 0 AND date >= ? AND date <= ? ${buildExpenseExcludeClause()}`
-      ).get(...lmExpenseParams) as any;
+      const lmExpenseResult = await db.get(`SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
+         WHERE user_id = ? AND amount < 0 AND date >= ? AND date <= ? ${buildExpenseExcludeClause()}`, ...lmExpenseParams) as any;
 
       lastMonthIncome = Math.round(lmIncomeResult.total * 100) / 100;
       lastMonthExpenses = Math.round(lmExpenseResult.total * 100) / 100;
@@ -703,8 +611,7 @@ router.get('/dashboard-summary', (req: Request, res: Response) => {
     const topExpense6MoExcludeClause = topExpense6MoExcludeIds.length > 0
       ? `AND c.id NOT IN (${topExpense6MoExcludeIds.map(() => '?').join(', ')})`
       : 'AND 1=1';
-    const topExpenses6Mo = db.prepare(
-      `SELECT c.id, c.name, c.icon, c.color,
+    const topExpenses6Mo = await db.all(`SELECT c.id, c.name, c.icon, c.color,
               COALESCE(SUM(ABS(t.amount)), 0) as total,
               COUNT(t.id) as transaction_count,
               COUNT(DISTINCT substr(t.date, 1, 7)) as months_with_data
@@ -715,12 +622,10 @@ router.get('/dashboard-summary', (req: Request, res: Response) => {
              ${topExpense6MoExcludeClause}
        GROUP BY c.id
        ORDER BY CASE WHEN LOWER(c.name) = 'uncategorized' THEN 1 ELSE 0 END ASC, total DESC
-       LIMIT 10`
-    ).all(userId, sixMonthStart, sixMonthEnd, ...topExpense6MoExcludeIds) as any[];
+       LIMIT 10`, userId, sixMonthStart, sixMonthEnd, ...topExpense6MoExcludeIds) as any[];
 
     // Top income categories (6-month average)
-    const topIncome6Mo = db.prepare(
-      `SELECT c.id, c.name, c.icon, c.color,
+    const topIncome6Mo = await db.all(`SELECT c.id, c.name, c.icon, c.color,
               COALESCE(SUM(t.amount), 0) as total,
               COUNT(t.id) as transaction_count,
               COUNT(DISTINCT substr(t.date, 1, 7)) as months_with_data
@@ -729,8 +634,7 @@ router.get('/dashboard-summary', (req: Request, res: Response) => {
        WHERE t.user_id = ? AND t.amount > 0 AND t.date >= ? AND t.date <= ?
        GROUP BY c.id
        ORDER BY total DESC
-       LIMIT 10`
-    ).all(userId, sixMonthStart, sixMonthEnd) as any[];
+       LIMIT 10`, userId, sixMonthStart, sixMonthEnd) as any[];
 
     res.json({
       income,

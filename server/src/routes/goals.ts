@@ -13,13 +13,9 @@ interface GoalRecommendation {
 }
 
 // GET / - list goals
-router.get('/', (req: Request, res: Response) => {
+router.get('/', async (req: Request, res: Response) => {
   try {
-    const goals = db
-      .prepare(
-        'SELECT * FROM goals WHERE user_id = ? ORDER BY is_completed ASC, target_date ASC'
-      )
-      .all(req.user!.id);
+    const goals = await db.all('SELECT * FROM goals WHERE user_id = ? ORDER BY is_completed ASC, target_date ASC', req.user!.id);
 
     res.json(goals);
   } catch (error) {
@@ -29,7 +25,7 @@ router.get('/', (req: Request, res: Response) => {
 });
 
 // POST / - create goal
-router.post('/', (req: Request, res: Response) => {
+router.post('/', async (req: Request, res: Response) => {
   try {
     const { name, target_amount, current_amount, target_date, icon, color } =
       req.body;
@@ -42,23 +38,10 @@ router.post('/', (req: Request, res: Response) => {
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
 
-    db.prepare(
-      `INSERT INTO goals (id, user_id, name, target_amount, current_amount, target_date, icon, color, is_completed, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`
-    ).run(
-      id,
-      req.user!.id,
-      name,
-      target_amount,
-      current_amount ?? 0,
-      target_date || null,
-      icon || null,
-      color || null,
-      now,
-      now
-    );
+    await db.run(`INSERT INTO goals (id, user_id, name, target_amount, current_amount, target_date, icon, color, is_completed, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`, id, req.user!.id, name, target_amount, current_amount ?? 0, target_date || null, icon || null, color || null, now, now);
 
-    const goal = db.prepare('SELECT * FROM goals WHERE id = ?').get(id);
+    const goal = await db.get('SELECT * FROM goals WHERE id = ?', id);
     res.status(201).json({ goal });
   } catch (error) {
     console.error('Create goal error:', error);
@@ -67,13 +50,11 @@ router.post('/', (req: Request, res: Response) => {
 });
 
 // PUT /:id - update goal
-router.put('/:id', (req: Request, res: Response) => {
+router.put('/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
 
-    const existing = db
-      .prepare('SELECT * FROM goals WHERE id = ? AND user_id = ?')
-      .get(id, req.user!.id);
+    const existing = await db.get('SELECT * FROM goals WHERE id = ? AND user_id = ?', id, req.user!.id);
 
     if (!existing) {
       res.status(404).json({ error: 'Goal not found' });
@@ -91,8 +72,7 @@ router.put('/:id', (req: Request, res: Response) => {
     } = req.body;
     const now = new Date().toISOString();
 
-    db.prepare(
-      `UPDATE goals SET
+    await db.run(`UPDATE goals SET
         name = COALESCE(?, name),
         target_amount = COALESCE(?, target_amount),
         current_amount = COALESCE(?, current_amount),
@@ -101,21 +81,9 @@ router.put('/:id', (req: Request, res: Response) => {
         color = COALESCE(?, color),
         is_completed = COALESCE(?, is_completed),
         updated_at = ?
-       WHERE id = ? AND user_id = ?`
-    ).run(
-      name ?? null,
-      target_amount !== undefined ? target_amount : null,
-      current_amount !== undefined ? current_amount : null,
-      target_date !== undefined ? target_date : null,
-      icon !== undefined ? icon : null,
-      color !== undefined ? color : null,
-      is_completed !== undefined ? (is_completed ? 1 : 0) : null,
-      now,
-      id,
-      req.user!.id
-    );
+       WHERE id = ? AND user_id = ?`, name ?? null, target_amount !== undefined ? target_amount : null, current_amount !== undefined ? current_amount : null, target_date !== undefined ? target_date : null, icon !== undefined ? icon : null, color !== undefined ? color : null, is_completed !== undefined ? (is_completed ? 1 : 0) : null, now, id, req.user!.id);
 
-    const goal = db.prepare('SELECT * FROM goals WHERE id = ?').get(id);
+    const goal = await db.get('SELECT * FROM goals WHERE id = ?', id);
     res.json({ goal });
   } catch (error) {
     console.error('Update goal error:', error);
@@ -124,23 +92,18 @@ router.put('/:id', (req: Request, res: Response) => {
 });
 
 // DELETE /:id - delete goal
-router.delete('/:id', (req: Request, res: Response) => {
+router.delete('/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
 
-    const existing = db
-      .prepare('SELECT * FROM goals WHERE id = ? AND user_id = ?')
-      .get(id, req.user!.id);
+    const existing = await db.get('SELECT * FROM goals WHERE id = ? AND user_id = ?', id, req.user!.id);
 
     if (!existing) {
       res.status(404).json({ error: 'Goal not found' });
       return;
     }
 
-    db.prepare('DELETE FROM goals WHERE id = ? AND user_id = ?').run(
-      id,
-      req.user!.id
-    );
+    await db.run('DELETE FROM goals WHERE id = ? AND user_id = ?', id, req.user!.id);
 
     res.json({ message: 'Goal deleted successfully' });
   } catch (error) {
@@ -150,7 +113,7 @@ router.delete('/:id', (req: Request, res: Response) => {
 });
 
 // POST /:id/contribute - add to current_amount
-router.post('/:id/contribute', (req: Request, res: Response) => {
+router.post('/:id/contribute', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const { amount } = req.body;
@@ -160,9 +123,7 @@ router.post('/:id/contribute', (req: Request, res: Response) => {
       return;
     }
 
-    const existing = db
-      .prepare('SELECT * FROM goals WHERE id = ? AND user_id = ?')
-      .get(id, req.user!.id) as any;
+    const existing = await db.get('SELECT * FROM goals WHERE id = ? AND user_id = ?', id, req.user!.id) as any;
 
     if (!existing) {
       res.status(404).json({ error: 'Goal not found' });
@@ -173,11 +134,9 @@ router.post('/:id/contribute', (req: Request, res: Response) => {
     const newAmount = existing.current_amount + amount;
     const isCompleted = newAmount >= existing.target_amount ? 1 : 0;
 
-    db.prepare(
-      'UPDATE goals SET current_amount = ?, is_completed = ?, updated_at = ? WHERE id = ? AND user_id = ?'
-    ).run(newAmount, isCompleted, now, id, req.user!.id);
+    await db.run('UPDATE goals SET current_amount = ?, is_completed = ?, updated_at = ? WHERE id = ? AND user_id = ?', newAmount, isCompleted, now, id, req.user!.id);
 
-    const goal = db.prepare('SELECT * FROM goals WHERE id = ?').get(id);
+    const goal = await db.get('SELECT * FROM goals WHERE id = ?', id);
     res.json({ goal });
   } catch (error) {
     console.error('Contribute to goal error:', error);
@@ -186,7 +145,7 @@ router.post('/:id/contribute', (req: Request, res: Response) => {
 });
 
 // GET /recommendations - Get smart goal recommendations based on spending patterns
-router.get('/recommendations', (req: Request, res: Response) => {
+router.get('/recommendations', async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
     const recommendations: GoalRecommendation[] = [];
@@ -195,8 +154,7 @@ router.get('/recommendations', (req: Request, res: Response) => {
     const threeMonthsAgo = subMonths(new Date(), 3).toISOString();
 
     // 1. Get top 5 expense categories over last 3 months
-    const topCategories = db
-      .prepare(`
+    const topCategories = await db.all(`
         SELECT
           c.id, c.name, c.icon, c.color,
           SUM(ABS(t.amount)) as total,
@@ -207,36 +165,29 @@ router.get('/recommendations', (req: Request, res: Response) => {
         GROUP BY c.id
         ORDER BY total DESC
         LIMIT 5
-      `)
-      .all(userId, threeMonthsAgo) as any[];
+      `, userId, threeMonthsAgo) as any[];
 
     // 2. Get recurring expenses
-    const recurringExpenses = db
-      .prepare(`
+    const recurringExpenses = await db.get(`
         SELECT SUM(amount) as total_recurring, COUNT(*) as count
         FROM recurring_expenses
         WHERE user_id = ? AND is_active = 1
-      `)
-      .get(userId) as any;
+      `, userId) as any;
 
     // 3. Get accounts for debt and investment detection
-    const accounts = db
-      .prepare('SELECT * FROM accounts WHERE user_id = ?')
-      .all(userId) as any[];
+    const accounts = await db.all('SELECT * FROM accounts WHERE user_id = ?', userId) as any[];
 
     // 4. Calculate monthly income and expenses
     const now = new Date();
     const currentMonth = now.toISOString().substring(0, 7);
 
-    const monthlyStats = db
-      .prepare(`
+    const monthlyStats = await db.get(`
         SELECT
           SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) as income,
           SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END) as expenses
         FROM transactions
         WHERE user_id = ? AND date LIKE ?
-      `)
-      .get(userId, currentMonth + '%') as any;
+      `, userId, currentMonth + '%') as any;
 
     const monthlyIncome = monthlyStats?.income || 0;
     const monthlyExpenses = monthlyStats?.expenses || 0;

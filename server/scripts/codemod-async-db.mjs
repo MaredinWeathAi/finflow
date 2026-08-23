@@ -24,6 +24,9 @@ function makeEnclosingAsync(node) {
       if (!cur.isAsync?.()) { cur.setIsAsync(true); asyncified++; }
       return true;
     }
+    // Reaching the SourceFile means top-level code. package.json sets
+    // "type": "module", so top-level await is legal there.
+    if (Node.isSourceFile(cur)) return true;
     cur = cur.getParent();
   }
   return false;
@@ -69,10 +72,21 @@ for (const sf of project.getSourceFiles('src/**/*.ts')) {
     const ok = makeEnclosingAsync(call);
     if (!ok) { skipped.push(`${sf.getBaseName()}:${call.getStartLineNumber()} not inside an async-able function`); continue; }
 
-    // Wrap in `await`, unless an `await` already sits directly in front.
+    // Wrap in `await`. If the result is immediately chained (`.map(...)`,
+    // `.count`, `?.foo`) or indexed, the await must be parenthesised or it
+    // binds to the whole chain: `await x.all(..).map()` is `await (x.all().map())`.
     const parent = call.getParent();
     const alreadyAwaited = Node.isAwaitExpression(parent);
-    call.replaceWithText(alreadyAwaited ? replacement : `await ${replacement}`);
+    const needsParens =
+      Node.isPropertyAccessExpression(parent) ||
+      Node.isElementAccessExpression(parent) ||
+      Node.isNonNullExpression(parent) ||
+      Node.isAsExpression(parent) && Node.isPropertyAccessExpression(parent.getParent());
+
+    const text = alreadyAwaited
+      ? replacement
+      : (needsParens ? `(await ${replacement})` : `await ${replacement}`);
+    call.replaceWithText(text);
     rewritten++; changed = true;
   }
 

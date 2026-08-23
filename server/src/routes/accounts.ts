@@ -4,11 +4,9 @@ import { db } from '../db/database.js';
 const router = Router();
 
 // GET / - list all accounts for user
-router.get('/', (req: Request, res: Response) => {
+router.get('/', async (req: Request, res: Response) => {
   try {
-    const accounts = db
-      .prepare('SELECT * FROM accounts WHERE user_id = ? ORDER BY created_at DESC')
-      .all(req.user!.id);
+    const accounts = await db.all('SELECT * FROM accounts WHERE user_id = ? ORDER BY created_at DESC', req.user!.id);
 
     res.json(accounts);
   } catch (error) {
@@ -18,7 +16,7 @@ router.get('/', (req: Request, res: Response) => {
 });
 
 // POST / - create account
-router.post('/', (req: Request, res: Response) => {
+router.post('/', async (req: Request, res: Response) => {
   try {
     const { name, type, institution, balance, last_four, icon, is_hidden } = req.body;
 
@@ -30,24 +28,10 @@ router.post('/', (req: Request, res: Response) => {
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
 
-    db.prepare(
-      `INSERT INTO accounts (id, user_id, name, type, institution, balance, last_four, icon, is_hidden, source, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?)`
-    ).run(
-      id,
-      req.user!.id,
-      name,
-      type,
-      institution || null,
-      balance ?? 0,
-      last_four || null,
-      icon || null,
-      is_hidden ? 1 : 0,
-      now,
-      now
-    );
+    await db.run(`INSERT INTO accounts (id, user_id, name, type, institution, balance, last_four, icon, is_hidden, source, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?)`, id, req.user!.id, name, type, institution || null, balance ?? 0, last_four || null, icon || null, is_hidden ? 1 : 0, now, now);
 
-    const account = db.prepare('SELECT * FROM accounts WHERE id = ?').get(id);
+    const account = await db.get('SELECT * FROM accounts WHERE id = ?', id);
     res.status(201).json({ account });
   } catch (error) {
     console.error('Create account error:', error);
@@ -56,12 +40,10 @@ router.post('/', (req: Request, res: Response) => {
 });
 
 // PUT /:id - update account
-router.put('/:id', (req: Request, res: Response) => {
+router.put('/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const existing = db
-      .prepare('SELECT * FROM accounts WHERE id = ? AND user_id = ?')
-      .get(id, req.user!.id) as any;
+    const existing = await db.get('SELECT * FROM accounts WHERE id = ? AND user_id = ?', id, req.user!.id) as any;
 
     if (!existing) {
       res.status(404).json({ error: 'Account not found' });
@@ -71,8 +53,7 @@ router.put('/:id', (req: Request, res: Response) => {
     const { name, type, institution, balance, last_four, icon, is_hidden } = req.body;
     const now = new Date().toISOString();
 
-    db.prepare(
-      `UPDATE accounts SET
+    await db.run(`UPDATE accounts SET
         name = COALESCE(?, name),
         type = COALESCE(?, type),
         institution = COALESCE(?, institution),
@@ -81,21 +62,9 @@ router.put('/:id', (req: Request, res: Response) => {
         icon = COALESCE(?, icon),
         is_hidden = COALESCE(?, is_hidden),
         updated_at = ?
-       WHERE id = ? AND user_id = ?`
-    ).run(
-      name ?? null,
-      type ?? null,
-      institution !== undefined ? institution : null,
-      balance !== undefined ? balance : null,
-      last_four !== undefined ? last_four : null,
-      icon !== undefined ? icon : null,
-      is_hidden !== undefined ? (is_hidden ? 1 : 0) : null,
-      now,
-      id,
-      req.user!.id
-    );
+       WHERE id = ? AND user_id = ?`, name ?? null, type ?? null, institution !== undefined ? institution : null, balance !== undefined ? balance : null, last_four !== undefined ? last_four : null, icon !== undefined ? icon : null, is_hidden !== undefined ? (is_hidden ? 1 : 0) : null, now, id, req.user!.id);
 
-    const account = db.prepare('SELECT * FROM accounts WHERE id = ?').get(id);
+    const account = await db.get('SELECT * FROM accounts WHERE id = ?', id);
     res.json({ account });
   } catch (error) {
     console.error('Update account error:', error);
@@ -104,23 +73,18 @@ router.put('/:id', (req: Request, res: Response) => {
 });
 
 // DELETE /:id - delete account
-router.delete('/:id', (req: Request, res: Response) => {
+router.delete('/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
 
-    const existing = db
-      .prepare('SELECT * FROM accounts WHERE id = ? AND user_id = ?')
-      .get(id, req.user!.id);
+    const existing = await db.get('SELECT * FROM accounts WHERE id = ? AND user_id = ?', id, req.user!.id);
 
     if (!existing) {
       res.status(404).json({ error: 'Account not found' });
       return;
     }
 
-    db.prepare('DELETE FROM accounts WHERE id = ? AND user_id = ?').run(
-      id,
-      req.user!.id
-    );
+    await db.run('DELETE FROM accounts WHERE id = ? AND user_id = ?', id, req.user!.id);
 
     res.json({ message: 'Account deleted successfully' });
   } catch (error) {
@@ -130,28 +94,22 @@ router.delete('/:id', (req: Request, res: Response) => {
 });
 
 // GET /:id/transactions - get transactions for account
-router.get('/:id/transactions', (req: Request, res: Response) => {
+router.get('/:id/transactions', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
 
-    const account = db
-      .prepare('SELECT * FROM accounts WHERE id = ? AND user_id = ?')
-      .get(id, req.user!.id);
+    const account = await db.get('SELECT * FROM accounts WHERE id = ? AND user_id = ?', id, req.user!.id);
 
     if (!account) {
       res.status(404).json({ error: 'Account not found' });
       return;
     }
 
-    const transactions = db
-      .prepare(
-        `SELECT t.*, c.name as category_name, c.icon as category_icon, c.color as category_color
+    const transactions = (await db.all(`SELECT t.*, c.name as category_name, c.icon as category_icon, c.color as category_color
          FROM transactions t
          LEFT JOIN categories c ON t.category_id = c.id
          WHERE t.account_id = ? AND t.user_id = ?
-         ORDER BY t.date DESC`
-      )
-      .all(id, req.user!.id)
+         ORDER BY t.date DESC`, id, req.user!.id))
       .map((t: any) => ({
         ...t,
         tags: JSON.parse(t.tags || '[]'),
@@ -165,13 +123,11 @@ router.get('/:id/transactions', (req: Request, res: Response) => {
 });
 
 // GET /:id/balance-history - return balance history generated from transactions
-router.get('/:id/balance-history', (req: Request, res: Response) => {
+router.get('/:id/balance-history', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
 
-    const account = db
-      .prepare('SELECT * FROM accounts WHERE id = ? AND user_id = ?')
-      .get(id, req.user!.id) as any;
+    const account = await db.get('SELECT * FROM accounts WHERE id = ? AND user_id = ?', id, req.user!.id) as any;
 
     if (!account) {
       res.status(404).json({ error: 'Account not found' });
@@ -179,13 +135,9 @@ router.get('/:id/balance-history', (req: Request, res: Response) => {
     }
 
     // Get all transactions for this account ordered by date ascending
-    const transactions = db
-      .prepare(
-        `SELECT date, amount FROM transactions
+    const transactions = await db.all(`SELECT date, amount FROM transactions
          WHERE account_id = ? AND user_id = ?
-         ORDER BY date ASC`
-      )
-      .all(id, req.user!.id) as any[];
+         ORDER BY date ASC`, id, req.user!.id) as any[];
 
     // Build balance history by working backwards from current balance
     // First, calculate total transaction sum

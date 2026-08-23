@@ -153,21 +153,17 @@ function fmtPercent(ratio: number): string {
 // 1. Compute Health Score
 // ---------------------------------------------------------------------------
 
-function computeHealthScore(userId: string): HealthScore {
+async function computeHealthScore(userId: string): HealthScore {
   const factors: HealthFactor[] = [];
 
   // --- Savings rate factor (25% weight) ---
   const curStart = getCurrentMonthStart();
   const threeMonthsAgo = getMonthStartNBack(3);
-  const income3m = (db.prepare(
-    `SELECT COALESCE(SUM(amount), 0) as total FROM transactions
-     WHERE user_id = ? AND amount > 0 AND date >= ? AND date <= ?`
-  ).get(userId, threeMonthsAgo, getCurrentMonthEnd()) as any).total;
+  const income3m = (await db.get(`SELECT COALESCE(SUM(amount), 0) as total FROM transactions
+     WHERE user_id = ? AND amount > 0 AND date >= ? AND date <= ?`, userId, threeMonthsAgo, getCurrentMonthEnd()) as any).total;
 
-  const expenses3m = (db.prepare(
-    `SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
-     WHERE user_id = ? AND amount < 0 AND date >= ? AND date <= ?`
-  ).get(userId, threeMonthsAgo, getCurrentMonthEnd()) as any).total;
+  const expenses3m = (await db.get(`SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
+     WHERE user_id = ? AND amount < 0 AND date >= ? AND date <= ?`, userId, threeMonthsAgo, getCurrentMonthEnd()) as any).total;
 
   const savingsRate3m = income3m > 0 ? (income3m - expenses3m) / income3m : 0;
   let savingsScore = 0;
@@ -179,21 +175,17 @@ function computeHealthScore(userId: string): HealthScore {
 
   // --- Budget adherence factor (25% weight) ---
   const curMonthPrefix = getMonthPrefix(curStart);
-  const budgets = db.prepare(
-    `SELECT b.amount, b.category_id, b.rollover_amount
+  const budgets = await db.all(`SELECT b.amount, b.category_id, b.rollover_amount
      FROM budgets b
      WHERE b.user_id = ? AND (b.month = ? OR b.month = ?)
-     ORDER BY b.amount DESC`
-  ).all(userId, curStart, curMonthPrefix) as any[];
+     ORDER BY b.amount DESC`, userId, curStart, curMonthPrefix) as any[];
 
   let withinBudget = 0;
   let totalBudgets = budgets.length;
   for (const b of budgets) {
-    const spent = (db.prepare(
-      `SELECT COALESCE(SUM(ABS(amount)), 0) as spent FROM transactions
+    const spent = (await db.get(`SELECT COALESCE(SUM(ABS(amount)), 0) as spent FROM transactions
        WHERE user_id = ? AND category_id = ? AND amount < 0
-         AND date >= ? AND date <= ?`
-    ).get(userId, b.category_id, curStart, getCurrentMonthEnd()) as any).spent;
+         AND date >= ? AND date <= ?`, userId, b.category_id, curStart, getCurrentMonthEnd()) as any).spent;
     const limit = b.amount + (b.rollover_amount || 0);
     if (spent <= limit) withinBudget++;
   }
@@ -201,15 +193,11 @@ function computeHealthScore(userId: string): HealthScore {
   factors.push({ name: 'Budget Adherence', score: adherenceScore, weight: 0.25 });
 
   // --- Debt ratio factor (15% weight) ---
-  const assets = (db.prepare(
-    `SELECT COALESCE(SUM(balance), 0) as total FROM accounts
-     WHERE user_id = ? AND balance > 0`
-  ).get(userId) as any).total;
+  const assets = (await db.get(`SELECT COALESCE(SUM(balance), 0) as total FROM accounts
+     WHERE user_id = ? AND balance > 0`, userId) as any).total;
 
-  const liabilities = (db.prepare(
-    `SELECT COALESCE(SUM(ABS(balance)), 0) as total FROM accounts
-     WHERE user_id = ? AND balance < 0`
-  ).get(userId) as any).total;
+  const liabilities = (await db.get(`SELECT COALESCE(SUM(ABS(balance)), 0) as total FROM accounts
+     WHERE user_id = ? AND balance < 0`, userId) as any).total;
 
   const debtRatio = assets > 0 ? liabilities / assets : 1;
   let debtScore = 100;
@@ -221,10 +209,8 @@ function computeHealthScore(userId: string): HealthScore {
   // --- Emergency fund factor (15% weight) ---
   const avgMonthlyExpenses = expenses3m / 3;
   const targetEmergencyFund = avgMonthlyExpenses * 4.5; // midpoint of 3-6 months
-  const savingsBalance = (db.prepare(
-    `SELECT COALESCE(SUM(balance), 0) as total FROM accounts
-     WHERE user_id = ? AND type = 'savings'`
-  ).get(userId) as any).total;
+  const savingsBalance = (await db.get(`SELECT COALESCE(SUM(balance), 0) as total FROM accounts
+     WHERE user_id = ? AND type = 'savings'`, userId) as any).total;
 
   const emergencyProgress = targetEmergencyFund > 0 ? savingsBalance / targetEmergencyFund : 0;
   const emergencyScore = Math.min(100, Math.round(emergencyProgress * 100));
@@ -239,10 +225,8 @@ function computeHealthScore(userId: string): HealthScore {
       const last = new Date(parts[0], parts[1], 0).getDate();
       return `${parts[0]}-${String(parts[1]).padStart(2, '0')}-${String(last).padStart(2, '0')}`;
     })();
-    const mIncome = (db.prepare(
-      `SELECT COALESCE(SUM(amount), 0) as total FROM transactions
-       WHERE user_id = ? AND amount > 0 AND date >= ? AND date <= ?`
-    ).get(userId, mStart, mEnd) as any).total;
+    const mIncome = (await db.get(`SELECT COALESCE(SUM(amount), 0) as total FROM transactions
+       WHERE user_id = ? AND amount > 0 AND date >= ? AND date <= ?`, userId, mStart, mEnd) as any).total;
     if (mIncome > 0) monthlyIncomes.push(mIncome);
   }
 
@@ -259,10 +243,8 @@ function computeHealthScore(userId: string): HealthScore {
   factors.push({ name: 'Income Stability', score: stabilityScore, weight: 0.10 });
 
   // --- Goal progress factor (10% weight) ---
-  const goals = db.prepare(
-    `SELECT target_amount, current_amount, target_date, is_completed
-     FROM goals WHERE user_id = ? AND is_completed = 0`
-  ).all(userId) as any[];
+  const goals = await db.all(`SELECT target_amount, current_amount, target_date, is_completed
+     FROM goals WHERE user_id = ? AND is_completed = 0`, userId) as any[];
 
   let goalScore = 50;
   if (goals.length > 0) {
@@ -291,25 +273,21 @@ function computeHealthScore(userId: string): HealthScore {
 // 2. Analyze Budget Adherence
 // ---------------------------------------------------------------------------
 
-function analyzeBudgetAdherence(userId: string): Insight[] {
+async function analyzeBudgetAdherence(userId: string): Insight[] {
   const insights: Insight[] = [];
   const curStart = getCurrentMonthStart();
   const curEnd = getCurrentMonthEnd();
   const curMonthPrefix = getMonthPrefix(curStart);
 
-  const budgets = db.prepare(
-    `SELECT b.*, c.name as category_name
+  const budgets = await db.all(`SELECT b.*, c.name as category_name
      FROM budgets b
      JOIN categories c ON b.category_id = c.id
-     WHERE b.user_id = ? AND (b.month = ? OR b.month = ?)`
-  ).all(userId, curStart, curMonthPrefix) as any[];
+     WHERE b.user_id = ? AND (b.month = ? OR b.month = ?)`, userId, curStart, curMonthPrefix) as any[];
 
   for (const b of budgets) {
-    const spent = (db.prepare(
-      `SELECT COALESCE(SUM(ABS(amount)), 0) as spent FROM transactions
+    const spent = (await db.get(`SELECT COALESCE(SUM(ABS(amount)), 0) as spent FROM transactions
        WHERE user_id = ? AND category_id = ? AND amount < 0
-         AND date >= ? AND date <= ?`
-    ).get(userId, b.category_id, curStart, curEnd) as any).spent;
+         AND date >= ? AND date <= ?`, userId, b.category_id, curStart, curEnd) as any).spent;
 
     const limit = b.amount + (b.rollover_amount || 0);
     const pctUsed = limit > 0 ? spent / limit : 0;
@@ -356,7 +334,7 @@ function analyzeBudgetAdherence(userId: string): Insight[] {
 // 3. Analyze Spending Trends
 // ---------------------------------------------------------------------------
 
-function analyzeSpendingTrends(userId: string): Insight[] {
+async function analyzeSpendingTrends(userId: string): Insight[] {
   const insights: Insight[] = [];
   const curStart = getCurrentMonthStart();
   const curEnd = getCurrentMonthEnd();
@@ -364,27 +342,23 @@ function analyzeSpendingTrends(userId: string): Insight[] {
   const prevEnd = getPreviousMonthEnd();
 
   // Get spending by category for current and previous month
-  const currentSpending = db.prepare(
-    `SELECT c.name as category_name, c.id as category_id,
+  const currentSpending = await db.all(`SELECT c.name as category_name, c.id as category_id,
             COALESCE(SUM(ABS(t.amount)), 0) as spent
      FROM categories c
      LEFT JOIN transactions t ON t.category_id = c.id
        AND t.user_id = ? AND t.amount < 0
        AND t.date >= ? AND t.date <= ?
      WHERE c.user_id = ? AND c.is_income = 0
-     GROUP BY c.id, c.name`
-  ).all(userId, curStart, curEnd, userId) as any[];
+     GROUP BY c.id, c.name`, userId, curStart, curEnd, userId) as any[];
 
-  const previousSpending = db.prepare(
-    `SELECT c.id as category_id,
+  const previousSpending = await db.all(`SELECT c.id as category_id,
             COALESCE(SUM(ABS(t.amount)), 0) as spent
      FROM categories c
      LEFT JOIN transactions t ON t.category_id = c.id
        AND t.user_id = ? AND t.amount < 0
        AND t.date >= ? AND t.date <= ?
      WHERE c.user_id = ? AND c.is_income = 0
-     GROUP BY c.id`
-  ).all(userId, prevStart, prevEnd, userId) as any[];
+     GROUP BY c.id`, userId, prevStart, prevEnd, userId) as any[];
 
   const prevMap = new Map<string, number>();
   for (const p of previousSpending) {
@@ -428,14 +402,12 @@ function analyzeSpendingTrends(userId: string): Insight[] {
 // 4. Analyze Recurring Costs
 // ---------------------------------------------------------------------------
 
-function analyzeRecurringCosts(userId: string): Insight[] {
+async function analyzeRecurringCosts(userId: string): Insight[] {
   const insights: Insight[] = [];
 
-  const recurring = db.prepare(
-    `SELECT name, amount, frequency, price_history, is_active
+  const recurring = await db.all(`SELECT name, amount, frequency, price_history, is_active
      FROM recurring_expenses
-     WHERE user_id = ? AND is_active = 1`
-  ).all(userId) as any[];
+     WHERE user_id = ? AND is_active = 1`, userId) as any[];
 
   let monthlyTotal = 0;
   const priceIncreases: { name: string; oldPrice: number; newPrice: number; pctChange: number }[] = [];
@@ -506,20 +478,16 @@ function analyzeRecurringCosts(userId: string): Insight[] {
 // 5. Analyze Savings Rate
 // ---------------------------------------------------------------------------
 
-function analyzeSavingsRate(userId: string): Insight[] {
+async function analyzeSavingsRate(userId: string): Insight[] {
   const insights: Insight[] = [];
   const threeMonthsAgo = getMonthStartNBack(3);
   const curEnd = getCurrentMonthEnd();
 
-  const income = (db.prepare(
-    `SELECT COALESCE(SUM(amount), 0) as total FROM transactions
-     WHERE user_id = ? AND amount > 0 AND date >= ? AND date <= ?`
-  ).get(userId, threeMonthsAgo, curEnd) as any).total;
+  const income = (await db.get(`SELECT COALESCE(SUM(amount), 0) as total FROM transactions
+     WHERE user_id = ? AND amount > 0 AND date >= ? AND date <= ?`, userId, threeMonthsAgo, curEnd) as any).total;
 
-  const expenses = (db.prepare(
-    `SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
-     WHERE user_id = ? AND amount < 0 AND date >= ? AND date <= ?`
-  ).get(userId, threeMonthsAgo, curEnd) as any).total;
+  const expenses = (await db.get(`SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
+     WHERE user_id = ? AND amount < 0 AND date >= ? AND date <= ?`, userId, threeMonthsAgo, curEnd) as any).total;
 
   const netSavings = income - expenses;
   const savingsRate = income > 0 ? netSavings / income : 0;
@@ -576,13 +544,11 @@ function analyzeSavingsRate(userId: string): Insight[] {
 // 6. Analyze Goal Progress
 // ---------------------------------------------------------------------------
 
-function analyzeGoalProgress(userId: string): Insight[] {
+async function analyzeGoalProgress(userId: string): Insight[] {
   const insights: Insight[] = [];
 
-  const goals = db.prepare(
-    `SELECT name, target_amount, current_amount, target_date, icon
-     FROM goals WHERE user_id = ? AND is_completed = 0`
-  ).all(userId) as any[];
+  const goals = await db.all(`SELECT name, target_amount, current_amount, target_date, icon
+     FROM goals WHERE user_id = ? AND is_completed = 0`, userId) as any[];
 
   for (const g of goals) {
     const remaining = g.target_amount - g.current_amount;
@@ -606,14 +572,10 @@ function analyzeGoalProgress(userId: string): Insight[] {
       // Check if the user's recent monthly savings can support this
       const threeMonthsAgo = getMonthStartNBack(3);
       const curEnd = getCurrentMonthEnd();
-      const recentIncome = (db.prepare(
-        `SELECT COALESCE(SUM(amount), 0) as total FROM transactions
-         WHERE user_id = ? AND amount > 0 AND date >= ? AND date <= ?`
-      ).get(userId, threeMonthsAgo, curEnd) as any).total;
-      const recentExpenses = (db.prepare(
-        `SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
-         WHERE user_id = ? AND amount < 0 AND date >= ? AND date <= ?`
-      ).get(userId, threeMonthsAgo, curEnd) as any).total;
+      const recentIncome = (await db.get(`SELECT COALESCE(SUM(amount), 0) as total FROM transactions
+         WHERE user_id = ? AND amount > 0 AND date >= ? AND date <= ?`, userId, threeMonthsAgo, curEnd) as any).total;
+      const recentExpenses = (await db.get(`SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
+         WHERE user_id = ? AND amount < 0 AND date >= ? AND date <= ?`, userId, threeMonthsAgo, curEnd) as any).total;
       const avgMonthlySurplus = (recentIncome - recentExpenses) / 3;
 
       if (requiredMonthly > avgMonthlySurplus * 0.8) {
@@ -658,13 +620,11 @@ function analyzeGoalProgress(userId: string): Insight[] {
 // 7. Analyze Investments
 // ---------------------------------------------------------------------------
 
-function analyzeInvestments(userId: string): Insight[] {
+async function analyzeInvestments(userId: string): Insight[] {
   const insights: Insight[] = [];
 
-  const investments = db.prepare(
-    `SELECT symbol, name, type, shares, cost_basis, current_price
-     FROM investments WHERE user_id = ?`
-  ).all(userId) as any[];
+  const investments = await db.all(`SELECT symbol, name, type, shares, cost_basis, current_price
+     FROM investments WHERE user_id = ?`, userId) as any[];
 
   if (investments.length === 0) return insights;
 
@@ -745,13 +705,11 @@ function analyzeInvestments(userId: string): Insight[] {
 // 8. Detect Uncategorized Transactions
 // ---------------------------------------------------------------------------
 
-function detectUncategorized(userId: string): Insight[] {
+async function detectUncategorized(userId: string): Insight[] {
   const insights: Insight[] = [];
 
-  const result = (db.prepare(
-    `SELECT COUNT(*) as count FROM transactions
-     WHERE user_id = ? AND category_id IS NULL`
-  ).get(userId) as any);
+  const result = (await db.get(`SELECT COUNT(*) as count FROM transactions
+     WHERE user_id = ? AND category_id IS NULL`, userId) as any);
 
   const uncategorizedCount = result.count;
 
@@ -896,26 +854,20 @@ function generateRecommendations(
 // 10. Compute Monthly vs Annual View
 // ---------------------------------------------------------------------------
 
-function computeMonthlyVsAnnualView(userId: string): { monthlyView: PeriodView; annualView: PeriodView } {
+async function computeMonthlyVsAnnualView(userId: string): { monthlyView: PeriodView; annualView: PeriodView } {
   // --- Monthly view (current month) ---
   const curStart = getCurrentMonthStart();
   const curEnd = getCurrentMonthEnd();
 
-  const monthIncome = (db.prepare(
-    `SELECT COALESCE(SUM(amount), 0) as total FROM transactions
-     WHERE user_id = ? AND amount > 0 AND date >= ? AND date <= ?`
-  ).get(userId, curStart, curEnd) as any).total;
+  const monthIncome = (await db.get(`SELECT COALESCE(SUM(amount), 0) as total FROM transactions
+     WHERE user_id = ? AND amount > 0 AND date >= ? AND date <= ?`, userId, curStart, curEnd) as any).total;
 
-  const monthExpenses = (db.prepare(
-    `SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
-     WHERE user_id = ? AND amount < 0 AND date >= ? AND date <= ?`
-  ).get(userId, curStart, curEnd) as any).total;
+  const monthExpenses = (await db.get(`SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
+     WHERE user_id = ? AND amount < 0 AND date >= ? AND date <= ?`, userId, curStart, curEnd) as any).total;
 
   // Monthly recurring total (active recurring expenses normalized to monthly)
-  const recurringItems = db.prepare(
-    `SELECT amount, frequency FROM recurring_expenses
-     WHERE user_id = ? AND is_active = 1`
-  ).all(userId) as any[];
+  const recurringItems = await db.all(`SELECT amount, frequency FROM recurring_expenses
+     WHERE user_id = ? AND is_active = 1`, userId) as any[];
 
   let monthRecurring = 0;
   for (const r of recurringItems) {
@@ -942,15 +894,11 @@ function computeMonthlyVsAnnualView(userId: string): { monthlyView: PeriodView; 
   const yearStart = getAnnualStart();
   const yearEnd = getAnnualEnd();
 
-  const yearIncome = (db.prepare(
-    `SELECT COALESCE(SUM(amount), 0) as total FROM transactions
-     WHERE user_id = ? AND amount > 0 AND date >= ? AND date <= ?`
-  ).get(userId, yearStart, yearEnd) as any).total;
+  const yearIncome = (await db.get(`SELECT COALESCE(SUM(amount), 0) as total FROM transactions
+     WHERE user_id = ? AND amount > 0 AND date >= ? AND date <= ?`, userId, yearStart, yearEnd) as any).total;
 
-  const yearExpenses = (db.prepare(
-    `SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
-     WHERE user_id = ? AND amount < 0 AND date >= ? AND date <= ?`
-  ).get(userId, yearStart, yearEnd) as any).total;
+  const yearExpenses = (await db.get(`SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
+     WHERE user_id = ? AND amount < 0 AND date >= ? AND date <= ?`, userId, yearStart, yearEnd) as any).total;
 
   const annualRecurring = monthRecurring * 12;
   const yearNet = yearIncome - yearExpenses;
