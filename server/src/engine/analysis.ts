@@ -126,7 +126,7 @@ function detectFrequency(dates: string[]): string {
 // Account Analysis
 // ---------------------------------------------------------------------------
 
-async function analyzeAccounts(userId: string): { summaries: AccountSummary[]; totalAssets: number; totalLiabilities: number } {
+async function analyzeAccounts(userId: string): Promise<{ summaries: AccountSummary[]; totalAssets: number; totalLiabilities: number }> {
   const LIABILITY_TYPES = ['credit', 'loan', 'mortgage'];
 
   const accounts = await db.all(`SELECT id, name, type, institution, balance, is_hidden FROM accounts WHERE user_id = ?`, userId) as any[];
@@ -189,7 +189,7 @@ async function analyzeAccounts(userId: string): { summaries: AccountSummary[]; t
 // Income Analysis
 // ---------------------------------------------------------------------------
 
-async function analyzeIncome(userId: string): { sources: IncomeSource[]; total: number; avgMonthly: number } {
+async function analyzeIncome(userId: string): Promise<{ sources: IncomeSource[]; total: number; avgMonthly: number }> {
   // Get all income transactions (positive amounts)
   const incomeTransactions = await db.all(`SELECT name, amount, date FROM transactions
      WHERE user_id = ? AND amount > 0
@@ -246,7 +246,7 @@ async function analyzeIncome(userId: string): { sources: IncomeSource[]; total: 
 // Merchant / Expense Analysis
 // ---------------------------------------------------------------------------
 
-async function analyzeExpenses(userId: string): { merchants: MerchantSummary[]; total: number; avgMonthly: number } {
+async function analyzeExpenses(userId: string): Promise<{ merchants: MerchantSummary[]; total: number; avgMonthly: number }> {
   const expenses = await db.all(`SELECT t.name, t.amount, t.date, c.name as category_name
      FROM transactions t
      LEFT JOIN categories c ON t.category_id = c.id
@@ -303,7 +303,7 @@ async function analyzeExpenses(userId: string): { merchants: MerchantSummary[]; 
 // Transfer Analysis
 // ---------------------------------------------------------------------------
 
-async function analyzeTransfers(userId: string): { transfers: TransferPair[]; total: number; count: number } {
+async function analyzeTransfers(userId: string): Promise<{ transfers: TransferPair[]; total: number; count: number }> {
   // Find transactions with transfer-like names
   const transferKeywords = [
     'transfer', 'xfer', 'online banking transfer', 'ach transfer',
@@ -389,7 +389,7 @@ async function analyzeTransfers(userId: string): { transfers: TransferPair[]; to
 // Monthly Cash Flow
 // ---------------------------------------------------------------------------
 
-async function computeMonthlyCashFlow(userId: string): CashFlowMonth[] {
+async function computeMonthlyCashFlow(userId: string): Promise<CashFlowMonth[]> {
   const rows = await db.all(`SELECT
        substr(date, 1, 7) as month,
        SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) as income,
@@ -403,20 +403,22 @@ async function computeMonthlyCashFlow(userId: string): CashFlowMonth[] {
   // Get transfer amounts per month
   const transferKeywords = ['transfer', 'xfer', 'internal', 'from savings', 'to savings', 'from checking', 'to checking'];
 
-  return rows.map(async r => {
-    const transferAmount = (await db.get(`SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
+  const months: CashFlowMonth[] = [];
+  for (const r of rows) {
+    const transferAmount = ((await db.get(`SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
        WHERE user_id = ? AND substr(date, 1, 7) = ? AND (
          ${transferKeywords.map(() => 'LOWER(name) LIKE ?').join(' OR ')}
-       )`, userId, r.month, ...transferKeywords.map(k => `%${k}%`)) as any).total;
+       )`, userId, r.month, ...transferKeywords.map(k => `%${k}%`)) as any)).total;
 
-    return {
+    months.push({
       month: r.month,
       income: Math.round(r.income * 100) / 100,
       expenses: Math.round(r.expenses * 100) / 100,
       transfers: Math.round(transferAmount * 100) / 100,
       net: Math.round((r.income - r.expenses) * 100) / 100,
-    };
-  }).reverse();
+    });
+  }
+  return months.reverse();
 }
 
 // ---------------------------------------------------------------------------
@@ -428,7 +430,7 @@ async function detectPatterns(
   merchants: MerchantSummary[],
   incomeSources: IncomeSource[],
   monthlyCashFlow: CashFlowMonth[],
-): SpendingPattern[] {
+): Promise<SpendingPattern[]> {
   const patterns: SpendingPattern[] = [];
 
   // 1. Fixed vs variable spending ratio
@@ -800,24 +802,24 @@ function generateNarrative(
 // Main Export
 // ---------------------------------------------------------------------------
 
-export function generateFinancialAnalysis(userId: string): FinancialAnalysis {
+export async function generateFinancialAnalysis(userId: string): Promise<FinancialAnalysis> {
   // Account analysis
-  const { summaries: accountSummaries, totalAssets, totalLiabilities } = analyzeAccounts(userId);
+  const { summaries: accountSummaries, totalAssets, totalLiabilities } = await analyzeAccounts(userId);
 
   // Income analysis
-  const { sources: incomeSources, total: totalIncome, avgMonthly: avgMonthlyIncome } = analyzeIncome(userId);
+  const { sources: incomeSources, total: totalIncome, avgMonthly: avgMonthlyIncome } = await analyzeIncome(userId);
 
   // Expense analysis
-  const { merchants: topMerchants, total: totalExpenses, avgMonthly: avgMonthlyExpenses } = analyzeExpenses(userId);
+  const { merchants: topMerchants, total: totalExpenses, avgMonthly: avgMonthlyExpenses } = await analyzeExpenses(userId);
 
   // Transfer analysis
-  const { transfers, total: totalInternalTransfers, count: transferCount } = analyzeTransfers(userId);
+  const { transfers, total: totalInternalTransfers, count: transferCount } = await analyzeTransfers(userId);
 
   // Monthly cash flow
-  const monthlyCashFlow = computeMonthlyCashFlow(userId);
+  const monthlyCashFlow = await computeMonthlyCashFlow(userId);
 
   // Patterns
-  const patterns = detectPatterns(userId, topMerchants, incomeSources, monthlyCashFlow);
+  const patterns = await detectPatterns(userId, topMerchants, incomeSources, monthlyCashFlow);
 
   // Narrative
   const narrative = generateNarrative(

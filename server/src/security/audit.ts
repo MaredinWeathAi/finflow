@@ -52,7 +52,7 @@ function redact(detail: Record<string, unknown> | undefined): string | null {
   try { return JSON.stringify(safe).slice(0, 4000); } catch { return null; }
 }
 
-export async function audit(action: AuditAction, req: Request | null, ctx: AuditContext = {}): void {
+export async function audit(action: AuditAction, req: Request | null, ctx: AuditContext = {}): Promise<void> {
   try {
     await db.run(`INSERT INTO audit_log (id, user_id, actor_email, action, target_id, outcome, ip, user_agent, detail, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, randomUUID(), ctx.userId ?? req?.user?.id ?? null, ctx.actorEmail ?? req?.user?.email ?? null, action, ctx.targetId ?? null, ctx.outcome ?? 'success', req ? clientIp(req) : null, req?.get('user-agent')?.slice(0, 300) ?? null, redact(ctx.detail), new Date().toISOString());
@@ -63,7 +63,7 @@ export async function audit(action: AuditAction, req: Request | null, ctx: Audit
 }
 
 /** Retention trim — keeps the log from growing without bound on a small volume. */
-export async function trimAuditLog(keepDays = 400): void {
+export async function trimAuditLog(keepDays = 400): Promise<void> {
   try {
     const cutoff = new Date(Date.now() - keepDays * 86400_000).toISOString();
     await db.run('DELETE FROM audit_log WHERE created_at < ?', cutoff);

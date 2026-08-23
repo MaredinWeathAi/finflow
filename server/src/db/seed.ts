@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import { SqliteSql } from './sql.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { randomUUID } from 'crypto';
@@ -9,19 +10,20 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const DB_PATH = process.env.DATABASE_PATH || path.resolve(__dirname, '../../finflow.db');
 
-const db = new Database(DB_PATH);
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
+const sqlite = new Database(DB_PATH);
+sqlite.pragma('journal_mode = WAL');
+sqlite.pragma('foreign_keys = ON');
+const db = new SqliteSql(sqlite);
 
 const now = new Date().toISOString();
 
 // SAFETY CHECK: Never wipe real user data (uploaded transactions, upload sessions, etc.)
-const realUploadCount = (async () => {
+const realUploadCount = await (async () => {
   try {
     return (await db.get('SELECT COUNT(*) as count FROM upload_sessions') as any).count;
   } catch { return 0; }
 })();
-const realTxCount = (async () => {
+const realTxCount = await (async () => {
   try {
     return (await db.get("SELECT COUNT(*) as count FROM transactions WHERE source = 'upload'") as any).count;
   } catch { return 0; }
@@ -31,7 +33,7 @@ if (realUploadCount > 0 || realTxCount > 0) {
   console.log('⚠️  SEED ABORTED: Database contains real user data.');
   console.log(`   Upload sessions: ${realUploadCount}, Uploaded transactions: ${realTxCount}`);
   console.log('   To re-seed, first back up and manually clear the database.');
-  db.close();
+  sqlite.close();
   process.exit(0);
 }
 
@@ -58,12 +60,12 @@ if (IS_PROD) {
     console.error('❌ Refusing to seed in production without ADMIN_EMAIL and ADMIN_PASSWORD.');
     console.error('   Set both (password >= 16 chars) and re-run, e.g.:');
     console.error('   railway run --service finflow npm run seed');
-    db.close();
+    sqlite.close();
     process.exit(1);
   }
   if (BOOTSTRAP_PASSWORD.length < 16) {
     console.error('❌ ADMIN_PASSWORD must be at least 16 characters.');
-    db.close();
+    sqlite.close();
     process.exit(1);
   }
 }
@@ -83,18 +85,20 @@ if (!BOOTSTRAP_PASSWORD && !IS_PROD) {
 
 // Clean existing SEED data only (never touch 'upload' or 'manual' sourced data)
 try {
-  const wipe = async (sql: string) => await db.run(sql, { bootstrapEmail: adminEmail });
-  wipe(`DELETE FROM net_worth_snapshots WHERE user_id IN (SELECT id FROM users WHERE email=@bootstrapEmail)`);
-  wipe(`DELETE FROM investments WHERE user_id IN (SELECT id FROM users WHERE email=@bootstrapEmail)`);
-  wipe(`DELETE FROM goals WHERE user_id IN (SELECT id FROM users WHERE email=@bootstrapEmail)`);
-  wipe(`DELETE FROM recurring_expenses WHERE user_id IN (SELECT id FROM users WHERE email=@bootstrapEmail)`);
+  // Positional parameters only — the Postgres translator rewrites `?` to `$n`
+  // and has no equivalent for better-sqlite3's named `@param` syntax.
+  const wipe = async (sql: string) => await db.run(sql, adminEmail);
+  await wipe(`DELETE FROM net_worth_snapshots WHERE user_id IN (SELECT id FROM users WHERE email=?)`);
+  await wipe(`DELETE FROM investments WHERE user_id IN (SELECT id FROM users WHERE email=?)`);
+  await wipe(`DELETE FROM goals WHERE user_id IN (SELECT id FROM users WHERE email=?)`);
+  await wipe(`DELETE FROM recurring_expenses WHERE user_id IN (SELECT id FROM users WHERE email=?)`);
   // Only delete seed transactions, preserve uploaded ones
-  wipe(`DELETE FROM transactions WHERE user_id IN (SELECT id FROM users WHERE email=@bootstrapEmail) AND (source = 'seed' OR source IS NULL)`);
-  wipe(`DELETE FROM budgets WHERE user_id IN (SELECT id FROM users WHERE email=@bootstrapEmail)`);
-  wipe(`DELETE FROM categories WHERE user_id IN (SELECT id FROM users WHERE email=@bootstrapEmail)`);
+  await wipe(`DELETE FROM transactions WHERE user_id IN (SELECT id FROM users WHERE email=?) AND (source = 'seed' OR source IS NULL)`);
+  await wipe(`DELETE FROM budgets WHERE user_id IN (SELECT id FROM users WHERE email=?)`);
+  await wipe(`DELETE FROM categories WHERE user_id IN (SELECT id FROM users WHERE email=?)`);
   // Only delete seed accounts, preserve uploaded ones
-  wipe(`DELETE FROM accounts WHERE user_id IN (SELECT id FROM users WHERE email=@bootstrapEmail) AND (source = 'seed' OR source IS NULL)`);
-  wipe(`DELETE FROM users WHERE email=@bootstrapEmail`);
+  await wipe(`DELETE FROM accounts WHERE user_id IN (SELECT id FROM users WHERE email=?) AND (source = 'seed' OR source IS NULL)`);
+  await wipe(`DELETE FROM users WHERE email=?`);
 } catch (err) {
   console.warn('Cleanup warning (safe to ignore on fresh DB):', err);
 }
@@ -113,11 +117,11 @@ const acctData = [
   { name: 'Fidelity 401k', type: 'investment', institution: 'Fidelity', balance: 45600.00, last_four: '9912', icon: '📈' },
 ];
 
-const insertAcct = db.prepare(`INSERT INTO accounts (id, user_id, name, type, institution, balance, last_four, icon, is_hidden, source, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 'seed', ?, ?)`);
+const INSERT_ACCOUNT_SQL = `INSERT INTO accounts (id, user_id, name, type, institution, balance, last_four, icon, is_hidden, source, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 'seed', ?, ?)`;
 for (const a of acctData) {
   const id = randomUUID();
   accounts[a.type] = id;
-  insertAcct.run(id, userId, a.name, a.type, a.institution, a.balance, a.last_four, a.icon, now, now);
+  await db.run(INSERT_ACCOUNT_SQL, id, userId, a.name, a.type, a.institution, a.balance, a.last_four, a.icon, now, now);
 }
 console.log('✅ Created 4 accounts');
 
@@ -140,30 +144,30 @@ const catData = [
   { name: 'Investments', icon: '📊', color: '#A78BFA', budget: 0, isIncome: true },
 ];
 
-const insertCat = db.prepare(`INSERT INTO categories (id, user_id, name, icon, color, budget_amount, is_income, parent_id, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)`);
+const INSERT_CATEGORY_SQL = `INSERT INTO categories (id, user_id, name, icon, color, budget_amount, is_income, parent_id, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)`;
 let sortOrder = 0;
 for (const c of catData) {
   const id = randomUUID();
   cats[c.name] = id;
-  insertCat.run(id, userId, c.name, c.icon, c.color, c.budget > 0 ? c.budget : null, c.isIncome ? 1 : 0, sortOrder++);
+  await db.run(INSERT_CATEGORY_SQL, id, userId, c.name, c.icon, c.color, c.budget > 0 ? c.budget : null, c.isIncome ? 1 : 0, sortOrder++);
 }
 console.log('✅ Created 14 categories');
 
 // 4. Create budgets for current and past months
-const insertBudget = db.prepare(`INSERT INTO budgets (id, user_id, category_id, month, amount, rollover, rollover_amount) VALUES (?, ?, ?, ?, ?, 0, 0)`);
+const INSERT_BUDGET_SQL = `INSERT INTO budgets (id, user_id, category_id, month, amount, rollover, rollover_amount) VALUES (?, ?, ?, ?, ?, 0, 0)`;
 const budgetCats = catData.filter(c => c.budget > 0);
 for (let m = 5; m >= 0; m--) {
   const d = new Date();
   d.setMonth(d.getMonth() - m);
   const month = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`;
   for (const c of budgetCats) {
-    insertBudget.run(randomUUID(), userId, cats[c.name], month, c.budget);
+    await db.run(INSERT_BUDGET_SQL, randomUUID(), userId, cats[c.name], month, c.budget);
   }
 }
 console.log('✅ Created budgets for 6 months');
 
 // 5. Create transactions (6 months of realistic data)
-const insertTx = db.prepare(`INSERT INTO transactions (id, user_id, account_id, name, amount, category_id, date, notes, is_pending, is_recurring, recurring_id, tags, source, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, 0, NULL, '[]', 'seed', ?, ?)`);
+const INSERT_TX_SQL = `INSERT INTO transactions (id, user_id, account_id, name, amount, category_id, date, notes, is_pending, is_recurring, recurring_id, tags, source, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, 0, NULL, '[]', 'seed', ?, ?)`;
 
 const merchants: Record<string, { minAmt: number; maxAmt: number; acct: string }> = {
   'Food & Dining': { minAmt: 8, maxAmt: 45, acct: 'credit' },
@@ -199,37 +203,37 @@ for (let m = 5; m >= 0; m--) {
   const monthStr = String(month + 1).padStart(2, '0');
 
   // Income: salary twice a month
-  insertTx.run(randomUUID(), userId, accounts['checking'], 'Payroll - TechCorp Inc', 3850, cats['Salary'], `${year}-${monthStr}-01`, 0, now, now);
-  insertTx.run(randomUUID(), userId, accounts['checking'], 'Payroll - TechCorp Inc', 3850, cats['Salary'], `${year}-${monthStr}-15`, 0, now, now);
+  await db.run(INSERT_TX_SQL, randomUUID(), userId, accounts['checking'], 'Payroll - TechCorp Inc', 3850, cats['Salary'], `${year}-${monthStr}-01`, 0, now, now);
+  await db.run(INSERT_TX_SQL, randomUUID(), userId, accounts['checking'], 'Payroll - TechCorp Inc', 3850, cats['Salary'], `${year}-${monthStr}-15`, 0, now, now);
   txCount += 2;
 
   // Freelance income (some months)
   if (Math.random() > 0.4) {
     const freelanceDay = String(Math.min(Math.floor(Math.random() * 20) + 5, daysInMonth)).padStart(2, '0');
-    insertTx.run(randomUUID(), userId, accounts['checking'], 'Freelance - Web Project', randBetween(500, 2000), cats['Freelance'], `${year}-${monthStr}-${freelanceDay}`, 0, now, now);
+    await db.run(INSERT_TX_SQL, randomUUID(), userId, accounts['checking'], 'Freelance - Web Project', randBetween(500, 2000), cats['Freelance'], `${year}-${monthStr}-${freelanceDay}`, 0, now, now);
     txCount++;
   }
 
   // Fixed expenses: Rent
-  insertTx.run(randomUUID(), userId, accounts['checking'], 'Rent Payment', -1800, cats['Housing'], `${year}-${monthStr}-01`, 0, now, now);
+  await db.run(INSERT_TX_SQL, randomUUID(), userId, accounts['checking'], 'Rent Payment', -1800, cats['Housing'], `${year}-${monthStr}-01`, 0, now, now);
   txCount++;
 
   // Insurance
-  insertTx.run(randomUUID(), userId, accounts['checking'], 'State Farm Auto Insurance', -175, cats['Insurance'], `${year}-${monthStr}-05`, 0, now, now);
-  insertTx.run(randomUUID(), userId, accounts['checking'], 'Health Insurance Premium', -185, cats['Insurance'], `${year}-${monthStr}-05`, 0, now, now);
+  await db.run(INSERT_TX_SQL, randomUUID(), userId, accounts['checking'], 'State Farm Auto Insurance', -175, cats['Insurance'], `${year}-${monthStr}-05`, 0, now, now);
+  await db.run(INSERT_TX_SQL, randomUUID(), userId, accounts['checking'], 'Health Insurance Premium', -185, cats['Insurance'], `${year}-${monthStr}-05`, 0, now, now);
   txCount += 2;
 
   // Utilities
-  insertTx.run(randomUUID(), userId, accounts['checking'], 'Electric Company', -randBetween(80, 140), cats['Utilities'], `${year}-${monthStr}-10`, 0, now, now);
-  insertTx.run(randomUUID(), userId, accounts['checking'], 'Internet - Comcast', -89.99, cats['Utilities'], `${year}-${monthStr}-10`, 0, now, now);
-  insertTx.run(randomUUID(), userId, accounts['checking'], 'Phone Bill - Verizon', -75, cats['Utilities'], `${year}-${monthStr}-12`, 0, now, now);
+  await db.run(INSERT_TX_SQL, randomUUID(), userId, accounts['checking'], 'Electric Company', -randBetween(80, 140), cats['Utilities'], `${year}-${monthStr}-10`, 0, now, now);
+  await db.run(INSERT_TX_SQL, randomUUID(), userId, accounts['checking'], 'Internet - Comcast', -89.99, cats['Utilities'], `${year}-${monthStr}-10`, 0, now, now);
+  await db.run(INSERT_TX_SQL, randomUUID(), userId, accounts['checking'], 'Phone Bill - Verizon', -75, cats['Utilities'], `${year}-${monthStr}-12`, 0, now, now);
   txCount += 3;
 
   // Subscriptions
-  insertTx.run(randomUUID(), userId, accounts['credit'], 'Spotify Premium', -10.99, cats['Subscriptions'], `${year}-${monthStr}-08`, 0, now, now);
-  insertTx.run(randomUUID(), userId, accounts['credit'], 'Netflix', -15.49, cats['Subscriptions'], `${year}-${monthStr}-08`, 0, now, now);
-  insertTx.run(randomUUID(), userId, accounts['credit'], 'ChatGPT Plus', -20, cats['Subscriptions'], `${year}-${monthStr}-08`, 0, now, now);
-  insertTx.run(randomUUID(), userId, accounts['credit'], 'iCloud Storage', -2.99, cats['Subscriptions'], `${year}-${monthStr}-08`, 0, now, now);
+  await db.run(INSERT_TX_SQL, randomUUID(), userId, accounts['credit'], 'Spotify Premium', -10.99, cats['Subscriptions'], `${year}-${monthStr}-08`, 0, now, now);
+  await db.run(INSERT_TX_SQL, randomUUID(), userId, accounts['credit'], 'Netflix', -15.49, cats['Subscriptions'], `${year}-${monthStr}-08`, 0, now, now);
+  await db.run(INSERT_TX_SQL, randomUUID(), userId, accounts['credit'], 'ChatGPT Plus', -20, cats['Subscriptions'], `${year}-${monthStr}-08`, 0, now, now);
+  await db.run(INSERT_TX_SQL, randomUUID(), userId, accounts['credit'], 'iCloud Storage', -2.99, cats['Subscriptions'], `${year}-${monthStr}-08`, 0, now, now);
   txCount += 4;
 
   // Variable expenses
@@ -249,7 +253,7 @@ for (let m = 5; m >= 0; m--) {
       const name = names[Math.floor(Math.random() * names.length)];
       const amount = -randBetween(info.minAmt, info.maxAmt);
       const isPending = m === 0 && parseInt(day) >= new Date().getDate() - 2 ? 1 : 0;
-      insertTx.run(randomUUID(), userId, accounts[info.acct], name, amount, cats[catName], date, isPending, now, now);
+      await db.run(INSERT_TX_SQL, randomUUID(), userId, accounts[info.acct], name, amount, cats[catName], date, isPending, now, now);
       txCount++;
     }
   }
@@ -257,7 +261,7 @@ for (let m = 5; m >= 0; m--) {
 console.log(`✅ Created ${txCount} transactions across 6 months`);
 
 // 6. Recurring expenses
-const insertRecurring = db.prepare(`INSERT INTO recurring_expenses (id, user_id, account_id, name, amount, category_id, frequency, next_date, last_charged_date, is_active, notes, price_history, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, ?, ?, ?)`);
+const INSERT_RECURRING_SQL = `INSERT INTO recurring_expenses (id, user_id, account_id, name, amount, category_id, frequency, next_date, last_charged_date, is_active, notes, price_history, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, ?, ?, ?)`;
 
 const recurringData = [
   { name: 'Rent', amount: 1800, cat: 'Housing', freq: 'monthly', acct: 'checking' },
@@ -280,36 +284,36 @@ const thisMonthStr = `${new Date().getFullYear()}-${String(new Date().getMonth()
 
 for (const r of recurringData) {
   const priceHistory = JSON.stringify([{ date: thisMonthStr, amount: r.amount }]);
-  insertRecurring.run(randomUUID(), userId, accounts[r.acct], r.name, r.amount, cats[r.cat], r.freq, nextMonthStr, thisMonthStr, priceHistory, now, now);
+  await db.run(INSERT_RECURRING_SQL, randomUUID(), userId, accounts[r.acct], r.name, r.amount, cats[r.cat], r.freq, nextMonthStr, thisMonthStr, priceHistory, now, now);
 }
 console.log('✅ Created 10 recurring expenses');
 
 // 7. Goals
-const insertGoal = db.prepare(`INSERT INTO goals (id, user_id, name, target_amount, current_amount, target_date, icon, color, is_completed, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+const INSERT_GOAL_SQL = `INSERT INTO goals (id, user_id, name, target_amount, current_amount, target_date, icon, color, is_completed, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
-[
+for (const g of [
   { name: 'Emergency Fund', target: 20000, current: 15200, date: '2026-12-31', icon: '🛡️', color: '#10B981' },
   { name: 'Vacation to Japan', target: 5000, current: 2800, date: '2026-09-01', icon: '✈️', color: '#3B82F6' },
   { name: 'New MacBook Pro', target: 3000, current: 1200, date: '2026-06-15', icon: '💻', color: '#8B5CF6' },
   { name: 'Car Down Payment', target: 8000, current: 3500, date: '2027-03-01', icon: '🚗', color: '#F59E0B' },
-].forEach(g => insertGoal.run(randomUUID(), userId, g.name, g.target, g.current, g.date, g.icon, g.color, 0, now, now));
+]) await db.run(INSERT_GOAL_SQL, randomUUID(), userId, g.name, g.target, g.current, g.date, g.icon, g.color, 0, now, now);
 console.log('✅ Created 4 savings goals');
 
 // 8. Investments
-const insertInvest = db.prepare(`INSERT INTO investments (id, user_id, account_id, symbol, name, type, shares, cost_basis, current_price, last_updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+const INSERT_INVESTMENT_SQL = `INSERT INTO investments (id, user_id, account_id, symbol, name, type, shares, cost_basis, current_price, last_updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
-[
+for (const inv of [
   { symbol: 'VOO', name: 'Vanguard S&P 500', type: 'etf', shares: 25, cost: 420.50, current: 485.32 },
   { symbol: 'QQQ', name: 'Invesco QQQ Trust', type: 'etf', shares: 15, cost: 380.00, current: 445.18 },
   { symbol: 'AAPL', name: 'Apple Inc.', type: 'stock', shares: 20, cost: 175.30, current: 198.45 },
   { symbol: 'MSFT', name: 'Microsoft Corp.', type: 'stock', shares: 10, cost: 365.00, current: 412.80 },
   { symbol: 'BTC', name: 'Bitcoin', type: 'crypto', shares: 0.15, cost: 42000, current: 67500 },
   { symbol: 'VTI', name: 'Vanguard Total Stock', type: 'etf', shares: 30, cost: 225.50, current: 258.90 },
-].forEach(inv => insertInvest.run(randomUUID(), userId, accounts['investment'], inv.symbol, inv.name, inv.type, inv.shares, inv.cost, inv.current, now));
+]) await db.run(INSERT_INVESTMENT_SQL, randomUUID(), userId, accounts['investment'], inv.symbol, inv.name, inv.type, inv.shares, inv.cost, inv.current, now);
 console.log('✅ Created 6 investment holdings');
 
 // 9. Net worth snapshots
-const insertSnapshot = db.prepare(`INSERT INTO net_worth_snapshots (id, user_id, date, total_assets, total_liabilities, net_worth, breakdown) VALUES (?, ?, ?, ?, ?, ?, ?)`);
+const INSERT_SNAPSHOT_SQL = `INSERT INTO net_worth_snapshots (id, user_id, date, total_assets, total_liabilities, net_worth, breakdown) VALUES (?, ?, ?, ?, ?, ?, ?)`;
 
 for (let m = 5; m >= 0; m--) {
   const d = new Date();
@@ -328,7 +332,7 @@ for (let m = 5; m >= 0; m--) {
     crypto: Math.round((5000 + (5 - m) * 400) * 100) / 100,
     debts: Math.round(liabilities * 100) / 100,
   });
-  insertSnapshot.run(randomUUID(), userId, snapDate, assets, liabilities, netWorth, breakdown);
+  await db.run(INSERT_SNAPSHOT_SQL, randomUUID(), userId, snapDate, assets, liabilities, netWorth, breakdown);
 }
 console.log('✅ Created 6 months of net worth history');
 
@@ -420,4 +424,4 @@ console.log(`   Admin login: ${adminEmail}`);
 console.log('   (password not printed — it is the ADMIN_PASSWORD you supplied)');
 console.log(`   Total transactions: ${txCount}`);
 
-db.close();
+sqlite.close();

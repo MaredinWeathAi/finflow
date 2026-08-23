@@ -72,13 +72,12 @@ router.post('/ensure-defaults', async (req: Request, res: Response) => {
       { name: 'Uncategorized', icon: '❓', color: '#64748B', isIncome: false },
     ];
 
-    const insert = db.prepare(
-      `INSERT INTO categories (id, user_id, name, icon, color, is_income, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?)`
-    );
+    const insertSql =
+      `INSERT INTO categories (id, user_id, name, icon, color, is_income, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?)`;
 
-    defaults.forEach((cat, idx) => {
-      insert.run(crypto.randomUUID(), userId, cat.name, cat.icon, cat.color, cat.isIncome ? 1 : 0, idx);
-    });
+    for (const [idx, cat] of defaults.entries()) {
+      await db.run(insertSql, crypto.randomUUID(), userId, cat.name, cat.icon, cat.color, cat.isIncome ? 1 : 0, idx);
+    }
 
     const categories = await db.all('SELECT * FROM categories WHERE user_id = ? ORDER BY sort_order ASC, name ASC', userId);
     res.json({ message: 'Default categories created', created: defaults.length, categories });
@@ -130,17 +129,13 @@ router.put('/reorder', async (req: Request, res: Response) => {
       return;
     }
 
-    const updateStmt = db.prepare(
-      'UPDATE categories SET sort_order = ? WHERE id = ? AND user_id = ?'
-    );
+    const updateSql = 'UPDATE categories SET sort_order = ? WHERE id = ? AND user_id = ?';
 
-    const reorder = db.transaction((ids: string[]) => {
-      ids.forEach((id, index) => {
-        updateStmt.run(index, id, req.user!.id);
-      });
+    await db.tx(async (t) => {
+      for (const [index, id] of (orderedIds as string[]).entries()) {
+        await t.run(updateSql, index, id, req.user!.id);
+      }
     });
-
-    reorder(orderedIds);
 
     const categories = await db.all('SELECT * FROM categories WHERE user_id = ? ORDER BY sort_order ASC, name ASC', req.user!.id);
 

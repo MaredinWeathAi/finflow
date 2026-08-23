@@ -302,20 +302,17 @@ router.post('/bulk-categorize', async (req: Request, res: Response) => {
     }
 
     const now = new Date().toISOString();
-    const updateStmt = db.prepare(
-      'UPDATE transactions SET category_id = ?, updated_at = ? WHERE id = ? AND user_id = ?'
-    );
+    const updateSql =
+      'UPDATE transactions SET category_id = ?, updated_at = ? WHERE id = ? AND user_id = ?';
 
-    const updateMany = db.transaction((ids: string[]) => {
+    const updated = await db.tx(async (t) => {
       let updated = 0;
-      for (const txId of ids) {
-        const result = updateStmt.run(categoryId, now, txId, req.user!.id);
+      for (const txId of transactionIds as string[]) {
+        const result = await t.run(updateSql, categoryId, now, txId, req.user!.id);
         updated += result.changes;
       }
       return updated;
     });
-
-    const updated = updateMany(transactionIds);
 
     res.json({ message: `${updated} transactions updated`, updated });
   } catch (error) {

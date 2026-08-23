@@ -28,16 +28,14 @@ router.get('/', async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 // Helper: apply a single rule to all matching transactions
 // ---------------------------------------------------------------------------
-async function applySingleRule(userId: string, rule: any): number {
+async function applySingleRule(userId: string, rule: any): Promise<number> {
   const now = new Date().toISOString();
   let totalUpdated = 0;
 
-  const updateCategoryOnly = db.prepare(
-    `UPDATE transactions SET category_id = ?, updated_at = ? WHERE id = ? AND user_id = ?`
-  );
-  const updateCategoryAndAmount = db.prepare(
-    `UPDATE transactions SET category_id = ?, amount = ?, updated_at = ? WHERE id = ? AND user_id = ?`
-  );
+  const UPDATE_CATEGORY_ONLY_SQL =
+    `UPDATE transactions SET category_id = ?, updated_at = ? WHERE id = ? AND user_id = ?`;
+  const UPDATE_CATEGORY_AND_AMOUNT_SQL =
+    `UPDATE transactions SET category_id = ?, amount = ?, updated_at = ? WHERE id = ? AND user_id = ?`;
 
   const transactions = await db.all(`SELECT id, name, amount, date, account_id, category_id FROM transactions WHERE user_id = ?`, userId) as any[];
 
@@ -59,13 +57,13 @@ async function applySingleRule(userId: string, rule: any): number {
       }
 
       if (categoryChanged && amountChanged) {
-        updateCategoryAndAmount.run(rule.category_id, newAmount, now, txn.id, userId);
+        await db.run(UPDATE_CATEGORY_AND_AMOUNT_SQL, rule.category_id, newAmount, now, txn.id, userId);
         totalUpdated++;
       } else if (categoryChanged) {
-        updateCategoryOnly.run(rule.category_id, now, txn.id, userId);
+        await db.run(UPDATE_CATEGORY_ONLY_SQL, rule.category_id, now, txn.id, userId);
         totalUpdated++;
       } else if (amountChanged) {
-        updateCategoryAndAmount.run(txn.category_id, newAmount, now, txn.id, userId);
+        await db.run(UPDATE_CATEGORY_AND_AMOUNT_SQL, txn.category_id, newAmount, now, txn.id, userId);
         totalUpdated++;
       }
     }
@@ -114,7 +112,7 @@ router.post('/', async (req: Request, res: Response) => {
     // Auto-apply the new rule to existing transactions
     let applied = 0;
     if (is_enabled !== false) {
-      applied = applySingleRule(userId, {
+      applied = await applySingleRule(userId, {
         pattern: pattern || '',
         match_type: match_type || 'contains',
         category_id,
@@ -178,7 +176,7 @@ router.put('/:id', async (req: Request, res: Response) => {
     // Auto-apply updated rule to existing transactions if enabled
     let applied = 0;
     if (rule && rule.is_enabled) {
-      applied = applySingleRule(userId, rule);
+      applied = await applySingleRule(userId, rule);
     }
 
     res.json({ ...rule, applied });
@@ -221,22 +219,20 @@ router.post('/apply', async (req: Request, res: Response) => {
 
     let totalUpdated = 0;
 
-    const updateCategoryOnly = db.prepare(
+    const UPDATE_CATEGORY_ONLY_SQL =
       `UPDATE transactions SET category_id = ?, updated_at = ?
-       WHERE id = ? AND user_id = ?`
-    );
+       WHERE id = ? AND user_id = ?`;
 
-    const updateCategoryAndAmount = db.prepare(
+    const UPDATE_CATEGORY_AND_AMOUNT_SQL =
       `UPDATE transactions SET category_id = ?, amount = ?, updated_at = ?
-       WHERE id = ? AND user_id = ?`
-    );
+       WHERE id = ? AND user_id = ?`;
 
     const now = new Date().toISOString();
 
     // Get all user transactions
     const transactions = await db.all(`SELECT id, name, amount, date, account_id, category_id FROM transactions WHERE user_id = ?`, userId) as any[];
 
-    const applied = db.transaction(() => {
+    const count = await db.tx(async (t) => {
       for (const txn of transactions) {
         for (const rule of rules) {
           if (matchesRule(txn, rule)) {
@@ -258,13 +254,13 @@ router.post('/apply', async (req: Request, res: Response) => {
             }
 
             if (categoryChanged && amountChanged) {
-              updateCategoryAndAmount.run(rule.category_id, newAmount, now, txn.id, userId);
+              await t.run(UPDATE_CATEGORY_AND_AMOUNT_SQL, rule.category_id, newAmount, now, txn.id, userId);
               totalUpdated++;
             } else if (categoryChanged) {
-              updateCategoryOnly.run(rule.category_id, now, txn.id, userId);
+              await t.run(UPDATE_CATEGORY_ONLY_SQL, rule.category_id, now, txn.id, userId);
               totalUpdated++;
             } else if (amountChanged) {
-              updateCategoryAndAmount.run(txn.category_id, newAmount, now, txn.id, userId);
+              await t.run(UPDATE_CATEGORY_AND_AMOUNT_SQL, txn.category_id, newAmount, now, txn.id, userId);
               totalUpdated++;
             }
             break; // first matching rule wins (highest priority)
@@ -273,8 +269,6 @@ router.post('/apply', async (req: Request, res: Response) => {
       }
       return totalUpdated;
     });
-
-    const count = applied();
     res.json({ updated: count, message: `Applied rules to ${count} transactions` });
   } catch (error) {
     console.error('Apply rules error:', error);

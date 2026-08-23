@@ -255,27 +255,27 @@ const KEYWORD_CATEGORY_MAP: Record<string, string> = {
 // Main categorization function
 // ---------------------------------------------------------------------------
 
-export function categorizeItem(
+export async function categorizeItem(
   name: string,
   amount: number,
   userId: string
-): CategorizationResult {
+): Promise<CategorizationResult> {
   const lowerName = name.toLowerCase().trim();
 
   // 1. Check user's custom category_rules table (highest priority — user overrides)
-  const userRuleResult = matchUserRules(lowerName, userId, amount);
+  const userRuleResult = await matchUserRules(lowerName, userId, amount);
   if (userRuleResult) {
     return userRuleResult;
   }
 
   // 2. Smart Merchant Recognition — 1500+ known US merchants & brands
-  const merchantResult = matchMerchantDb(lowerName, userId);
+  const merchantResult = await matchMerchantDb(lowerName, userId);
   if (merchantResult) {
     return merchantResult;
   }
 
   // 3. Fall back to built-in keyword map (generic terms like "restaurant", "gas")
-  const keywordResult = matchKeywordMap(lowerName, userId);
+  const keywordResult = await matchKeywordMap(lowerName, userId);
   if (keywordResult) {
     return keywordResult;
   }
@@ -288,7 +288,7 @@ export function categorizeItem(
 // User custom rules matching
 // ---------------------------------------------------------------------------
 
-async function matchUserRules(lowerName: string, userId: string, amount?: number): CategorizationResult | null {
+async function matchUserRules(lowerName: string, userId: string, amount?: number): Promise<CategorizationResult | null> {
   const rules = await db.all(`SELECT cr.pattern, cr.category_id, cr.match_type, c.name as category_name,
               cr.amount_min, cr.amount_max, cr.amount_exact, cr.account_id, cr.is_enabled, cr.priority,
               cr.assign_type
@@ -347,12 +347,12 @@ async function matchUserRules(lowerName: string, userId: string, amount?: number
 // Smart Merchant Database matching (1500+ known US merchants)
 // ---------------------------------------------------------------------------
 
-function matchMerchantDb(lowerName: string, userId: string): CategorizationResult | null {
+async function matchMerchantDb(lowerName: string, userId: string): Promise<CategorizationResult | null> {
   const merchant = lookupMerchant(lowerName);
   if (!merchant) return null;
 
   // Map the merchant's category name to the user's category ID
-  const categoryId = getCategoryByKeyword(merchant.category, userId);
+  const categoryId = await getCategoryByKeyword(merchant.category, userId);
 
   return {
     categoryId,
@@ -365,7 +365,7 @@ function matchMerchantDb(lowerName: string, userId: string): CategorizationResul
 // Built-in keyword matching
 // ---------------------------------------------------------------------------
 
-function matchKeywordMap(lowerName: string, userId: string): CategorizationResult | null {
+async function matchKeywordMap(lowerName: string, userId: string): Promise<CategorizationResult | null> {
   // Sort keywords by length descending so more specific matches win first
   // e.g., "uber eats" should match before "uber"
   const sortedKeywords = Object.keys(KEYWORD_CATEGORY_MAP).sort(
@@ -375,7 +375,7 @@ function matchKeywordMap(lowerName: string, userId: string): CategorizationResul
   for (const keyword of sortedKeywords) {
     if (lowerName.includes(keyword)) {
       const categoryName = KEYWORD_CATEGORY_MAP[keyword];
-      const categoryId = getCategoryByKeyword(categoryName, userId);
+      const categoryId = await getCategoryByKeyword(categoryName, userId);
 
       return {
         categoryId,
@@ -397,7 +397,7 @@ export async function learnRule(
   pattern: string,
   categoryId: string,
   matchType: string
-): void {
+): Promise<void> {
   const id = crypto.randomUUID();
   const createdAt = new Date().toISOString();
 
@@ -409,7 +409,7 @@ export async function learnRule(
 // Helper: look up a category ID by matching the keyword to category name
 // ---------------------------------------------------------------------------
 
-export async function getCategoryByKeyword(keyword: string, userId: string): string | null {
+export async function getCategoryByKeyword(keyword: string, userId: string): Promise<string | null> {
   const lowerKeyword = keyword.toLowerCase();
 
   // Try exact match first

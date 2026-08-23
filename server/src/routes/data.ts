@@ -39,13 +39,13 @@ router.get('/merchant-stats', (_req: Request, res: Response) => {
 });
 
 // POST /seed-sample - seed sample data for the authenticated user
-router.post('/seed-sample', (req: Request, res: Response) => {
+router.post('/seed-sample', async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
     const now = new Date().toISOString();
     const today = new Date();
 
-    const seedData = db.transaction(() => {
+    const counts = await db.tx(async (t) => {
       // Create sample accounts
       const checkingId = crypto.randomUUID();
       const savingsId = crypto.randomUUID();
@@ -59,13 +59,12 @@ router.post('/seed-sample', (req: Request, res: Response) => {
         { id: investmentId, name: 'Brokerage Account', type: 'investment', institution: 'Fidelity', balance: 32500.00, last_four: '7745', icon: 'chart-line' },
       ];
 
-      const insertAccount = db.prepare(
+      const INSERT_ACCOUNT_SQL =
         `INSERT OR IGNORE INTO accounts (id, user_id, name, type, institution, balance, last_four, icon, is_hidden, source, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 'seed', ?, ?)`
-      );
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 'seed', ?, ?)`;
 
       for (const a of accounts) {
-        insertAccount.run(a.id, userId, a.name, a.type, a.institution, a.balance, a.last_four, a.icon, now, now);
+        await t.run(INSERT_ACCOUNT_SQL, a.id, userId, a.name, a.type, a.institution, a.balance, a.last_four, a.icon, now, now);
       }
 
       // Create sample categories
@@ -85,22 +84,20 @@ router.post('/seed-sample', (req: Request, res: Response) => {
       ];
 
       const catIds: Record<string, string> = {};
-      const insertCategory = db.prepare(
+      const INSERT_CATEGORY_SQL =
         `INSERT OR IGNORE INTO categories (id, user_id, name, icon, color, is_income, sort_order)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`
-      );
+         VALUES (?, ?, ?, ?, ?, ?, ?)`;
 
-      categories.forEach((c, i) => {
+      for (const [i, c] of categories.entries()) {
         const catId = crypto.randomUUID();
         catIds[c.name] = catId;
-        insertCategory.run(catId, userId, c.name, c.icon, c.color, c.is_income, i);
-      });
+        await t.run(INSERT_CATEGORY_SQL, catId, userId, c.name, c.icon, c.color, c.is_income, i);
+      }
 
       // Create sample transactions for last 3 months
-      const insertTx = db.prepare(
+      const INSERT_TX_SQL =
         `INSERT OR IGNORE INTO transactions (id, user_id, account_id, name, amount, category_id, date, notes, is_pending, is_recurring, tags, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      );
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
       const sampleTransactions = [
         // Income
@@ -135,7 +132,8 @@ router.post('/seed-sample', (req: Request, res: Response) => {
           const variation = 1 + (Math.random() * 0.2 - 0.1);
           const amount = Math.round(tx.amount * variation * 100) / 100;
 
-          insertTx.run(
+          await t.run(
+            INSERT_TX_SQL,
             crypto.randomUUID(),
             userId,
             tx.account,
@@ -155,10 +153,9 @@ router.post('/seed-sample', (req: Request, res: Response) => {
 
       // Create sample budgets for current month
       const currentMonth = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-01`;
-      const insertBudget = db.prepare(
+      const INSERT_BUDGET_SQL =
         `INSERT OR IGNORE INTO budgets (id, user_id, category_id, month, amount, rollover, rollover_amount)
-         VALUES (?, ?, ?, ?, ?, 0, 0)`
-      );
+         VALUES (?, ?, ?, ?, ?, 0, 0)`;
 
       const budgetAmounts: Record<string, number> = {
         Housing: 1900,
@@ -175,50 +172,46 @@ router.post('/seed-sample', (req: Request, res: Response) => {
 
       for (const [catName, amount] of Object.entries(budgetAmounts)) {
         if (catIds[catName]) {
-          insertBudget.run(crypto.randomUUID(), userId, catIds[catName], currentMonth, amount);
+          await t.run(INSERT_BUDGET_SQL, crypto.randomUUID(), userId, catIds[catName], currentMonth, amount);
         }
       }
 
       // Create sample goals
-      const insertGoal = db.prepare(
+      const INSERT_GOAL_SQL =
         `INSERT OR IGNORE INTO goals (id, user_id, name, target_amount, current_amount, target_date, icon, color, is_completed, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`
-      );
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`;
 
-      insertGoal.run(crypto.randomUUID(), userId, 'Emergency Fund', 20000, 15000, '2025-12-31', 'shield', '#10B981', now, now);
-      insertGoal.run(crypto.randomUUID(), userId, 'Vacation to Japan', 5000, 2300, '2025-08-01', 'plane', '#6366F1', now, now);
-      insertGoal.run(crypto.randomUUID(), userId, 'New Laptop', 2500, 800, '2025-06-01', 'laptop', '#F59E0B', now, now);
+      await t.run(INSERT_GOAL_SQL, crypto.randomUUID(), userId, 'Emergency Fund', 20000, 15000, '2025-12-31', 'shield', '#10B981', now, now);
+      await t.run(INSERT_GOAL_SQL, crypto.randomUUID(), userId, 'Vacation to Japan', 5000, 2300, '2025-08-01', 'plane', '#6366F1', now, now);
+      await t.run(INSERT_GOAL_SQL, crypto.randomUUID(), userId, 'New Laptop', 2500, 800, '2025-06-01', 'laptop', '#F59E0B', now, now);
 
       // Create sample recurring expenses
-      const insertRecurring = db.prepare(
+      const INSERT_RECURRING_SQL =
         `INSERT OR IGNORE INTO recurring_expenses (id, user_id, account_id, name, amount, category_id, frequency, next_date, is_active, price_history, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`
-      );
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`;
 
       const nextMonth = new Date(today.getFullYear(), today.getMonth() + 1, 1);
       const nextMonthStr = nextMonth.toISOString().substring(0, 10);
 
-      insertRecurring.run(crypto.randomUUID(), userId, checkingId, 'Rent', 1800, catIds['Housing'], 'monthly', nextMonthStr, JSON.stringify([{ date: now, amount: 1800 }]), now, now);
-      insertRecurring.run(crypto.randomUUID(), userId, creditId, 'Netflix', 15.99, catIds['Subscriptions'], 'monthly', nextMonthStr, JSON.stringify([{ date: now, amount: 15.99 }]), now, now);
-      insertRecurring.run(crypto.randomUUID(), userId, creditId, 'Spotify', 10.99, catIds['Subscriptions'], 'monthly', nextMonthStr, JSON.stringify([{ date: now, amount: 10.99 }]), now, now);
-      insertRecurring.run(crypto.randomUUID(), userId, checkingId, 'Car Insurance', 145, catIds['Insurance'], 'monthly', nextMonthStr, JSON.stringify([{ date: now, amount: 145 }]), now, now);
+      await t.run(INSERT_RECURRING_SQL, crypto.randomUUID(), userId, checkingId, 'Rent', 1800, catIds['Housing'], 'monthly', nextMonthStr, JSON.stringify([{ date: now, amount: 1800 }]), now, now);
+      await t.run(INSERT_RECURRING_SQL, crypto.randomUUID(), userId, creditId, 'Netflix', 15.99, catIds['Subscriptions'], 'monthly', nextMonthStr, JSON.stringify([{ date: now, amount: 15.99 }]), now, now);
+      await t.run(INSERT_RECURRING_SQL, crypto.randomUUID(), userId, creditId, 'Spotify', 10.99, catIds['Subscriptions'], 'monthly', nextMonthStr, JSON.stringify([{ date: now, amount: 10.99 }]), now, now);
+      await t.run(INSERT_RECURRING_SQL, crypto.randomUUID(), userId, checkingId, 'Car Insurance', 145, catIds['Insurance'], 'monthly', nextMonthStr, JSON.stringify([{ date: now, amount: 145 }]), now, now);
 
       // Create sample investments
-      const insertInvestment = db.prepare(
+      const INSERT_INVESTMENT_SQL =
         `INSERT OR IGNORE INTO investments (id, user_id, account_id, symbol, name, type, shares, cost_basis, current_price, last_updated)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      );
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
-      insertInvestment.run(crypto.randomUUID(), userId, investmentId, 'VTI', 'Vanguard Total Stock Market', 'ETF', 50, 220.00, 245.50, now);
-      insertInvestment.run(crypto.randomUUID(), userId, investmentId, 'VXUS', 'Vanguard Total International', 'ETF', 30, 55.00, 58.75, now);
-      insertInvestment.run(crypto.randomUUID(), userId, investmentId, 'BND', 'Vanguard Total Bond Market', 'ETF', 20, 72.00, 70.50, now);
-      insertInvestment.run(crypto.randomUUID(), userId, investmentId, 'AAPL', 'Apple Inc.', 'Stock', 10, 150.00, 178.25, now);
+      await t.run(INSERT_INVESTMENT_SQL, crypto.randomUUID(), userId, investmentId, 'VTI', 'Vanguard Total Stock Market', 'ETF', 50, 220.00, 245.50, now);
+      await t.run(INSERT_INVESTMENT_SQL, crypto.randomUUID(), userId, investmentId, 'VXUS', 'Vanguard Total International', 'ETF', 30, 55.00, 58.75, now);
+      await t.run(INSERT_INVESTMENT_SQL, crypto.randomUUID(), userId, investmentId, 'BND', 'Vanguard Total Bond Market', 'ETF', 20, 72.00, 70.50, now);
+      await t.run(INSERT_INVESTMENT_SQL, crypto.randomUUID(), userId, investmentId, 'AAPL', 'Apple Inc.', 'Stock', 10, 150.00, 178.25, now);
 
       // Create sample net worth snapshots
-      const insertSnapshot = db.prepare(
+      const INSERT_SNAPSHOT_SQL =
         `INSERT OR IGNORE INTO net_worth_snapshots (id, user_id, date, total_assets, total_liabilities, net_worth, breakdown)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`
-      );
+         VALUES (?, ?, ?, ?, ?, ?, ?)`;
 
       for (let i = 5; i >= 0; i--) {
         const snapDate = new Date(today.getFullYear(), today.getMonth() - i, 1);
@@ -227,7 +220,8 @@ router.post('/seed-sample', (req: Request, res: Response) => {
         const liabilities = 1500 + Math.random() * 300;
         const netWorth = assets - liabilities;
 
-        insertSnapshot.run(
+        await t.run(
+          INSERT_SNAPSHOT_SQL,
           crypto.randomUUID(),
           userId,
           dateStr,
@@ -254,8 +248,6 @@ router.post('/seed-sample', (req: Request, res: Response) => {
         snapshots: 6,
       };
     });
-
-    const counts = seedData();
 
     res.json({
       message: 'Sample data seeded successfully',
@@ -312,29 +304,27 @@ router.get('/export', async (req: Request, res: Response) => {
 });
 
 // DELETE /reset - delete all user data (except the user account itself)
-router.delete('/reset', (req: Request, res: Response) => {
+router.delete('/reset', async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
 
-    const resetData = db.transaction(async () => {
+    await db.tx(async (t) => {
       // Clear upload/processing tables first (foreign key dependencies)
-      await db.run('DELETE FROM pending_items WHERE user_id = ?', userId);
-      await db.run('DELETE FROM uploaded_files WHERE user_id = ?', userId);
-      await db.run('DELETE FROM upload_sessions WHERE user_id = ?', userId);
-      await db.run('DELETE FROM clarifications WHERE user_id = ?', userId);
-      await db.run('DELETE FROM category_rules WHERE user_id = ?', userId);
+      await t.run('DELETE FROM pending_items WHERE user_id = ?', userId);
+      await t.run('DELETE FROM uploaded_files WHERE user_id = ?', userId);
+      await t.run('DELETE FROM upload_sessions WHERE user_id = ?', userId);
+      await t.run('DELETE FROM clarifications WHERE user_id = ?', userId);
+      await t.run('DELETE FROM category_rules WHERE user_id = ?', userId);
       // Clear financial data
-      await db.run('DELETE FROM net_worth_snapshots WHERE user_id = ?', userId);
-      await db.run('DELETE FROM investments WHERE user_id = ?', userId);
-      await db.run('DELETE FROM recurring_expenses WHERE user_id = ?', userId);
-      await db.run('DELETE FROM goals WHERE user_id = ?', userId);
-      await db.run('DELETE FROM budgets WHERE user_id = ?', userId);
-      await db.run('DELETE FROM transactions WHERE user_id = ?', userId);
-      await db.run('DELETE FROM categories WHERE user_id = ?', userId);
-      await db.run('DELETE FROM accounts WHERE user_id = ?', userId);
+      await t.run('DELETE FROM net_worth_snapshots WHERE user_id = ?', userId);
+      await t.run('DELETE FROM investments WHERE user_id = ?', userId);
+      await t.run('DELETE FROM recurring_expenses WHERE user_id = ?', userId);
+      await t.run('DELETE FROM goals WHERE user_id = ?', userId);
+      await t.run('DELETE FROM budgets WHERE user_id = ?', userId);
+      await t.run('DELETE FROM transactions WHERE user_id = ?', userId);
+      await t.run('DELETE FROM categories WHERE user_id = ?', userId);
+      await t.run('DELETE FROM accounts WHERE user_id = ?', userId);
     });
-
-    resetData();
 
     res.json({ message: 'All user data has been reset successfully' });
   } catch (error) {
@@ -344,21 +334,23 @@ router.delete('/reset', (req: Request, res: Response) => {
 });
 
 // POST /quality-check - analyze and suggest data improvements
-router.post('/quality-check', (req: Request, res: Response) => {
+router.post('/quality-check', async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
     const apply = (req.query.apply as string) === 'true';
 
     // Dynamic import of categorizer
-    const { categorizeItem } = require('../engine/categorizer.js');
+    // `require` is not defined in an ESM module ({"type":"module"}); this line
+    // threw at runtime on every call. Use a dynamic import instead.
+    const { categorizeItem } = await import('../engine/categorizer.js');
 
-    const improvements = db.transaction(async () => {
+    const improvements = await db.tx(async (t) => {
       let recategorized = 0;
       const duplicatesFound: any[] = [];
       const missingTransferCategory: any[] = [];
 
       // 1. Find all uncategorized transactions
-      const uncategorized = await db.all(`SELECT t.id, t.name, t.amount, t.date, t.account_id, a.name as account_name
+      const uncategorized = await t.all(`SELECT t.id, t.name, t.amount, t.date, t.account_id, a.name as account_name
          FROM transactions t
          JOIN accounts a ON t.account_id = a.id
          WHERE t.user_id = ? AND (t.category_id IS NULL
@@ -368,22 +360,21 @@ router.post('/quality-check', (req: Request, res: Response) => {
          ORDER BY t.date DESC`, userId, userId) as any[];
 
       // Try to recategorize each uncategorized transaction
-      const updateTxCategory = db.prepare(
-        `UPDATE transactions SET category_id = ?, updated_at = ? WHERE id = ?`
-      );
+      const UPDATE_TX_CATEGORY_SQL =
+        `UPDATE transactions SET category_id = ?, updated_at = ? WHERE id = ?`;
 
       for (const tx of uncategorized) {
-        const result = categorizeItem(tx.name, tx.amount, userId);
+        const result = await categorizeItem(tx.name, tx.amount, userId);
         if (result.categoryId) {
           if (apply) {
-            updateTxCategory.run(result.categoryId, new Date().toISOString(), tx.id);
+            await t.run(UPDATE_TX_CATEGORY_SQL, result.categoryId, new Date().toISOString(), tx.id);
           }
           recategorized++;
         }
       }
 
       // 2. Find cross-account duplicates (same name, amount, date, different accounts)
-      const duplicates = await db.all(`SELECT t1.id, t1.name, t1.amount, t1.date, t1.account_id, a1.name as account_name,
+      const duplicates = await t.all(`SELECT t1.id, t1.name, t1.amount, t1.date, t1.account_id, a1.name as account_name,
                 t2.id as duplicate_id, a2.name as duplicate_account
          FROM transactions t1
          JOIN accounts a1 ON t1.account_id = a1.id
@@ -410,15 +401,18 @@ router.post('/quality-check', (req: Request, res: Response) => {
       }
 
       // 3. Find CC payments not categorized as transfers
-      const transferCategory = await db.get(`SELECT id FROM categories WHERE user_id = ? AND LOWER(name) = 'transfer'`, userId) as any;
+      const transferCategory = await t.get(`SELECT id FROM categories WHERE user_id = ? AND LOWER(name) = 'transfer'`, userId) as any;
       const transferCategoryId = transferCategory?.id;
 
       if (transferCategoryId) {
         // Look for transactions from checking/savings to credit card accounts
-        const ccPayments = await db.all(`SELECT t.id, t.name, t.amount, t.date, a_from.name as from_account, a_to.name as to_account
+        const ccPayments = await t.all(`SELECT t.id, t.name, t.amount, t.date, a_from.name as from_account, a_to.name as to_account
            FROM transactions t
            JOIN accounts a_from ON t.account_id = a_from.id
-           JOIN accounts a_to ON LOWER(a_to.name) LIKE '%' || LOWER(t.name) || '%' OR LOWER(t.name) LIKE '%credit%'
+           -- SECURITY: a_to must be scoped to the same user. Without this the
+           -- join matches credit accounts belonging to OTHER users by name.
+           JOIN accounts a_to ON a_to.user_id = t.user_id
+                             AND (LOWER(a_to.name) LIKE '%' || LOWER(t.name) || '%' OR LOWER(t.name) LIKE '%credit%')
            WHERE t.user_id = ?
              AND a_from.user_id = ?
              AND a_from.type IN ('checking', 'savings')
@@ -438,7 +432,7 @@ router.post('/quality-check', (req: Request, res: Response) => {
       }
 
       return { recategorized, duplicatesFound, missingTransferCategory };
-    })();
+    });
 
     res.json({
       improvements: improvements,

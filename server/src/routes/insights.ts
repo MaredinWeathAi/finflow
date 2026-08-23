@@ -8,7 +8,7 @@ const router = Router();
 router.get('/', async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
-    const insights = generateInsights(userId);
+    const insights = await generateInsights(userId);
     res.json(insights);
   } catch (error) {
     console.error('Insights error:', error);
@@ -17,10 +17,10 @@ router.get('/', async (req: Request, res: Response) => {
 });
 
 // GET /health-score - quick health score only
-router.get('/health-score', (req: Request, res: Response) => {
+router.get('/health-score', async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
-    const { healthScore } = generateInsights(userId);
+    const { healthScore } = await generateInsights(userId);
     res.json(healthScore);
   } catch (error) {
     console.error('Health score error:', error);
@@ -29,10 +29,10 @@ router.get('/health-score', (req: Request, res: Response) => {
 });
 
 // GET /analysis - deep AI-powered financial analysis
-router.get('/analysis', (req: Request, res: Response) => {
+router.get('/analysis', async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
-    const analysis = generateFinancialAnalysis(userId);
+    const analysis = await generateFinancialAnalysis(userId);
     res.json(analysis);
   } catch (error) {
     console.error('Analysis error:', error);

@@ -24,12 +24,46 @@ const files = [];
 })(ROOT);
 
 const CALL = /(^|[^.\w])((?:db|sql|t|tx|conn)\s*\.\s*(?:get|all|run|exec|tx))\s*\(/g;
+
+/**
+ * Every `export async function` in the project. Calls to these must be awaited
+ * too — a forgotten await on one of these is invisible to TypeScript and shows
+ * up as an endpoint returning `{}`.
+ */
+const ASYNC_EXPORTS = new Set();
+for (const f of files) {
+  for (const m of readFileSync(f, 'utf8').matchAll(/export\s+async\s+function\s+([A-Za-z_$][\w$]*)/g)) {
+    ASYNC_EXPORTS.add(m[1]);
+  }
+}
 const problems = [];
 let ok = 0;
 
+/** Blank out comments and string/template literals so matches inside them are ignored. */
+function stripNonCode(src) {
+  let out = '', i = 0;
+  while (i < src.length) {
+    const c = src[i], d = src[i + 1];
+    if (c === '/' && d === '/') { while (i < src.length && src[i] !== '\n') { out += ' '; i++; } continue; }
+    if (c === '/' && d === '*') { out += '  '; i += 2; while (i < src.length && !(src[i] === '*' && src[i+1] === '/')) { out += src[i] === '\n' ? '\n' : ' '; i++; } out += '  '; i += 2; continue; }
+    if (c === "'" || c === '"' || c === '`') {
+      const q = c; out += ' '; i++;
+      while (i < src.length) {
+        if (src[i] === '\\') { out += '  '; i += 2; continue; }
+        if (src[i] === q) { out += ' '; i++; break; }
+        out += src[i] === '\n' ? '\n' : ' '; i++;
+      }
+      continue;
+    }
+    out += c; i++;
+  }
+  return out;
+}
+
 for (const file of files) {
-  const src = readFileSync(file, 'utf8');
-  const lines = src.split('\n');
+  const raw = readFileSync(file, 'utf8');
+  const src = stripNonCode(raw);
+  const lines = raw.split('\n');
 
   for (const m of src.matchAll(CALL)) {
     const idx = m.index + m[1].length;
@@ -45,6 +79,29 @@ for (const file of files) {
 
     if (awaited || voided || chained) { ok++; continue; }
     problems.push(`${file}:${line}  ${text.trim().slice(0, 96)}`);
+  }
+
+  // Un-awaited calls to the project's own async functions. TypeScript cannot
+  // catch these: `res.json(somePromise)` and `const x = f() as any` both
+  // type-check, and the result serialises as `{}` — which is how the
+  // /api/insights endpoint silently started returning an empty object.
+  for (const fn of ASYNC_EXPORTS) {
+    const re = new RegExp(`(^|[^.\\w])(${fn})\\s*\\(`, 'g');
+    for (const m of src.matchAll(re)) {
+      const idx = m.index + m[1].length;
+      const before = src.slice(Math.max(0, idx - 200), idx);
+      if (/\b(await|function|export\s+async\s+function)\s*$/.test(before)) { ok++; continue; }
+      if (/\bvoid\s*$/.test(before)) { ok++; continue; }
+      // `return somePromise` is correct: the caller awaits it.
+      if (/\breturn\s*$/.test(before)) { ok++; continue; }
+      const line = src.slice(0, idx).split('\n').length;
+      const text = (lines[line - 1] ?? '').trim();
+      // definition sites and import statements are not calls
+      if (/^(export\s+)?(async\s+)?function\b/.test(text)) continue;
+      if (/^import\b/.test(text) || /\bfrom\s+['"]/.test(text)) continue;
+      if (/\)\s*\.(then|catch|finally)\s*\(/.test(text)) { ok++; continue; }
+      problems.push(`${file}:${line}  un-awaited async call ${fn}()  ${text.slice(0, 80)}`);
+    }
   }
 
   // A leftover prepare() means the file was not converted at all.

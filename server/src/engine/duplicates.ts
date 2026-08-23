@@ -50,7 +50,7 @@ const STOP_WORDS = new Set([
 export async function findDuplicates(
   items: PendingItemData[],
   userId: string,
-): DuplicateMatch[] {
+): Promise<DuplicateMatch[]> {
   const matches: DuplicateMatch[] = [];
 
   for (const item of items) {

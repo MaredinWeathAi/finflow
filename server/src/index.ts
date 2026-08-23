@@ -5,7 +5,7 @@ import { fileURLToPath } from 'url';
 import compression from 'compression';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
-import { initDb, db, hasRealUserData } from './db/database.js';
+import { initDb, db, hasRealUserData, getDriver, usePostgres } from './db/database.js';
 import { authMiddleware, adminMiddleware } from './middleware/auth.js';
 
 // Route imports
@@ -31,6 +31,7 @@ import {
   ALLOWED_ORIGINS,
   IS_PROD,
   enforceNoDefaultCredentials,
+  initSecurity,
   logSecurityPosture,
 } from './config/security.js';
 import { trimAuditLog } from './security/audit.js';
@@ -168,7 +169,25 @@ app.use(express.static(publicDir, {
 // DATABASE INIT
 // ============================================================
 
+// Schema + migrations run against the raw synchronous SQLite handle. This is
+// boot-time only, before any request is served.
 initDb();
+
+// Switch the async data layer over to Postgres when configured. Everything above
+// this point still runs on SQLite, which is what the one-shot migrator reads.
+if (getDriver() === 'postgres') {
+  if (!process.env.DATABASE_URL) {
+    console.error('[db] DB_DRIVER=postgres but DATABASE_URL is not set — staying on SQLite.');
+  } else {
+    await usePostgres();
+  }
+} else {
+  console.log('[db] driver: sqlite');
+}
+
+// Resolve and cache signing secrets. Must run after initDb() (it reads
+// app_config) and before any token is issued or verified.
+await initSecurity();
 
 // Database persistence verification
 console.log(`Database path: ${process.env.DATABASE_PATH || '(default - NOT persistent on Railway)'}`);
@@ -212,8 +231,8 @@ try {
 
 // Flags any account still using a known default password (e.g. the historical
 // `demo123` / `password123` seeds) as password-change-only and kills its sessions.
-enforceNoDefaultCredentials();
-trimAuditLog();
+await enforceNoDefaultCredentials();
+await trimAuditLog();
 logSecurityPosture();
 
 // ============================================================

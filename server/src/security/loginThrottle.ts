@@ -11,7 +11,7 @@ const MAX_LOCK_MINUTES = 60;
 
 export interface LockState { locked: boolean; until?: string; remainingMs?: number }
 
-export async function checkLock(userId: string): LockState {
+export async function checkLock(userId: string): Promise<LockState> {
   try {
     const row = await db.get('SELECT locked_until FROM users WHERE id = ?', userId) as { locked_until: string | null } | undefined;
     if (!row?.locked_until) return { locked: false };
@@ -23,7 +23,7 @@ export async function checkLock(userId: string): LockState {
   }
 }
 
-export async function recordFailure(userId: string): LockState {
+export async function recordFailure(userId: string): Promise<LockState> {
   try {
     const row = await db.get('SELECT failed_login_count FROM users WHERE id = ?', userId) as { failed_login_count: number | null } | undefined;
     const count = (row?.failed_login_count ?? 0) + 1;
@@ -43,7 +43,7 @@ export async function recordFailure(userId: string): LockState {
   }
 }
 
-export async function recordSuccess(userId: string): void {
+export async function recordSuccess(userId: string): Promise<void> {
   try {
     await db.run('UPDATE users SET failed_login_count = 0, locked_until = NULL, last_login_at = ? WHERE id = ?', new Date().toISOString(), userId);
   } catch { /* non-fatal */ }

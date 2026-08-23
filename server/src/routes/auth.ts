@@ -49,7 +49,7 @@ function normalizeEmail(v: unknown): string | null {
 router.post('/register', async (req: Request, res: Response) => {
   try {
     if (!ALLOW_SELF_REGISTRATION) {
-      audit('auth.register', req, { outcome: 'failure', detail: { reason: 'self_registration_disabled' } });
+      await audit('auth.register', req, { outcome: 'failure', detail: { reason: 'self_registration_disabled' } });
       res.status(403).json({
         error: 'Self-service registration is disabled. Ask your advisor to create your account.',
       });
@@ -80,7 +80,7 @@ router.post('/register', async (req: Request, res: Response) => {
     if (existing) {
       // Do not confirm existence. Respond as if it worked; the real owner is
       // unaffected and an enumerator learns nothing.
-      audit('auth.register', req, { outcome: 'failure', detail: { reason: 'email_exists', email: maskEmail(email) } });
+      await audit('auth.register', req, { outcome: 'failure', detail: { reason: 'email_exists', email: maskEmail(email) } });
       res.status(202).json({ message: 'If that address is available, the account has been created. Try signing in.' });
       return;
     }
@@ -108,7 +108,7 @@ router.post('/register', async (req: Request, res: Response) => {
        VALUES (?, ?, ?, ?, ?, ?, ?, 'USD', 0, 0, ?, ?, ?)`, id, email, username || null, password_hash, name.trim(), userRole, advisorId, now, now, now);
 
     const token = generateToken(id, email, userRole, 0);
-    audit('auth.register', req, { userId: id, actorEmail: email });
+    await audit('auth.register', req, { userId: id, actorEmail: email });
 
     res.status(201).json({
       token,
@@ -141,14 +141,14 @@ router.post('/login', async (req: Request, res: Response) => {
     if (!user) {
       // Burn equivalent CPU so response time doesn't reveal account existence.
       bcrypt.compareSync(password, DUMMY_HASH);
-      audit('auth.login.failure', req, { detail: { reason: 'no_such_account' } });
+      await audit('auth.login.failure', req, { detail: { reason: 'no_such_account' } });
       res.status(401).json({ error: 'Invalid credentials' });
       return;
     }
 
-    const lock = checkLock(user.id);
+    const lock = await checkLock(user.id);
     if (lock.locked) {
-      audit('auth.login.locked', req, { userId: user.id, outcome: 'failure' });
+      await audit('auth.login.locked', req, { userId: user.id, outcome: 'failure' });
       res.status(429).json({
         error: 'Too many failed attempts. Try again shortly.',
         retryAfterSeconds: Math.ceil((lock.remainingMs ?? 60_000) / 1000),
@@ -157,13 +157,13 @@ router.post('/login', async (req: Request, res: Response) => {
     }
 
     if (!bcrypt.compareSync(password, user.password_hash)) {
-      const state = recordFailure(user.id);
-      audit('auth.login.failure', req, { userId: user.id, outcome: 'failure', detail: { locked: state.locked } });
+      const state = await recordFailure(user.id);
+      await audit('auth.login.failure', req, { userId: user.id, outcome: 'failure', detail: { locked: state.locked } });
       res.status(401).json({ error: 'Invalid credentials' });
       return;
     }
 
-    recordSuccess(user.id);
+    await recordSuccess(user.id);
 
     // Opportunistically upgrade legacy bcrypt cost on successful login.
     try {
@@ -173,7 +173,7 @@ router.post('/login', async (req: Request, res: Response) => {
     } catch { /* non-fatal */ }
 
     const token = generateToken(user.id, user.email, user.role || 'client', user.token_version ?? 0);
-    audit('auth.login.success', req, { userId: user.id, actorEmail: user.email });
+    await audit('auth.login.success', req, { userId: user.id, actorEmail: user.email });
 
     res.json({ token, user: publicUser(user) });
   } catch (error) {
@@ -188,7 +188,7 @@ router.post('/login', async (req: Request, res: Response) => {
 router.post('/logout', authMiddleware, async (req: Request, res: Response) => {
   try {
     await db.run('UPDATE users SET token_version = COALESCE(token_version, 0) + 1 WHERE id = ?', req.user!.id);
-    audit('auth.logout', req);
+    await audit('auth.logout', req);
     res.json({ message: 'Signed out everywhere' });
   } catch (error) {
     console.error('Logout error:', error);
@@ -275,7 +275,7 @@ router.post('/forgot-password', async (req: Request, res: Response) => {
   try {
     const user = await db.get('SELECT id, email FROM users WHERE lower(email) = ?', email) as any;
     if (!user) {
-      audit('auth.password.reset.request', req, { outcome: 'failure', detail: { reason: 'no_such_account' } });
+      await audit('auth.password.reset.request', req, { outcome: 'failure', detail: { reason: 'no_such_account' } });
       res.json(RESET_ACK);
       return;
     }
@@ -283,7 +283,7 @@ router.post('/forgot-password', async (req: Request, res: Response) => {
     // Throttle: at most 3 outstanding unexpired codes per account.
     const outstanding = await db.get('SELECT COUNT(*) as c FROM password_reset_tokens WHERE user_id = ? AND used = 0 AND expires_at > ?', user.id, new Date().toISOString()) as any;
     if ((outstanding?.c ?? 0) >= 3) {
-      audit('auth.password.reset.request', req, { userId: user.id, outcome: 'failure', detail: { reason: 'throttled' } });
+      await audit('auth.password.reset.request', req, { userId: user.id, outcome: 'failure', detail: { reason: 'throttled' } });
       res.json(RESET_ACK);
       return;
     }
@@ -300,7 +300,7 @@ router.post('/forgot-password', async (req: Request, res: Response) => {
        VALUES (?, ?, ?, ?, ?, 0, ?, ?)`, randomUUID(), user.id, codeHash, codeHash, expiresAt, clientIp(req), now);
 
     await deliverResetCode(user.email, code, expiresAt);
-    audit('auth.password.reset.request', req, { userId: user.id });
+    await audit('auth.password.reset.request', req, { userId: user.id });
 
     res.json(RESET_ACK);
   } catch (error) {
@@ -325,7 +325,7 @@ router.post('/reset-password', async (req: Request, res: Response) => {
     const resetToken = await db.get('SELECT * FROM password_reset_tokens WHERE token_hash = ? AND used = 0 AND expires_at > ?', codeHash, new Date().toISOString()) as any;
 
     if (!resetToken) {
-      audit('auth.password.reset.complete', req, { outcome: 'failure', detail: { reason: 'invalid_or_expired' } });
+      await audit('auth.password.reset.complete', req, { outcome: 'failure', detail: { reason: 'invalid_or_expired' } });
       res.status(400).json({ error: 'Invalid or expired reset code' });
       return;
     }
@@ -340,18 +340,20 @@ router.post('/reset-password', async (req: Request, res: Response) => {
     const now = new Date().toISOString();
     const passwordHash = bcrypt.hashSync(newPassword, BCRYPT_ROUNDS);
 
-    db.transaction(async () => {
-      await db.run(`UPDATE users
+    // One atomic unit: the new password, the code being consumed, and every
+    // other outstanding code for this account being invalidated.
+    await db.tx(async (t) => {
+      await t.run(`UPDATE users
             SET password_hash = ?, updated_at = ?, password_changed_at = ?,
                 must_change_password = 0, failed_login_count = 0, locked_until = NULL,
                 token_version = COALESCE(token_version, 0) + 1
           WHERE id = ?`, passwordHash, now, now, resetToken.user_id);
-      await db.run('UPDATE password_reset_tokens SET used = 1 WHERE id = ?', resetToken.id);
+      await t.run('UPDATE password_reset_tokens SET used = 1 WHERE id = ?', resetToken.id);
       // Invalidate every other outstanding code for this account.
-      await db.run('UPDATE password_reset_tokens SET used = 1 WHERE user_id = ? AND used = 0', resetToken.user_id);
-    })();
+      await t.run('UPDATE password_reset_tokens SET used = 1 WHERE user_id = ? AND used = 0', resetToken.user_id);
+    });
 
-    audit('auth.password.reset.complete', req, { userId: resetToken.user_id });
+    await audit('auth.password.reset.complete', req, { userId: resetToken.user_id });
     res.json({ message: 'Password reset successfully. Sign in with your new password.' });
   } catch (error) {
     console.error('Reset password error:', error);
@@ -398,7 +400,7 @@ router.put('/update-profile', authMiddleware, async (req: Request, res: Response
 
     if (updates.length > 1) {
       await db.run(`UPDATE users SET ${updates.join(', ')} WHERE id = ?`, ...values);
-      audit('auth.profile.update', req, { detail: { fields: updates.slice(0, -1) } });
+      await audit('auth.profile.update', req, { detail: { fields: updates.slice(0, -1) } });
     }
 
     const user = await db.get('SELECT id, email, username, name, role, currency, created_at, must_change_password FROM users WHERE id = ?', userId) as any;
@@ -424,7 +426,7 @@ router.put('/change-password', authMiddleware, async (req: Request, res: Respons
 
     const user = await db.get('SELECT password_hash, email FROM users WHERE id = ?', userId) as any;
     if (!user || !bcrypt.compareSync(currentPassword, user.password_hash)) {
-      audit('auth.password.change', req, { outcome: 'failure', detail: { reason: 'wrong_current_password' } });
+      await audit('auth.password.change', req, { outcome: 'failure', detail: { reason: 'wrong_current_password' } });
       res.status(400).json({ error: 'Current password is incorrect' });
       return;
     }
@@ -449,7 +451,7 @@ router.put('/change-password', authMiddleware, async (req: Request, res: Respons
               token_version = COALESCE(token_version, 0) + 1
         WHERE id = ?`, hash, now, now, userId);
 
-    audit('auth.password.change', req, { userId });
+    await audit('auth.password.change', req, { userId });
 
     // Old sessions (including any attacker's) are now dead. Issue a fresh token
     // so the caller isn't logged out of the tab they just changed it in.

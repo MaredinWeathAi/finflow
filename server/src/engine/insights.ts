@@ -153,7 +153,7 @@ function fmtPercent(ratio: number): string {
 // 1. Compute Health Score
 // ---------------------------------------------------------------------------
 
-async function computeHealthScore(userId: string): HealthScore {
+async function computeHealthScore(userId: string): Promise<HealthScore> {
   const factors: HealthFactor[] = [];
 
   // --- Savings rate factor (25% weight) ---
@@ -273,7 +273,7 @@ async function computeHealthScore(userId: string): HealthScore {
 // 2. Analyze Budget Adherence
 // ---------------------------------------------------------------------------
 
-async function analyzeBudgetAdherence(userId: string): Insight[] {
+async function analyzeBudgetAdherence(userId: string): Promise<Insight[]> {
   const insights: Insight[] = [];
   const curStart = getCurrentMonthStart();
   const curEnd = getCurrentMonthEnd();
@@ -334,7 +334,7 @@ async function analyzeBudgetAdherence(userId: string): Insight[] {
 // 3. Analyze Spending Trends
 // ---------------------------------------------------------------------------
 
-async function analyzeSpendingTrends(userId: string): Insight[] {
+async function analyzeSpendingTrends(userId: string): Promise<Insight[]> {
   const insights: Insight[] = [];
   const curStart = getCurrentMonthStart();
   const curEnd = getCurrentMonthEnd();
@@ -402,7 +402,7 @@ async function analyzeSpendingTrends(userId: string): Insight[] {
 // 4. Analyze Recurring Costs
 // ---------------------------------------------------------------------------
 
-async function analyzeRecurringCosts(userId: string): Insight[] {
+async function analyzeRecurringCosts(userId: string): Promise<Insight[]> {
   const insights: Insight[] = [];
 
   const recurring = await db.all(`SELECT name, amount, frequency, price_history, is_active
@@ -478,7 +478,7 @@ async function analyzeRecurringCosts(userId: string): Insight[] {
 // 5. Analyze Savings Rate
 // ---------------------------------------------------------------------------
 
-async function analyzeSavingsRate(userId: string): Insight[] {
+async function analyzeSavingsRate(userId: string): Promise<Insight[]> {
   const insights: Insight[] = [];
   const threeMonthsAgo = getMonthStartNBack(3);
   const curEnd = getCurrentMonthEnd();
@@ -544,7 +544,7 @@ async function analyzeSavingsRate(userId: string): Insight[] {
 // 6. Analyze Goal Progress
 // ---------------------------------------------------------------------------
 
-async function analyzeGoalProgress(userId: string): Insight[] {
+async function analyzeGoalProgress(userId: string): Promise<Insight[]> {
   const insights: Insight[] = [];
 
   const goals = await db.all(`SELECT name, target_amount, current_amount, target_date, icon
@@ -620,7 +620,7 @@ async function analyzeGoalProgress(userId: string): Insight[] {
 // 7. Analyze Investments
 // ---------------------------------------------------------------------------
 
-async function analyzeInvestments(userId: string): Insight[] {
+async function analyzeInvestments(userId: string): Promise<Insight[]> {
   const insights: Insight[] = [];
 
   const investments = await db.all(`SELECT symbol, name, type, shares, cost_basis, current_price
@@ -705,7 +705,7 @@ async function analyzeInvestments(userId: string): Insight[] {
 // 8. Detect Uncategorized Transactions
 // ---------------------------------------------------------------------------
 
-async function detectUncategorized(userId: string): Insight[] {
+async function detectUncategorized(userId: string): Promise<Insight[]> {
   const insights: Insight[] = [];
 
   const result = (await db.get(`SELECT COUNT(*) as count FROM transactions
@@ -854,7 +854,7 @@ function generateRecommendations(
 // 10. Compute Monthly vs Annual View
 // ---------------------------------------------------------------------------
 
-async function computeMonthlyVsAnnualView(userId: string): { monthlyView: PeriodView; annualView: PeriodView } {
+async function computeMonthlyVsAnnualView(userId: string): Promise<{ monthlyView: PeriodView; annualView: PeriodView }> {
   // --- Monthly view (current month) ---
   const curStart = getCurrentMonthStart();
   const curEnd = getCurrentMonthEnd();
@@ -919,18 +919,18 @@ async function computeMonthlyVsAnnualView(userId: string): { monthlyView: Period
 // Main: generateInsights
 // ---------------------------------------------------------------------------
 
-export function generateInsights(userId: string): InsightsResult {
+export async function generateInsights(userId: string): Promise<InsightsResult> {
   // Compute health score
-  const healthScore = computeHealthScore(userId);
+  const healthScore = await computeHealthScore(userId);
 
   // Gather all insights from analysis functions
-  const budgetInsights = analyzeBudgetAdherence(userId);
-  const spendingInsights = analyzeSpendingTrends(userId);
-  const recurringInsights = analyzeRecurringCosts(userId);
-  const savingsInsights = analyzeSavingsRate(userId);
-  const goalInsights = analyzeGoalProgress(userId);
-  const investmentInsights = analyzeInvestments(userId);
-  const uncategorizedInsights = detectUncategorized(userId);
+  const budgetInsights = await analyzeBudgetAdherence(userId);
+  const spendingInsights = await analyzeSpendingTrends(userId);
+  const recurringInsights = await analyzeRecurringCosts(userId);
+  const savingsInsights = await analyzeSavingsRate(userId);
+  const goalInsights = await analyzeGoalProgress(userId);
+  const investmentInsights = await analyzeInvestments(userId);
+  const uncategorizedInsights = await detectUncategorized(userId);
 
   const allInsights = [
     ...budgetInsights,
@@ -955,7 +955,7 @@ export function generateInsights(userId: string): InsightsResult {
   const recommendations = generateRecommendations(userId, allInsights);
 
   // Compute views
-  const { monthlyView, annualView } = computeMonthlyVsAnnualView(userId);
+  const { monthlyView, annualView } = await computeMonthlyVsAnnualView(userId);
 
   return {
     healthScore,

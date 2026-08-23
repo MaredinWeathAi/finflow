@@ -16,7 +16,7 @@ export const IS_PROD = process.env.NODE_ENV === 'production';
 // Durable app secrets (survive restarts, portable to Postgres)
 // ---------------------------------------------------------------------------
 
-async function readAppConfig(key: string): string | null {
+async function readAppConfig(key: string): Promise<string | null> {
   try {
     const row = await db.get('SELECT value FROM app_config WHERE key = ?', key) as { value: string } | undefined;
     return row?.value ?? null;
@@ -25,7 +25,7 @@ async function readAppConfig(key: string): string | null {
   }
 }
 
-async function writeAppConfig(key: string, value: string): void {
+async function writeAppConfig(key: string, value: string): Promise<void> {
   try {
     await db.run(`INSERT INTO app_config (key, value, created_at, updated_at) VALUES (?, ?, ?, ?)
        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`, key, value, new Date().toISOString(), new Date().toISOString());
@@ -38,14 +38,14 @@ async function writeAppConfig(key: string, value: string): void {
  * Resolve a secret from env, else from the durable app_config table, else
  * generate one and persist it.
  *
- * Resolution is LAZY and memoised: `app_config` does not exist until initDb()
- * has run, and this module is imported before that. Resolving eagerly would
- * mint a fresh secret on every boot and silently sign every user out on every
- * deploy.
+ * Resolution is memoised and happens once at boot via initSecurity():
+ * `app_config` does not exist until initDb() has run, and this module is
+ * imported before that. Resolving eagerly would mint a fresh secret on every
+ * boot and silently sign every user out on every deploy.
  */
 const secretCache = new Map<string, { value: string; source: string }>();
 
-function resolveDurableSecret(envName: string, configKey: string, bytes = 48): { value: string; source: string } {
+async function resolveDurableSecret(envName: string, configKey: string, bytes = 48): Promise<{ value: string; source: string }> {
   const cached = secretCache.get(configKey);
   if (cached) return cached;
 
@@ -58,15 +58,15 @@ function resolveDurableSecret(envName: string, configKey: string, bytes = 48): {
     if (fromEnv && fromEnv.length < 32) {
       console.warn(`[security] ${envName} is set but shorter than 32 characters — ignoring it. Set a longer value.`);
     }
-    const stored = readAppConfig(configKey);
+    const stored = await readAppConfig(configKey);
     if (stored) {
       result = { value: stored, source: 'database' };
     } else {
       const generated = crypto.randomBytes(bytes).toString('base64url');
-      writeAppConfig(configKey, generated);
+      await writeAppConfig(configKey, generated);
       // If the write failed the table isn't ready; don't cache a value that
       // won't survive, so the next call can try again.
-      if (readAppConfig(configKey) !== generated) {
+      if ((await readAppConfig(configKey)) !== generated) {
         console.error(`[security] could not persist ${configKey}; using an ephemeral secret for now.`);
         return { value: generated, source: 'ephemeral' };
       }
@@ -78,22 +78,38 @@ function resolveDurableSecret(envName: string, configKey: string, bytes = 48): {
   return result;
 }
 
+/**
+ * Boot-time resolution of both durable secrets, called once after initDb().
+ * The synchronous getters below read these caches; they never resolve on
+ * their own, because minting a fresh secret lazily would sign every user out.
+ */
+let jwtSecretCached: { value: string; source: string } | null = null;
+let kekV1Cached: { value: string; source: string } | null = null;
+
+export async function initSecurity(): Promise<void> {
+  jwtSecretCached = await resolveDurableSecret('JWT_SECRET', 'jwt_secret');
+  kekV1Cached = await resolveDurableSecret('FINFLOW_KEK_V1', 'kek_v1', 32);
+}
+
 export function getJwtSecret(): string {
-  return resolveDurableSecret('JWT_SECRET', 'jwt_secret').value;
+  if (!jwtSecretCached) throw new Error('initSecurity() has not run yet');
+  return jwtSecretCached.value;
 }
 
 export function getJwtSecretSource(): string {
-  return resolveDurableSecret('JWT_SECRET', 'jwt_secret').source;
+  if (!jwtSecretCached) throw new Error('initSecurity() has not run yet');
+  return jwtSecretCached.source;
 }
 
 /** Key-encryption key for provider access tokens (bank aggregation). */
 export function getKekV1(): Buffer {
-  const { value } = resolveDurableSecret('FINFLOW_KEK_V1', 'kek_v1', 32);
-  return crypto.createHash('sha256').update(value).digest(); // always exactly 32 bytes
+  if (!kekV1Cached) throw new Error('initSecurity() has not run yet');
+  return crypto.createHash('sha256').update(kekV1Cached.value).digest(); // always exactly 32 bytes
 }
 
 export function getKekSource(): string {
-  return resolveDurableSecret('FINFLOW_KEK_V1', 'kek_v1', 32).source;
+  if (!kekV1Cached) throw new Error('initSecurity() has not run yet');
+  return kekV1Cached.source;
 }
 
 export const JWT_ALGORITHM = 'HS256' as const;
@@ -160,7 +176,7 @@ export function validatePassword(password: unknown, email?: string): PasswordChe
  * the legitimate owner out of their own data. Flagging closes the account to
  * useful work by an attacker while leaving the owner a path to recover.
  */
-export async function enforceNoDefaultCredentials(): void {
+export async function enforceNoDefaultCredentials(): Promise<void> {
   let flagged = 0;
   try {
     const users = await db.all('SELECT id, email, password_hash, must_change_password FROM users LIMIT 1000') as Array<{

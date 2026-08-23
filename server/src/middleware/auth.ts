@@ -41,7 +41,7 @@ const PASSWORD_CHANGE_ALLOWLIST = new Set([
   '/api/health',
 ]);
 
-export async function authMiddleware(req: Request, res: Response, next: NextFunction): void {
+export async function authMiddleware(req: Request, res: Response, next: NextFunction): Promise<void> {
   const authHeader = req.headers.authorization;
 
   if (!authHeader || !authHeader.startsWith('Bearer ')) {

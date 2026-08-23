@@ -31,19 +31,20 @@ router.get('/', async (req: Request, res: Response) => {
          ORDER BY c.sort_order ASC`, userId, monthStr, monthPrefix) as any[];
 
     // Calculate spent for each budget category
-    const budgetsWithSpent = budgets.map(async (budget) => {
+    const budgetsWithSpent: any[] = [];
+    for (const budget of budgets) {
       // Sum negative transaction amounts (expenses) for this category in the given month
       const spentResult = await db.get(`SELECT COALESCE(SUM(ABS(amount)), 0) as spent
            FROM transactions
            WHERE user_id = ? AND category_id = ? AND amount < 0
              AND date >= ? AND date <= ?`, userId, budget.category_id, monthStr, endDate) as any;
 
-      return {
+      budgetsWithSpent.push({
         ...budget,
         spent: spentResult.spent,
         remaining: budget.amount - spentResult.spent + (budget.rollover_amount || 0),
-      };
-    });
+      });
+    }
 
     res.json(budgetsWithSpent);
   } catch (error) {
@@ -139,10 +140,10 @@ router.post('/rollover/:month', async (req: Request, res: Response) => {
 
     const rolloverResults: any[] = [];
 
-    const processRollover = db.transaction(async () => {
+    await db.tx(async (t) => {
       for (const prevBudget of prevBudgets) {
         // Calculate spent in previous month
-        const spentResult = await db.get(`SELECT COALESCE(SUM(ABS(amount)), 0) as spent
+        const spentResult = await t.get(`SELECT COALESCE(SUM(ABS(amount)), 0) as spent
              FROM transactions
              WHERE user_id = ? AND category_id = ? AND amount < 0
                AND date >= ? AND date <= ?`, userId, prevBudget.category_id, prevMonth, prevEndDate) as any;
@@ -153,14 +154,14 @@ router.post('/rollover/:month', async (req: Request, res: Response) => {
         // Only roll over positive remaining amounts
         if (remaining > 0) {
           // Check if a budget exists for the target month
-          const targetBudget = await db.get('SELECT id FROM budgets WHERE user_id = ? AND category_id = ? AND month = ?', userId, prevBudget.category_id, targetMonth) as any;
+          const targetBudget = await t.get('SELECT id FROM budgets WHERE user_id = ? AND category_id = ? AND month = ?', userId, prevBudget.category_id, targetMonth) as any;
 
           if (targetBudget) {
-            await db.run('UPDATE budgets SET rollover_amount = ? WHERE id = ?', remaining, targetBudget.id);
+            await t.run('UPDATE budgets SET rollover_amount = ? WHERE id = ?', remaining, targetBudget.id);
           } else {
             // Create a new budget for the target month with rollover
             const id = crypto.randomUUID();
-            await db.run(`INSERT INTO budgets (id, user_id, category_id, month, amount, rollover, rollover_amount)
+            await t.run(`INSERT INTO budgets (id, user_id, category_id, month, amount, rollover, rollover_amount)
                VALUES (?, ?, ?, ?, ?, 1, ?)`, id, userId, prevBudget.category_id, targetMonth, prevBudget.amount, remaining);
           }
 
@@ -171,8 +172,6 @@ router.post('/rollover/:month', async (req: Request, res: Response) => {
         }
       }
     });
-
-    processRollover();
 
     res.json({
       message: `Rollover calculated for ${targetMonth}`,

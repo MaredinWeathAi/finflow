@@ -58,7 +58,7 @@ router.put('/:id', async (req: Request, res: Response) => {
 
     // If the resolution includes a category rule, learn it
     if (resolution?.learnRule && resolution.pattern && resolution.categoryId) {
-      learnRule(userId, resolution.pattern, resolution.categoryId, resolution.matchType || 'contains');
+      await learnRule(userId, resolution.pattern, resolution.categoryId, resolution.matchType || 'contains');
     }
 
     res.json({ message: 'Clarification resolved' });

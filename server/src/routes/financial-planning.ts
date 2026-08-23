@@ -8,7 +8,7 @@ const router = Router();
  * Returns the supplied id only if it belongs to this user; otherwise the
  * caller's own fallback account.
  */
-async function resolveOwnedAccountId(userId: string, candidate: unknown, fallback: string): string {
+async function resolveOwnedAccountId(userId: string, candidate: unknown, fallback: string): Promise<string> {
   if (typeof candidate !== 'string' || !candidate) return fallback;
   const owned = await db.get('SELECT id FROM accounts WHERE id = ? AND user_id = ?', candidate, userId) as { id: string } | undefined;
   return owned?.id ?? fallback;
@@ -777,7 +777,7 @@ router.post('/sync/investments', async (req: Request, res: Response) => {
           await db.run(`INSERT INTO investments (id, user_id, account_id, symbol, name, type, shares, cost_basis, current_price, last_updated)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, userId, // SECURITY: a client-supplied account_id must belong to the caller;
                         // otherwise fall back to their own detected investment account.
-                        resolveOwnedAccountId(userId, inv.account_id, investmentAccount.id), inv.symbol.toUpperCase(), inv.name, inv.type || 'stock', inv.shares || 0, inv.cost_basis || 0, inv.current_price || 0, now);
+                        await resolveOwnedAccountId(userId, inv.account_id, investmentAccount.id), inv.symbol.toUpperCase(), inv.name, inv.type || 'stock', inv.shares || 0, inv.cost_basis || 0, inv.current_price || 0, now);
           results.created++;
         }
       } catch (err: any) {

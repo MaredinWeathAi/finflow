@@ -105,7 +105,7 @@ function classifyIncomeType(name: string, amount: number): string {
 }
 
 // Helper: auto-create account from statement metadata
-async function autoCreateAccount(userId: string, statementMeta: any): string {
+async function autoCreateAccount(userId: string, statementMeta: any): Promise<string> {
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
 
@@ -172,7 +172,7 @@ async function autoCreateAccount(userId: string, statementMeta: any): string {
 }
 
 // Ensure user has default categories
-async function ensureDefaultCategories(userId: string): void {
+async function ensureDefaultCategories(userId: string): Promise<void> {
   const existingCount = (await db.get('SELECT COUNT(*) as count FROM categories WHERE user_id = ?', userId) as any).count;
   if (existingCount > 0) return;
 
@@ -201,13 +201,12 @@ async function ensureDefaultCategories(userId: string): void {
     { name: 'Uncategorized', icon: '❓', color: '#64748B', isIncome: false },
   ];
 
-  const insert = db.prepare(
-    `INSERT INTO categories (id, user_id, name, icon, color, is_income, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?)`
-  );
+  const INSERT_CATEGORY_SQL =
+    `INSERT INTO categories (id, user_id, name, icon, color, is_income, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?)`;
 
-  defaults.forEach((cat, idx) => {
-    insert.run(crypto.randomUUID(), userId, cat.name, cat.icon, cat.color, cat.isIncome ? 1 : 0, idx);
-  });
+  for (const [idx, cat] of defaults.entries()) {
+    await db.run(INSERT_CATEGORY_SQL, crypto.randomUUID(), userId, cat.name, cat.icon, cat.color, cat.isIncome ? 1 : 0, idx);
+  }
 
   console.log(`Created ${defaults.length} default categories for user ${userId}`);
 }
@@ -223,7 +222,7 @@ router.post('/', upload.array('files', MAX_FILES), enforceTotalSize, async (req:
     }
 
     // Ensure user has default categories
-    ensureDefaultCategories(userId);
+    await ensureDefaultCategories(userId);
 
     const now = new Date().toISOString();
     const sessionId = crypto.randomUUID();
@@ -252,7 +251,7 @@ router.post('/', upload.array('files', MAX_FILES), enforceTotalSize, async (req:
         // Auto-create account from statement metadata if needed
         let autoAccountId: string | null = null;
         if (result.statementMeta) {
-          autoAccountId = autoCreateAccount(userId, result.statementMeta);
+          autoAccountId = await autoCreateAccount(userId, result.statementMeta);
         }
 
         // If user has no accounts at all, create a default checking account
@@ -270,10 +269,9 @@ router.post('/', upload.array('files', MAX_FILES), enforceTotalSize, async (req:
         await db.run(`UPDATE uploaded_files SET row_count = ?, status = 'parsed' WHERE id = ?`, result.rowCount, fileId);
 
         // Create pending items from parsed rows
-        const insertPending = db.prepare(
+        const INSERT_PENDING_SQL =
           `INSERT INTO pending_items (id, session_id, file_id, user_id, item_type, raw_data, parsed_name, parsed_amount, parsed_date, parsed_category, matched_category_id, matched_account_id, status, confidence, created_at)
-           VALUES (?, ?, ?, ?, 'transaction', ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
-        );
+           VALUES (?, ?, ?, ?, 'transaction', ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`;
 
         const filePendingItems: PendingItemData[] = [];
 
@@ -281,7 +279,7 @@ router.post('/', upload.array('files', MAX_FILES), enforceTotalSize, async (req:
           const itemId = crypto.randomUUID();
 
           // Auto-categorize
-          const catResult = categorizeItem(row.name, row.amount, userId);
+          const catResult = await categorizeItem(row.name, row.amount, userId);
 
           // Detect transfer type
           const transferInfo = detectTransferType(row.name, row.amount);
@@ -322,7 +320,7 @@ router.post('/', upload.array('files', MAX_FILES), enforceTotalSize, async (req:
           // Classify income type
           const incomeType = classifyIncomeType(row.name, finalAmount);
 
-          insertPending.run(
+          await db.run(INSERT_PENDING_SQL,
             itemId, sessionId, fileId, userId,
             JSON.stringify({ ...row.rawData, incomeType, transferType: transferInfo.transferType || row.transferType || null }),
             row.name,
@@ -385,7 +383,7 @@ router.post('/', upload.array('files', MAX_FILES), enforceTotalSize, async (req:
     }
 
     // Detect duplicates against existing transactions
-    const dbDuplicates = findDuplicates(allPendingItems, userId);
+    const dbDuplicates = await findDuplicates(allPendingItems, userId);
 
     // Detect cross-file overlaps
     const crossDuplicates = findCrossFileOverlaps(allPendingItems);
@@ -441,11 +439,11 @@ router.get('/sessions', async (req: Request, res: Response) => {
     const userId = req.user!.id;
     const sessions = await db.all(`SELECT * FROM upload_sessions WHERE user_id = ? ORDER BY created_at DESC LIMIT 20`, userId) as any[];
 
-    const getFiles = db.prepare('SELECT * FROM uploaded_files WHERE session_id = ?');
-    const enriched = sessions.map(s => ({
+    const GET_FILES_SQL = 'SELECT * FROM uploaded_files WHERE session_id = ?';
+    const enriched = await Promise.all(sessions.map(async s => ({
       ...s,
-      files: getFiles.all(s.id),
-    }));
+      files: await db.all(GET_FILES_SQL, s.id),
+    })));
 
     res.json(enriched);
   } catch (error) {
@@ -498,7 +496,7 @@ function extractCoreName(name: string): string {
 
 // PUT /items/bulk-update - update multiple items at once
 // IMPORTANT: This route must be defined BEFORE /items/:id to avoid being caught by the param route
-router.put('/items/bulk-update', (req: Request, res: Response) => {
+router.put('/items/bulk-update', async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
     const { itemIds, updates } = req.body;
@@ -522,16 +520,14 @@ router.put('/items/bulk-update', (req: Request, res: Response) => {
       return res.status(400).json({ error: 'No valid fields to update' });
     }
 
-    const bulkUpdate = db.transaction(async (ids: string[]) => {
+    const updated = await db.tx(async (t) => {
       let updated = 0;
-      for (const id of ids) {
-        const result = await db.run(`UPDATE pending_items SET ${fields.join(', ')} WHERE id = ? AND user_id = ?`, ...vals, id, userId);
+      for (const id of itemIds) {
+        const result = await t.run(`UPDATE pending_items SET ${fields.join(', ')} WHERE id = ? AND user_id = ?`, ...vals, id, userId);
         updated += result.changes;
       }
       return updated;
     });
-
-    const updated = bulkUpdate(itemIds);
     res.json({ message: `${updated} items updated`, updated });
   } catch (error) {
     res.status(500).json({ error: 'Failed to bulk update items' });
@@ -584,7 +580,7 @@ router.put('/items/:id', async (req: Request, res: Response) => {
     if (matched_category_id && existing.parsed_name) {
       // 1. Learn the rule so future uploads auto-categorize
       try {
-        learnRuleFromCategorizer(userId, existing.parsed_name.toLowerCase(), matched_category_id, 'contains');
+        await learnRuleFromCategorizer(userId, existing.parsed_name.toLowerCase(), matched_category_id, 'contains');
       } catch (e) { /* ignore duplicate rules */ }
 
       // 2. Find similar pending items in the same session
@@ -609,16 +605,14 @@ router.put('/items/:id', async (req: Request, res: Response) => {
         }
 
         if (toUpdate.length > 0) {
-          const updateSibling = db.prepare(
-            `UPDATE pending_items SET matched_category_id = ?, status = 'approved' WHERE id = ?`
-          );
-          const applyBatch = db.transaction((ids: string[]) => {
-            for (const sibId of ids) {
-              updateSibling.run(matched_category_id, sibId);
+          const UPDATE_SIBLING_SQL =
+            `UPDATE pending_items SET matched_category_id = ?, status = 'approved' WHERE id = ?`;
+          await db.tx(async (t) => {
+            for (const sibId of toUpdate) {
+              await t.run(UPDATE_SIBLING_SQL, matched_category_id, sibId);
               autoUpdated.push({ id: sibId, matched_category_id, status: 'approved' });
             }
           });
-          applyBatch(toUpdate);
         }
       }
     }
@@ -674,21 +668,19 @@ router.post('/sessions/:id/import', async (req: Request, res: Response) => {
     const now = new Date().toISOString();
     let importedCount = 0;
 
-    const importTransaction = db.transaction(async () => {
-      const insertTx = db.prepare(
-        `INSERT INTO transactions (id, user_id, account_id, name, amount, category_id, date, notes, is_pending, is_recurring, tags, source, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, '[]', 'upload', ?, ?)`
-      );
+    const INSERT_TX_SQL =
+      `INSERT INTO transactions (id, user_id, account_id, name, amount, category_id, date, notes, is_pending, is_recurring, tags, source, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, '[]', 'upload', ?, ?)`;
 
-      const updateItem = db.prepare(
-        `UPDATE pending_items SET status = 'imported' WHERE id = ?`
-      );
+    const UPDATE_ITEM_SQL =
+      `UPDATE pending_items SET status = 'imported' WHERE id = ?`;
 
+    await db.tx(async (t) => {
       for (const item of items) {
         const accountId = item.matched_account_id || defaultAccount.id;
         const txId = crypto.randomUUID();
 
-        insertTx.run(
+        await t.run(INSERT_TX_SQL,
           txId, userId, accountId,
           item.parsed_name,
           item.parsed_amount,
@@ -698,16 +690,14 @@ router.post('/sessions/:id/import', async (req: Request, res: Response) => {
           now, now
         );
 
-        updateItem.run(item.id);
+        await t.run(UPDATE_ITEM_SQL, item.id);
 
         // Update account balance
-        await db.run('UPDATE accounts SET balance = balance + ?, updated_at = ? WHERE id = ?', item.parsed_amount, now, accountId);
+        await t.run('UPDATE accounts SET balance = balance + ?, updated_at = ? WHERE id = ?', item.parsed_amount, now, accountId);
 
         importedCount++;
       }
     });
-
-    importTransaction();
 
     // Update session
     await db.run(`UPDATE upload_sessions SET status = 'completed', imported_items = ?, completed_at = ? WHERE id = ?`, importedCount, now, id);

@@ -188,12 +188,11 @@ router.post('/detect', async (req: Request, res: Response) => {
 
     // 4. Auto-create new recurring expenses for untracked patterns
     const created: Array<{ name: string; amount: number; frequency: string; confidence: number }> = [];
-    const insertStmt = db.prepare(
+    const insertSql =
       `INSERT INTO recurring_expenses (id, user_id, name, amount, category_id, frequency, next_date, is_active, notes, price_history, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`
-    );
+       VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`;
 
-    const createBatch = db.transaction(() => {
+    await db.tx(async (t) => {
       for (const c of candidates) {
         if (existingCores.has(c.coreName)) continue;
 
@@ -205,12 +204,11 @@ router.post('/detect', async (req: Request, res: Response) => {
         const priceHistory = JSON.stringify([{ date: nowStr, amount: c.amount }]);
         const notes = `Auto-detected (${c.frequency}, ${c.occurrences} occurrences, ${Math.round(c.confidence * 100)}% confidence)`;
 
-        insertStmt.run(id, userId, c.name, c.amount, c.category_id, c.frequency, nextDate, notes, priceHistory, nowStr, nowStr);
+        await t.run(insertSql, id, userId, c.name, c.amount, c.category_id, c.frequency, nextDate, notes, priceHistory, nowStr, nowStr);
         created.push({ name: c.name, amount: c.amount, frequency: c.frequency, confidence: c.confidence });
         existingCores.add(c.coreName);
       }
     });
-    createBatch();
 
     // 5. Deactivate stale recurrings not seen in 4+ months
     const fourMonthsAgo = new Date(now);
@@ -220,9 +218,8 @@ router.post('/detect', async (req: Request, res: Response) => {
     const activeRecurrings = await db.all('SELECT id, name FROM recurring_expenses WHERE user_id = ? AND is_active = 1', userId) as Array<{ id: string; name: string }>;
 
     const deactivated: string[] = [];
-    const deactivateStmt = db.prepare(
-      `UPDATE recurring_expenses SET is_active = 0, updated_at = ? WHERE id = ?`
-    );
+    const deactivateSql =
+      `UPDATE recurring_expenses SET is_active = 0, updated_at = ? WHERE id = ?`;
 
     for (const rec of activeRecurrings) {
       const core = recurringCoreName(rec.name);
@@ -230,7 +227,7 @@ router.post('/detect', async (req: Request, res: Response) => {
         tx => recurringCoreName(tx.name) === core && tx.date >= staleCutoff
       );
       if (!recentMatch) {
-        deactivateStmt.run(new Date().toISOString(), rec.id);
+        await db.run(deactivateSql, new Date().toISOString(), rec.id);
         deactivated.push(rec.name);
       }
     }
