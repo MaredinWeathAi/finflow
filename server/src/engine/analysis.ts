@@ -98,6 +98,18 @@ export interface FinancialAnalysis {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Round a money value to cents.
+ *
+ * Floating-point SUM is not associative, so SQLite and Postgres can return
+ * 38288.8 and 38288.799999999996 for the same rows depending on summation
+ * order. Beyond engine parity, a financial app should never emit a raw binary
+ * float to the client. Most of this file already rounded; these were the gaps.
+ */
+function money(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
 function fmtCurrency(amount: number): string {
   return `$${Math.abs(amount).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
@@ -162,9 +174,9 @@ async function analyzeAccounts(userId: string): Promise<{ summaries: AccountSumm
       accountType: acct.type,
       institution: acct.institution || '',
       balance: acct.balance,
-      totalInflows: inflows.total,
-      totalOutflows: outflows.total,
-      netFlow: inflows.total - outflows.total,
+      totalInflows: money(inflows.total),
+      totalOutflows: money(outflows.total),
+      netFlow: money(inflows.total - outflows.total),
       transactionCount: inflows.cnt + outflows.cnt,
     });
 
@@ -219,7 +231,7 @@ async function analyzeIncome(userId: string): Promise<{ sources: IncomeSource[];
     total += totalAmount;
     sources.push({
       name: incomeTransactions.find(t => t.name.toLowerCase().replace(/\s+/g, ' ').trim() === name)?.name || name,
-      totalAmount,
+      totalAmount: money(totalAmount),
       count: data.amounts.length,
       avgAmount: Math.round(avgAmount * 100) / 100,
       frequency,
@@ -230,7 +242,7 @@ async function analyzeIncome(userId: string): Promise<{ sources: IncomeSource[];
   sources.sort((a, b) => b.totalAmount - a.totalAmount);
 
   // Calculate avg monthly based on date range
-  const dateRange = await db.get(`SELECT MIN(date) as minDate, MAX(date) as maxDate FROM transactions WHERE user_id = ? AND amount > 0`, userId) as any;
+  const dateRange = await db.get(`SELECT MIN(date) as "minDate", MAX(date) as "maxDate" FROM transactions WHERE user_id = ? AND amount > 0`, userId) as any;
 
   let months = 1;
   if (dateRange.minDate && dateRange.maxDate) {
@@ -287,7 +299,7 @@ async function analyzeExpenses(userId: string): Promise<{ merchants: MerchantSum
 
   merchants.sort((a, b) => b.totalSpent - a.totalSpent);
 
-  const dateRange = await db.get(`SELECT MIN(date) as minDate, MAX(date) as maxDate FROM transactions WHERE user_id = ? AND amount < 0`, userId) as any;
+  const dateRange = await db.get(`SELECT MIN(date) as "minDate", MAX(date) as "maxDate" FROM transactions WHERE user_id = ? AND amount < 0`, userId) as any;
 
   let months = 1;
   if (dateRange.minDate && dateRange.maxDate) {
@@ -355,7 +367,7 @@ async function analyzeTransfers(userId: string): Promise<{ transfers: TransferPa
           transfers.push({
             fromAccount: from.account_name,
             toAccount: to.account_name,
-            amount: Math.abs(from.amount),
+            amount: money(Math.abs(from.amount)),
             date: from.date,
             description: from.name,
             status: 'matched',
@@ -373,7 +385,7 @@ async function analyzeTransfers(userId: string): Promise<{ transfers: TransferPa
       transfers.push({
         fromAccount: txn.amount < 0 ? txn.account_name : 'External',
         toAccount: txn.amount > 0 ? txn.account_name : 'External',
-        amount: Math.abs(txn.amount),
+        amount: money(Math.abs(txn.amount)),
         date: txn.date,
         description: txn.name,
         status: 'unmatched',
@@ -445,7 +457,7 @@ async function detectPatterns(
       type: 'fixed-vs-variable',
       title: 'Fixed vs Variable Spending',
       description: `${(fixedPct * 100).toFixed(0)}% of your spending (${fmtCurrency(fixedTotal)}) is recurring/fixed costs, while ${((1 - fixedPct) * 100).toFixed(0)}% (${fmtCurrency(variableTotal)}) is variable. ${fixedPct > 0.7 ? 'Your high fixed costs leave less room for discretionary cuts. Focus on renegotiating or eliminating recurring services.' : 'You have flexibility in your variable spending to optimize savings.'}`,
-      amount: fixedTotal,
+      amount: money(fixedTotal),
       percentage: fixedPct,
     });
   }
@@ -498,14 +510,14 @@ async function detectPatterns(
         type: 'trend-improving',
         title: 'Cash Flow Improving',
         description: `Your net cash flow has improved for 3 consecutive months: ${recent.map(m => `${m.month}: ${fmtCurrency(m.net)}`).join(' → ')}. This positive trajectory suggests your financial habits are strengthening.`,
-        amount: nets[2],
+        amount: money(nets[2]),
       });
     } else if (isDeclining) {
       patterns.push({
         type: 'trend-declining',
         title: 'Cash Flow Declining',
         description: `Your net cash flow has declined for 3 consecutive months: ${recent.map(m => `${m.month}: ${m.net >= 0 ? '+' : '-'}${fmtCurrency(m.net)}`).join(' → ')}. Review recent spending increases and income changes to reverse this trend.`,
-        amount: nets[2],
+        amount: money(nets[2]),
       });
     }
   }
@@ -519,7 +531,7 @@ async function detectPatterns(
       type: 'large-transactions',
       title: 'Large Transactions',
       description: `You have ${largeTxns.cnt} transactions over $500 totaling ${fmtCurrency(largeTxns.total)}. Large infrequent expenses can skew monthly budgets. Consider setting aside a monthly buffer for irregular large expenses.`,
-      amount: largeTxns.total,
+      amount: money(largeTxns.total),
     });
   }
 
@@ -618,7 +630,9 @@ async function detectPatterns(
        WHERE t.user_id = ? AND t.amount < 0
          AND LOWER(c.name) NOT IN ('cc pmt', 'transfer')
        GROUP BY c.id
-       HAVING cnt >= 5`, userId) as any[];
+       -- HAVING cannot reference a SELECT alias in Postgres (it is evaluated
+       -- before the select list); SQLite permits it. Repeat the aggregate.
+       HAVING COUNT(*) >= 5`, userId) as any[];
 
     const outliers: { name: string; amount: number; category: string; date: string; ratio: number }[] = [];
 
@@ -627,14 +641,17 @@ async function detectPatterns(
       const bigOnes = await db.all(`SELECT t.name, ABS(t.amount) as amount, t.date
          FROM transactions t
          WHERE t.user_id = ? AND t.category_id = ? AND t.amount < 0
-           AND ABS(t.amount) > ? * 3
+           -- 3.0 not 3: Postgres infers the bound parameter's type from the
+           -- literal, so a bare integer types the parameter as integer and
+           -- rejects a fractional average. SQLite coerced it silently.
+           AND ABS(t.amount) > ? * 3.0
          ORDER BY ABS(t.amount) DESC
          LIMIT 3`, userId, cat.category_id, cat.avg_amount) as any[];
 
       for (const txn of bigOnes) {
         outliers.push({
           name: txn.name,
-          amount: txn.amount,
+          amount: money(txn.amount),
           category: cat.category,
           date: txn.date,
           ratio: txn.amount / cat.avg_amount,

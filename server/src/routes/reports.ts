@@ -169,7 +169,7 @@ router.get('/cashflow', async (req: Request, res: Response) => {
     // Drop the oldest month if it's partial (first transaction after day 10)
     if (recentDataMonths.length > 0) {
       const oldestCandidate = recentDataMonths[recentDataMonths.length - 1].ym;
-      const minDateResult = await db.get(`SELECT MIN(date) as minDate FROM transactions WHERE user_id = ? AND substr(date, 1, 7) = ?`, userId, oldestCandidate) as any;
+      const minDateResult = await db.get(`SELECT MIN(date) as "minDate" FROM transactions WHERE user_id = ? AND substr(date, 1, 7) = ?`, userId, oldestCandidate) as any;
       if (minDateResult?.minDate) {
         const day = parseInt(minDateResult.minDate.substring(8, 10));
         if (day > 10) {
@@ -537,7 +537,7 @@ router.get('/dashboard-summary', async (req: Request, res: Response) => {
     // Drop the oldest month if it's partial (first transaction after day 10)
     if (recentMonths.length > 0) {
       const oldestCandidate = recentMonths[recentMonths.length - 1].ym;
-      const minDateResult = await db.get(`SELECT MIN(date) as minDate FROM transactions WHERE user_id = ? AND substr(date, 1, 7) = ?`, userId, oldestCandidate) as any;
+      const minDateResult = await db.get(`SELECT MIN(date) as "minDate" FROM transactions WHERE user_id = ? AND substr(date, 1, 7) = ?`, userId, oldestCandidate) as any;
       if (minDateResult?.minDate) {
         const day = parseInt(minDateResult.minDate.substring(8, 10));
         if (day > 10) {

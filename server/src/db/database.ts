@@ -447,18 +447,62 @@ export function getDriver(): 'sqlite' | 'postgres' {
  * Swap in the Postgres driver. Called once at boot, after initDb(), and only
  * when DB_DRIVER=postgres and DATABASE_URL is present.
  */
+/**
+ * Decide whether to negotiate TLS to Postgres.
+ *
+ * Railway's private network (`*.railway.internal`) and a loopback instance are
+ * already isolated and typically have TLS disabled server-side; forcing it there
+ * fails with "The server does not support SSL connections". Anything reachable
+ * over a public network gets TLS. An explicit `sslmode` in the URL always wins.
+ */
+export function resolvePgSsl(url: string | undefined): false | { rejectUnauthorized: boolean } {
+  if (!url) return false;
+  const lower = url.toLowerCase();
+  if (/[?&]sslmode=disable\b/.test(lower)) return false;
+  if (/[?&]sslmode=(require|verify-ca|verify-full|prefer)\b/.test(lower)) return { rejectUnauthorized: false };
+
+  let host = '';
+  try { host = new URL(url).hostname.toLowerCase(); } catch { /* fall through */ }
+  const isPrivate =
+    host.endsWith('.railway.internal') ||
+    host === 'localhost' || host === '127.0.0.1' || host === '::1' ||
+    /^10\./.test(host) || /^192\.168\./.test(host) || /^172\.(1[6-9]|2\d|3[01])\./.test(host);
+
+  return isPrivate ? false : { rejectUnauthorized: false };
+}
+
 export async function usePostgres(): Promise<void> {
   const { default: pg } = await import('pg');
+  // COUNT(*) and other bigint results come back from node-postgres as strings
+  // by default (int8 may exceed 2^53). Nothing in this app counts past 2^53,
+  // and every call site expects a number (`userCount === 0`, arithmetic on
+  // counts), so parse int8 as a JS number to preserve SQLite behaviour.
+  pg.types.setTypeParser(20, (v: string) => Number(v));
   const pool = new pg.Pool({
     connectionString: process.env.DATABASE_URL,
     max: Number(process.env.PG_POOL_MAX ?? 10),
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 10_000,
-    ssl: process.env.DATABASE_URL?.includes('railway.internal') ? undefined : { rejectUnauthorized: false },
+    ssl: resolvePgSsl(process.env.DATABASE_URL),
   });
   await pool.query('SELECT 1');
   db = new PostgresSql(pool as any);
   console.log('[db] driver: postgres');
+}
+
+/**
+ * Fall back to the SQLite driver after a failed Postgres cutover. A wrong-but-
+ * empty app is far worse than a delayed migration: if the schema apply or the
+ * one-shot migration throws, boot continues on the SQLite file that still
+ * holds all production data.
+ */
+export async function revertToSqlite(): Promise<void> {
+  const failed = db;
+  db = new SqliteSql(rawSqlite);
+  if (failed.driver === 'postgres') {
+    try { await failed.close(); } catch { /* pool may already be dead */ }
+  }
+  console.log('[db] driver: sqlite (fallback after failed Postgres cutover)');
 }
 
 /** Raw synchronous SQLite handle — boot-time schema work and the migrator only. */

@@ -60,6 +60,23 @@ t('ordinary SQL passes through untouched', () => {
   assert.equal(toPostgresDialect(q), q);
 });
 
+t('LIKE becomes ILIKE so Postgres matches SQLite case-insensitivity', () => {
+  const out = toPostgresDialect("SELECT * FROM t WHERE name LIKE ?");
+  assert.match(out, /ILIKE/);
+  assert.doesNotMatch(out, /[^I]LIKE/);
+});
+
+t('NOT LIKE survives the ILIKE rewrite', () =>
+  assert.match(toPostgresDialect('SELECT * FROM t WHERE a NOT LIKE ?'), /NOT ILIKE/));
+
+t('quoted camelCase alias survives translation and placeholder rewriting', () => {
+  const q = 'SELECT MIN(date) as "minDate", SUM(x) as "totalIncome" FROM t WHERE u = ?';
+  const out = toPositional(toPostgresDialect(q));
+  assert.match(out, /"minDate"/);
+  assert.match(out, /"totalIncome"/);
+  assert.match(out, /\$1/);
+});
+
 // --- DDL ---
 t('REAL becomes double precision', () =>
   assert.match(translateDdl('CREATE TABLE t (amount REAL NOT NULL)'), /double precision/));

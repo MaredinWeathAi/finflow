@@ -111,6 +111,12 @@ export function toPostgresDialect(sql: string): string {
                 "to_char(date_trunc('month', now()), 'YYYY-MM-DD')");
   s = s.replace(/date\(\s*'now'\s*\)/gi, "to_char(now(), 'YYYY-MM-DD')");
 
+  // SQLite's LIKE is case-insensitive for ASCII by default; Postgres LIKE is
+  // case-sensitive. Mapping LIKE -> ILIKE preserves the behaviour the app was
+  // written against, so merchant search keeps matching the way it always has.
+  s = s.replace(/(^|[^\w])LIKE(\s)/gi, (m, pre, post) => `${pre}ILIKE${post}`);
+  s = s.replace(/\bNOT\s+ILIKE\b/gi, 'NOT ILIKE');
+
   s = s.replace(/\bIFNULL\s*\(/gi, 'COALESCE(');
   s = s.replace(/\bAUTOINCREMENT\b/gi, '');
   s = s.replace(/\bGROUP_CONCAT\s*\(/gi, 'string_agg(');

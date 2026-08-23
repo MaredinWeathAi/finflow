@@ -104,6 +104,48 @@ for (const file of files) {
     }
   }
 
+  // Unquoted camelCase SQL aliases. Postgres folds unquoted identifiers to
+  // lowercase, so `SELECT SUM(x) as totalIncome` arrives as `totalincome` and
+  // `row.totalIncome` is undefined — a financial figure silently becomes 0.
+  // Quoting the alias (`as "totalIncome"`) preserves the case on both engines.
+  //
+  // Only matches inside string literals count: `src` has strings blanked out, so
+  // an index that is whitespace there but non-whitespace in `raw` was inside a
+  // string. That distinguishes SQL from a multi-line TypeScript import alias.
+  for (const m of raw.matchAll(/\bas\s+([a-z]+[A-Z][A-Za-z0-9_]*)/g)) {
+    const i = m.index;
+    const insideString = /\S/.test(raw[i]) && !/\S/.test(src[i] ?? ' ');
+    if (!insideString) continue;
+    const ctx = raw.slice(Math.max(0, i - 400), i + 100);
+    if (!/\bSELECT\b/i.test(ctx)) continue;
+    const line = raw.slice(0, i).split('\n').length;
+    problems.push(`${file}:${line}  unquoted camelCase SQL alias "${m[1]}" — quote it or Postgres lowercases it`);
+  }
+
+  // SQLite lets HAVING reference a SELECT alias; Postgres evaluates HAVING
+  // before the select list, so `HAVING cnt >= 5` fails with
+  // `column "cnt" does not exist`. Require an aggregate or a grouped column.
+  for (const m of raw.matchAll(/HAVING\s+([A-Za-z_][\w]*)\s*(>=|<=|>|<|=|<>)/g)) {
+    const ident = m[1].toUpperCase();
+    if (['COUNT', 'SUM', 'AVG', 'MIN', 'MAX', 'TOTAL'].includes(ident)) continue;
+    const line = raw.slice(0, m.index).split('\n').length;
+    problems.push(`${file}:${line}  HAVING references the alias "${m[1]}" — Postgres cannot see select aliases in HAVING; repeat the aggregate`);
+  }
+
+  // A bound parameter in arithmetic with a bare integer literal: Postgres infers
+  // the parameter's type from the literal, so `? * 3` types it integer and
+  // rejects a fractional value at runtime. Write `3.0` to keep it floating point.
+  // Scoped to SQL strings so the TypeScript `??` operator is not mistaken for it.
+  for (const m of raw.matchAll(/(?<!\?)\?\s*[*\/]\s*(\d+)(?![.\d])|(?<![.\d])(\d+)\s*[*\/]\s*\?(?!\?)/g)) {
+    const i = m.index;
+    const insideString = /\S/.test(raw[i]) && !/\S/.test(src[i] ?? ' ');
+    if (!insideString) continue;
+    const ctx = raw.slice(Math.max(0, i - 400), i + 100);
+    if (!/\b(SELECT|WHERE|UPDATE|INSERT)\b/i.test(ctx)) continue;
+    const line = raw.slice(0, i).split('\n').length;
+    problems.push(`${file}:${line}  bound parameter in arithmetic with a bare integer literal (${m[0].trim()}) — use a decimal literal so Postgres infers a float`);
+  }
+
   // A leftover prepare() means the file was not converted at all.
   for (const m of src.matchAll(/\bdb\s*\.\s*prepare\s*\(/g)) {
     const line = src.slice(0, m.index).split('\n').length;

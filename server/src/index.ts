@@ -5,7 +5,9 @@ import { fileURLToPath } from 'url';
 import compression from 'compression';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
-import { initDb, db, hasRealUserData, getDriver, usePostgres } from './db/database.js';
+import { initDb, db, hasRealUserData, getDriver, usePostgres, revertToSqlite } from './db/database.js';
+import { applyPgSchema } from './db/schema-pg.js';
+import { migrateSqliteToPostgres } from './db/migrate-sqlite-to-postgres.js';
 import { authMiddleware, adminMiddleware } from './middleware/auth.js';
 
 // Route imports
@@ -175,11 +177,33 @@ initDb();
 
 // Switch the async data layer over to Postgres when configured. Everything above
 // this point still runs on SQLite, which is what the one-shot migrator reads.
+//
+// Cutover order: connect → apply schema (idempotent) → one-shot data migration
+// (idempotent, single transaction, verified). If ANY step throws, we fall back
+// to the SQLite driver — the file still holds all production data, and a
+// wrong-but-empty app is far worse than a delayed migration.
 if (getDriver() === 'postgres') {
   if (!process.env.DATABASE_URL) {
     console.error('[db] DB_DRIVER=postgres but DATABASE_URL is not set — staying on SQLite.');
   } else {
-    await usePostgres();
+    try {
+      await usePostgres();
+      await applyPgSchema(db);
+      const migration = await migrateSqliteToPostgres();
+      if (migration.migrated) {
+        console.log('[db] SQLite → Postgres migration completed and verified.');
+      } else {
+        console.log(`[db] SQLite → Postgres migration skipped: ${migration.reason}`);
+      }
+    } catch (err) {
+      console.error('='.repeat(72));
+      console.error('[db] ❌ POSTGRES CUTOVER FAILED — FALLING BACK TO SQLITE.');
+      console.error('[db] The migration transaction rolled back; Postgres was left untouched.');
+      console.error('[db] The app is serving from the SQLite file. Fix the error and redeploy.');
+      console.error(err);
+      console.error('='.repeat(72));
+      await revertToSqlite();
+    }
   }
 } else {
   console.log('[db] driver: sqlite');

@@ -99,8 +99,8 @@ router.get('/', async (req: Request, res: Response) => {
 
     // Get total count + aggregate income/expenses across ALL matching rows (not just page)
     const countResult = await db.get(`SELECT COUNT(*) as total,
-                COALESCE(SUM(CASE WHEN t.amount > 0 THEN t.amount ELSE 0 END), 0) as totalIncome,
-                COALESCE(SUM(CASE WHEN t.amount < 0 THEN ABS(t.amount) ELSE 0 END), 0) as totalExpenses
+                COALESCE(SUM(CASE WHEN t.amount > 0 THEN t.amount ELSE 0 END), 0) as "totalIncome",
+                COALESCE(SUM(CASE WHEN t.amount < 0 THEN ABS(t.amount) ELSE 0 END), 0) as "totalExpenses"
          FROM transactions t WHERE ${whereClause}`, ...params) as any;
     const total = countResult.total;
     const totalIncome = Math.round(countResult.totalIncome * 100) / 100;
@@ -115,7 +115,12 @@ router.get('/', async (req: Request, res: Response) => {
          LEFT JOIN categories c ON t.category_id = c.id
          LEFT JOIN accounts a ON t.account_id = a.id
          WHERE ${whereClause}
-         ORDER BY ${orderBy}
+         -- t.id is appended as a final tiebreaker. Without it the sort is not a
+         -- total order: many rows share a date/created_at, and with LIMIT/OFFSET
+         -- pagination an engine-defined tie order lets a row appear on two pages
+         -- or on none. SQLite and Postgres break ties differently, so this also
+         -- makes the two engines agree.
+         ORDER BY ${orderBy}, t.id DESC
          LIMIT ? OFFSET ?`, ...params, limit, offset))
       .map((t: any) => ({
         ...t,
