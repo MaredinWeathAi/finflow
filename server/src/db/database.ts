@@ -315,6 +315,22 @@ function initDb(): void {
     "ALTER TABLE category_rules ADD COLUMN is_enabled INTEGER DEFAULT 1",
     "ALTER TABLE category_rules ADD COLUMN priority INTEGER DEFAULT 0",
     "ALTER TABLE category_rules ADD COLUMN description TEXT DEFAULT ''",
+
+    // --- Security hardening (2026-08) ---
+    // Session generation. Bumped on password change/reset to revoke live JWTs.
+    "ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0",
+    // Set when an account is found using a known default password, or is
+    // administratively reset. Blocks every route except the change-password flow.
+    "ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE users ADD COLUMN password_changed_at TEXT",
+    "ALTER TABLE users ADD COLUMN failed_login_count INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE users ADD COLUMN locked_until TEXT",
+    "ALTER TABLE users ADD COLUMN last_login_at TEXT",
+    "ALTER TABLE users ADD COLUMN totp_secret TEXT",
+    "ALTER TABLE users ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0",
+    // Reset codes are stored hashed; the plaintext column is retired.
+    "ALTER TABLE password_reset_tokens ADD COLUMN token_hash TEXT",
+    "ALTER TABLE password_reset_tokens ADD COLUMN requested_ip TEXT",
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch { /* column already exists */ }
@@ -346,6 +362,45 @@ function initDb(): void {
       CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
     `);
   } catch { /* tables already exist */ }
+
+  // --- Security infrastructure tables (2026-08) ---
+  try {
+    db.exec(`
+      /* Durable app-level secrets and settings. Lets the app self-heal a missing
+         JWT_SECRET without regenerating it (and invalidating every session) on
+         each restart. */
+      CREATE TABLE IF NOT EXISTS app_config (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      /* Append-only security audit trail. */
+      CREATE TABLE IF NOT EXISTS audit_log (
+        id TEXT PRIMARY KEY,
+        user_id TEXT,
+        actor_email TEXT,
+        action TEXT NOT NULL,
+        target_id TEXT,
+        outcome TEXT NOT NULL DEFAULT 'success',
+        ip TEXT,
+        user_agent TEXT,
+        detail TEXT,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_audit_log_user ON audit_log(user_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_audit_log_action ON audit_log(action, created_at);
+      CREATE INDEX IF NOT EXISTS idx_audit_log_created ON audit_log(created_at);
+    `);
+  } catch (err) {
+    console.error('Security table init failed:', err);
+  }
+
+  // Backfill password_changed_at so the account-age signals are sane.
+  try {
+    db.prepare('UPDATE users SET password_changed_at = created_at WHERE password_changed_at IS NULL').run();
+  } catch { /* column may not exist on very old schemas */ }
 
   console.log('Database initialized successfully');
 }

@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '@/lib/api'
+import { assessPassword } from '@/lib/passwordPolicy'
+import { PasswordStrength } from '@/components/auth/PasswordStrength'
 
 export function ForgotPasswordPage() {
   const [step, setStep] = useState<'email' | 'code' | 'done'>('email')
@@ -32,8 +34,9 @@ export function ForgotPasswordPage() {
       setError('Passwords do not match')
       return
     }
-    if (newPassword.length < 6) {
-      setError('Password must be at least 6 characters')
+    const assessment = assessPassword(newPassword, email)
+    if (!assessment.ok) {
+      setError(assessment.problems[0] || 'Choose a stronger password')
       return
     }
     setLoading(true)
@@ -93,7 +96,9 @@ export function ForgotPasswordPage() {
             <>
               <h2 className="text-lg font-semibold mb-2">Enter reset code</h2>
               <p className="text-sm text-muted-foreground mb-4">
-                Check your email for a 6-character reset code. In dev mode, check the server console.
+                We've sent an 8-character code to your address. It expires in 15 minutes.
+                If no mail delivery is configured for this deployment, the code appears
+                in the server log instead — it is never returned to the browser.
               </p>
               {error && (
                 <div className="mb-4 p-3 rounded-lg bg-destructive/10 text-destructive text-sm">{error}</div>
@@ -106,8 +111,8 @@ export function ForgotPasswordPage() {
                     value={code}
                     onChange={e => setCode(e.target.value.toUpperCase())}
                     className="mt-1.5 w-full h-10 rounded-lg border border-input bg-background px-3 text-sm tracking-[0.3em] text-center font-mono focus:outline-none focus:ring-2 focus:ring-primary/50"
-                    placeholder="ABC123"
-                    maxLength={6}
+                    placeholder="ABCD2345"
+                    maxLength={8}
                     required
                   />
                 </div>
@@ -118,9 +123,11 @@ export function ForgotPasswordPage() {
                     value={newPassword}
                     onChange={e => setNewPassword(e.target.value)}
                     className="mt-1.5 w-full h-10 rounded-lg border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-                    placeholder="••••••••"
+                    placeholder="••••••••••••"
+                    autoComplete="new-password"
                     required
                   />
+                  <PasswordStrength password={newPassword} email={email} />
                 </div>
                 <div>
                   <label className="text-sm font-medium text-muted-foreground uppercase tracking-wider">Confirm Password</label>

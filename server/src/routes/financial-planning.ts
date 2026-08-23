@@ -3,6 +3,20 @@ import { db } from '../db/database.js';
 
 const router = Router();
 
+/**
+ * SECURITY: never trust an `account_id` that arrived in a request body.
+ * Returns the supplied id only if it belongs to this user; otherwise the
+ * caller's own fallback account.
+ */
+function resolveOwnedAccountId(userId: string, candidate: unknown, fallback: string): string {
+  if (typeof candidate !== 'string' || !candidate) return fallback;
+  const owned = db
+    .prepare('SELECT id FROM accounts WHERE id = ? AND user_id = ?')
+    .get(candidate, userId) as { id: string } | undefined;
+  return owned?.id ?? fallback;
+}
+
+
 const LIABILITY_TYPES = ['credit', 'loan', 'mortgage'];
 
 /**
@@ -847,7 +861,9 @@ router.post('/sync/investments', (req: Request, res: Response) => {
           ).run(
             id,
             userId,
-            inv.account_id || investmentAccount.id,
+            // SECURITY: a client-supplied account_id must belong to the caller;
+            // otherwise fall back to their own detected investment account.
+            resolveOwnedAccountId(userId, inv.account_id, investmentAccount.id),
             inv.symbol.toUpperCase(),
             inv.name,
             inv.type || 'stock',

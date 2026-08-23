@@ -1,7 +1,9 @@
 import { useEffect } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
-import { Toaster } from 'sonner'
+import { Toaster, toast } from 'sonner'
 import { useAuthStore } from '@/stores/authStore'
+import { onAuthEvent } from '@/lib/api'
+import { ForcePasswordChange } from '@/components/auth/ForcePasswordChange'
 import { AppLayout } from '@/components/layout/AppLayout'
 import { LoginPage } from '@/pages/LoginPage'
 import { ForgotPasswordPage } from '@/pages/ForgotPasswordPage'
@@ -24,7 +26,7 @@ import { AdminClientsPage } from '@/pages/AdminClientsPage'
 import { AdminClientDetailPage } from '@/pages/AdminClientDetailPage'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
-  const { isAuthenticated, isLoading } = useAuthStore()
+  const { isAuthenticated, isLoading, mustChangePassword } = useAuthStore()
 
   if (isLoading) {
     return (
@@ -35,6 +37,11 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   }
 
   if (!isAuthenticated) return <Navigate to="/login" replace />
+
+  // The server blocks every route for a flagged account; render the only screen
+  // that will actually work rather than a wall of failed requests.
+  if (mustChangePassword) return <ForcePasswordChange />
+
   return <>{children}</>
 }
 
@@ -55,10 +62,25 @@ function AdminRoute({ children }: { children: React.ReactNode }) {
 
 export default function App() {
   const checkAuth = useAuthStore(s => s.checkAuth)
+  const setMustChangePassword = useAuthStore(s => s.setMustChangePassword)
 
   useEffect(() => {
     checkAuth()
   }, [checkAuth])
+
+  // React to auth transitions raised by any in-flight request, so a revoked
+  // session or a newly-flagged account takes effect immediately instead of on
+  // the next full page load.
+  useEffect(() => {
+    return onAuthEvent(event => {
+      if (event === 'SESSION_REVOKED') {
+        toast.error('Your session ended. Please sign in again.')
+        void checkAuth()
+      } else if (event === 'PASSWORD_CHANGE_REQUIRED') {
+        setMustChangePassword(true)
+      }
+    })
+  }, [checkAuth, setMustChangePassword])
 
   return (
     <BrowserRouter>

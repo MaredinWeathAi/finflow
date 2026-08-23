@@ -1,5 +1,49 @@
 const API_BASE = '/api'
 
+/** Error carrying the server's machine-readable code, not just a message. */
+export class ApiError extends Error {
+  status: number
+  code?: string
+  retryAfterSeconds?: number
+  constructor(message: string, status: number, code?: string, retryAfterSeconds?: number) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+    this.code = code
+    this.retryAfterSeconds = retryAfterSeconds
+  }
+}
+
+type AuthEvent = 'SESSION_REVOKED' | 'PASSWORD_CHANGE_REQUIRED'
+const authListeners = new Set<(e: AuthEvent) => void>()
+
+/** Subscribe to out-of-band auth transitions raised by any in-flight request. */
+export function onAuthEvent(fn: (e: AuthEvent) => void): () => void {
+  authListeners.add(fn)
+  return () => authListeners.delete(fn)
+}
+
+function emitAuthEvent(e: AuthEvent) {
+  for (const fn of authListeners) {
+    try { fn(e) } catch { /* listener errors must not break the request */ }
+  }
+}
+
+async function toApiError(res: Response): Promise<ApiError> {
+  const body = await res.json().catch(() => ({} as any))
+  const message = body.error || body.message || `HTTP ${res.status}`
+  return new ApiError(message, res.status, body.code, body.retryAfterSeconds)
+}
+
+function handleAuthStatus(err: ApiError) {
+  if (err.status === 401 && err.code === 'SESSION_REVOKED') {
+    localStorage.removeItem('finbudget_token')
+    emitAuthEvent('SESSION_REVOKED')
+  } else if (err.status === 403 && err.code === 'PASSWORD_CHANGE_REQUIRED') {
+    emitAuthEvent('PASSWORD_CHANGE_REQUIRED')
+  }
+}
+
 async function request<T>(
   endpoint: string,
   options: RequestInit = {}
@@ -19,8 +63,9 @@ async function request<T>(
   })
 
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: 'Request failed' }))
-    throw new Error(error.error || error.message || `HTTP ${res.status}`)
+    const error = await toApiError(res)
+    handleAuthStatus(error)
+    throw error
   }
 
   if (res.status === 204) return undefined as T
@@ -43,8 +88,12 @@ export const api = {
       method: 'POST',
       headers,
       body: formData,
-    }).then(res => {
-      if (!res.ok) throw new Error('Upload failed')
+    }).then(async res => {
+      if (!res.ok) {
+        const error = await toApiError(res)
+        handleAuthStatus(error)
+        throw error
+      }
       return res.json() as Promise<T>
     })
   },

@@ -3,6 +3,8 @@ import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import compression from 'compression';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
 import { initDb, db, hasRealUserData } from './db/database.js';
 import { authMiddleware, adminMiddleware } from './middleware/auth.js';
 
@@ -25,14 +27,26 @@ import adminRoutes from './routes/admin.js';
 import financialPlanningRoutes from './routes/financial-planning.js';
 import rulesRoutes from './routes/rules.js';
 
+import {
+  ALLOWED_ORIGINS,
+  IS_PROD,
+  enforceNoDefaultCredentials,
+  logSecurityPosture,
+} from './config/security.js';
+import { trimAuditLog } from './security/audit.js';
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Trust Railway's reverse proxy (needed for secure cookies behind HTTPS proxy)
+// Trust exactly one proxy hop (Railway's edge). Required for correct client IPs
+// in rate limiting and the audit log; more hops would let clients spoof X-Forwarded-For.
 app.set('trust proxy', 1);
+
+// Don't advertise the framework.
+app.disable('x-powered-by');
 
 // ============================================================
 // HEALTH CHECK — MUST be before any middleware that touches DB
@@ -43,22 +57,11 @@ app.get('/api/health', (_req, res) => {
   res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// One-time seed endpoint — only seeds if no users exist
-app.post('/api/seed', async (_req, res) => {
-  try {
-    const userCount = (db.prepare('SELECT COUNT(*) as count FROM users').get() as any).count;
-    if (userCount > 0) {
-      res.json({ message: 'Database already seeded', userCount });
-      return;
-    }
-    // Dynamic import of seed script
-    await import('./db/seed.js');
-    res.json({ message: 'Database seeded successfully' });
-  } catch (error: any) {
-    console.error('Seed error:', error);
-    res.status(500).json({ error: 'Seed failed', details: error.message });
-  }
-});
+// NOTE: The unauthenticated `POST /api/seed` endpoint was removed (finding H3).
+// It allowed an anonymous caller to trigger creation of default-credential
+// accounts on a fresh volume, and leaked the deployment's user count.
+// Seeding is now a deliberate operation: `npm run seed` with ADMIN_EMAIL and
+// ADMIN_PASSWORD set, and it refuses to create demo accounts in production.
 
 // ============================================================
 // MIDDLEWARE
@@ -67,11 +70,86 @@ app.post('/api/seed', async (_req, res) => {
 // Gzip compression
 app.use(compression());
 
-app.use(cors({
-  origin: true,
-  credentials: true,
-}));
-app.use(express.json({ limit: '10mb' }));
+// --- Security headers (finding H4) -----------------------------------------
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      useDefaults: false,
+      directives: {
+        defaultSrc: ["'self'"],
+        // Vite emits a small inline bootstrap; styles are injected at runtime.
+        scriptSrc: ["'self'"],
+        // index.html links a Google Fonts stylesheet; Tailwind/Radix inject
+        // inline styles at runtime. TODO(design wave): self-host the webfont and
+        // drop both external hosts from this policy.
+        styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+        imgSrc: ["'self'", 'data:', 'blob:'],
+        fontSrc: ["'self'", 'data:', 'https://fonts.gstatic.com'],
+        connectSrc: ["'self'", ...ALLOWED_ORIGINS],
+        objectSrc: ["'none'"],
+        baseUri: ["'self'"],
+        formAction: ["'self'"],
+        frameAncestors: ["'none'"],
+        upgradeInsecureRequests: IS_PROD ? [] : null,
+      },
+    },
+    crossOriginEmbedderPolicy: false,
+    crossOriginResourcePolicy: { policy: 'same-site' },
+    referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
+    hsts: IS_PROD ? { maxAge: 31536000, includeSubDomains: true, preload: false } : false,
+  })
+);
+
+// --- CORS: same-origin by default, explicit allowlist otherwise (finding M3) --
+app.use(
+  cors({
+    origin(origin, callback) {
+      // Same-origin / server-to-server requests send no Origin header.
+      if (!origin) return callback(null, true);
+      if (ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
+      return callback(null, false);
+    },
+    credentials: true,
+    maxAge: 600,
+  })
+);
+
+// --- Rate limiting (finding H2) --------------------------------------------
+const apiLimiter = rateLimit({
+  windowMs: 60_000,
+  limit: 240,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { error: 'Too many requests. Slow down and try again shortly.' },
+});
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60_000,
+  limit: 12,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  skipSuccessfulRequests: true,
+  message: { error: 'Too many attempts from this address. Try again in a few minutes.' },
+});
+
+const uploadLimiter = rateLimit({
+  windowMs: 60 * 60_000,
+  limit: 60,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { error: 'Upload limit reached for this hour.' },
+});
+
+app.use('/api/', apiLimiter);
+app.use('/api/auth/login', authLimiter);
+app.use('/api/auth/register', authLimiter);
+app.use('/api/auth/forgot-password', authLimiter);
+app.use('/api/auth/reset-password', authLimiter);
+app.use('/api/upload', uploadLimiter);
+
+// Default JSON body cap is deliberately small; the upload route uses multer with
+// its own limits and does not go through express.json.
+app.use(express.json({ limit: '256kb' }));
 
 // Serve static frontend files (built Vite output)
 const publicDir = path.resolve(__dirname, '../../public');
@@ -107,8 +185,13 @@ try {
     if (hasRealUserData()) {
       console.warn('⚠️  WARNING: Database has 0 users but contains real upload data!');
       console.warn('⚠️  Skipping auto-seed to protect existing data. Check backups/ folder.');
+    } else if (IS_PROD) {
+      // SECURITY (finding C1): never auto-seed in production. The old behaviour
+      // created `demo@finflow.com / demo123` with role=admin on any fresh volume.
+      console.warn('Empty database in production — auto-seed is disabled.');
+      console.warn('Run `npm run seed` with ADMIN_EMAIL and ADMIN_PASSWORD set to bootstrap an account.');
     } else {
-      console.log('Empty database detected, auto-seeding...');
+      console.log('Empty database detected, auto-seeding (development only)...');
       import('./db/seed.js').then(() => {
         console.log('Auto-seed complete');
       }).catch(err => {
@@ -122,6 +205,16 @@ try {
 } catch (e) {
   console.error('Seed check failed:', e);
 }
+
+// ============================================================
+// BOOT-TIME SECURITY GUARDS
+// ============================================================
+
+// Flags any account still using a known default password (e.g. the historical
+// `demo123` / `password123` seeds) as password-change-only and kills its sessions.
+enforceNoDefaultCredentials();
+trimAuditLog();
+logSecurityPosture();
 
 // ============================================================
 // PUBLIC ROUTES (no auth required)

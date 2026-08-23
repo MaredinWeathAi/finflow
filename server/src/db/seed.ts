@@ -35,33 +35,75 @@ if (realUploadCount > 0 || realTxCount > 0) {
   process.exit(0);
 }
 
-// Demo user
-const userId = randomUUID();
-const passwordHash = bcrypt.hashSync('demo123', 10);
+// ---------------------------------------------------------------------------
+// SECURITY (audit finding C1)
+//
+// This file used to hardcode `demo@finflow.com / demo123` with role='admin' and
+// three `@example.com` clients on `password123`, and index.ts auto-ran it on any
+// empty database — including production. Those credentials were live on the
+// public deployment. Bootstrap now requires explicit, strong, operator-supplied
+// values, and demo content is refused outright in production.
+// ---------------------------------------------------------------------------
+const IS_PROD = process.env.NODE_ENV === 'production';
+const BCRYPT_ROUNDS = 12;
 
-console.log('🌱 Seeding FinFlow with realistic data...\n');
+const BOOTSTRAP_EMAIL = (process.env.ADMIN_EMAIL || '').trim().toLowerCase();
+const BOOTSTRAP_PASSWORD = process.env.ADMIN_PASSWORD || '';
+const BOOTSTRAP_NAME = process.env.ADMIN_NAME || 'Advisor';
+const BOOTSTRAP_USERNAME = process.env.ADMIN_USERNAME || 'advisor';
+const SEED_DEMO_DATA = process.env.SEED_DEMO_DATA === 'true' && !IS_PROD;
+
+if (IS_PROD) {
+  if (!BOOTSTRAP_EMAIL || !BOOTSTRAP_PASSWORD) {
+    console.error('❌ Refusing to seed in production without ADMIN_EMAIL and ADMIN_PASSWORD.');
+    console.error('   Set both (password >= 16 chars) and re-run, e.g.:');
+    console.error('   railway run --service finflow npm run seed');
+    db.close();
+    process.exit(1);
+  }
+  if (BOOTSTRAP_PASSWORD.length < 16) {
+    console.error('❌ ADMIN_PASSWORD must be at least 16 characters.');
+    db.close();
+    process.exit(1);
+  }
+}
+
+const adminEmail = BOOTSTRAP_EMAIL || 'dev@localhost';
+const adminPassword = BOOTSTRAP_PASSWORD || (IS_PROD ? '' : crypto.randomBytes(18).toString('base64url'));
+
+// Demo/bootstrap user
+const userId = randomUUID();
+const passwordHash = bcrypt.hashSync(adminPassword, BCRYPT_ROUNDS);
+
+console.log('🌱 Seeding FinFlow...\n');
+if (!BOOTSTRAP_PASSWORD && !IS_PROD) {
+  console.log(`   Development admin: ${adminEmail} / ${adminPassword}`);
+  console.log('   (generated for this run only — set ADMIN_PASSWORD to choose your own)');
+}
 
 // Clean existing SEED data only (never touch 'upload' or 'manual' sourced data)
 try {
-  db.exec(`DELETE FROM net_worth_snapshots WHERE user_id IN (SELECT id FROM users WHERE email='demo@finflow.com')`);
-  db.exec(`DELETE FROM investments WHERE user_id IN (SELECT id FROM users WHERE email='demo@finflow.com')`);
-  db.exec(`DELETE FROM goals WHERE user_id IN (SELECT id FROM users WHERE email='demo@finflow.com')`);
-  db.exec(`DELETE FROM recurring_expenses WHERE user_id IN (SELECT id FROM users WHERE email='demo@finflow.com')`);
+  const wipe = (sql: string) => db.prepare(sql).run({ bootstrapEmail: adminEmail });
+  wipe(`DELETE FROM net_worth_snapshots WHERE user_id IN (SELECT id FROM users WHERE email=@bootstrapEmail)`);
+  wipe(`DELETE FROM investments WHERE user_id IN (SELECT id FROM users WHERE email=@bootstrapEmail)`);
+  wipe(`DELETE FROM goals WHERE user_id IN (SELECT id FROM users WHERE email=@bootstrapEmail)`);
+  wipe(`DELETE FROM recurring_expenses WHERE user_id IN (SELECT id FROM users WHERE email=@bootstrapEmail)`);
   // Only delete seed transactions, preserve uploaded ones
-  db.exec(`DELETE FROM transactions WHERE user_id IN (SELECT id FROM users WHERE email='demo@finflow.com') AND (source = 'seed' OR source IS NULL)`);
-  db.exec(`DELETE FROM budgets WHERE user_id IN (SELECT id FROM users WHERE email='demo@finflow.com')`);
-  db.exec(`DELETE FROM categories WHERE user_id IN (SELECT id FROM users WHERE email='demo@finflow.com')`);
+  wipe(`DELETE FROM transactions WHERE user_id IN (SELECT id FROM users WHERE email=@bootstrapEmail) AND (source = 'seed' OR source IS NULL)`);
+  wipe(`DELETE FROM budgets WHERE user_id IN (SELECT id FROM users WHERE email=@bootstrapEmail)`);
+  wipe(`DELETE FROM categories WHERE user_id IN (SELECT id FROM users WHERE email=@bootstrapEmail)`);
   // Only delete seed accounts, preserve uploaded ones
-  db.exec(`DELETE FROM accounts WHERE user_id IN (SELECT id FROM users WHERE email='demo@finflow.com') AND (source = 'seed' OR source IS NULL)`);
-  db.exec(`DELETE FROM users WHERE email='demo@finflow.com'`);
+  wipe(`DELETE FROM accounts WHERE user_id IN (SELECT id FROM users WHERE email=@bootstrapEmail) AND (source = 'seed' OR source IS NULL)`);
+  wipe(`DELETE FROM users WHERE email=@bootstrapEmail`);
 } catch (err) {
   console.warn('Cleanup warning (safe to ignore on fresh DB):', err);
 }
 
 // 1. Create admin user
 db.prepare(`INSERT INTO users (id, email, username, password_hash, name, role, currency, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-  .run(userId, 'demo@finflow.com', 'marcelo', passwordHash, 'Marcelo Zinn', 'admin', 'USD', now, now);
-console.log('✅ Created admin user (demo@finflow.com / demo123)');
+  .run(userId, adminEmail, BOOTSTRAP_USERNAME, passwordHash, BOOTSTRAP_NAME, 'admin', 'USD', now, now);
+// Never log the password in production.
+console.log(`✅ Created admin user (${adminEmail})`);
 
 // 2. Create accounts
 const accounts: Record<string, string> = {};
@@ -300,11 +342,18 @@ const clients = [
   { email: 'mike@example.com', username: 'mikew', name: 'Mike Williams', phone: '555-0103' },
 ];
 
-for (const c of clients) {
+if (!SEED_DEMO_DATA) {
+  console.log('⏭  Skipping demo client accounts (set SEED_DEMO_DATA=true in a non-production env to create them).');
+}
+for (const c of SEED_DEMO_DATA ? clients : []) {
   const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(c.email) as any;
   if (!existing) {
     const cId = crypto.randomUUID();
-    const cHash = bcrypt.hashSync('password123', 10);
+    // Random per-account password; demo accounts are never usable by anyone
+    // who has not read this run's console output.
+    const cPlain = crypto.randomBytes(15).toString('base64url');
+    const cHash = bcrypt.hashSync(cPlain, BCRYPT_ROUNDS);
+    console.log(`   demo client ${c.email} / ${cPlain}`);
     const cNow = new Date().toISOString();
     db.prepare(`INSERT INTO users (id, email, username, password_hash, name, phone, role, advisor_id, currency, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, 'client', ?, 'USD', ?, ?)`)
@@ -372,14 +421,11 @@ for (const c of clients) {
     }
   }
 }
-console.log('✅ Created 3 demo client users with sample data');
+if (SEED_DEMO_DATA) console.log('✅ Created demo client users with sample data');
 
 console.log('\n🎉 Seeding complete!');
-console.log('   Admin Login: demo@finflow.com / demo123');
-console.log('   Client Logins:');
-console.log('     john@example.com / password123');
-console.log('     sarah@example.com / password123');
-console.log('     mike@example.com / password123');
+console.log(`   Admin login: ${adminEmail}`);
+console.log('   (password not printed — it is the ADMIN_PASSWORD you supplied)');
 console.log(`   Total transactions: ${txCount}`);
 
 db.close();

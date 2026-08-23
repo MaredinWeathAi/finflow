@@ -10,7 +10,7 @@ router.get('/', (req: Request, res: Response) => {
       .prepare(
         `SELECT i.*, a.name as account_name
          FROM investments i
-         LEFT JOIN accounts a ON i.account_id = a.id
+         LEFT JOIN accounts a ON i.account_id = a.id AND a.user_id = i.user_id
          WHERE i.user_id = ?
          ORDER BY i.name ASC`
       )

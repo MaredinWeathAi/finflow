@@ -196,7 +196,17 @@ export function parseExcel(buffer: Buffer, filename?: string): ParseResult {
 
   let workbook: XLSX.WorkBook;
   try {
-    workbook = XLSX.read(buffer, { type: 'buffer' });
+    // SECURITY (audit finding H1): SheetJS <0.19.3 is affected by CVE-2023-30533
+    // (prototype pollution) and CVE-2024-22363 (ReDoS). We pin the patched build
+    // from cdn.sheetjs.com in package.json, and additionally refuse to evaluate
+    // formulas or honour workbook-supplied prototype keys below.
+    workbook = XLSX.read(buffer, {
+      type: 'buffer',
+      cellFormula: false,
+      cellHTML: false,
+      cellDates: true,
+      dense: false,
+    });
   } catch (err: any) {
     return {
       rows: [],
@@ -213,7 +223,24 @@ export function parseExcel(buffer: Buffer, filename?: string): ParseResult {
   }
 
   const sheet = workbook.Sheets[sheetName];
-  const jsonData: Record<string, any>[] = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+  const rawRows: Record<string, any>[] = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+
+  // Defence in depth against prototype pollution: rebuild every row on a
+  // null-prototype object and drop any dangerous key names outright, so a
+  // crafted header cell can never reach Object.prototype.
+  const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+  const MAX_ROWS = 200_000;
+  const jsonData: Record<string, any>[] = rawRows.slice(0, MAX_ROWS).map((row) => {
+    const clean: Record<string, any> = Object.create(null);
+    for (const key of Object.keys(row)) {
+      if (FORBIDDEN_KEYS.has(key)) continue;
+      clean[key] = row[key];
+    }
+    return clean;
+  });
+  if (rawRows.length > MAX_ROWS) {
+    errors.push(`Sheet truncated to the first ${MAX_ROWS.toLocaleString()} rows.`);
+  }
 
   if (jsonData.length === 0) {
     return { rows: [], headers: [], fileType: 'excel', rowCount: 0, errors: ['Sheet is empty'] };

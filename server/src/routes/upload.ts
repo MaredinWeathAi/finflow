@@ -1,4 +1,4 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import multer from 'multer';
 import path from 'path';
 import { db } from '../db/database.js';
@@ -10,20 +10,52 @@ import type { PendingItemData } from '../engine/duplicates.js';
 const router = Router();
 
 // Configure multer for file uploads
+// SECURITY (audit finding M1): the previous limits allowed 50 x 20 MB = 1 GB of
+// attacker-controlled data to be buffered in memory per request, on a single
+// Node process that then parses it synchronously. Tightened to a realistic
+// statement-import workload with a hard aggregate cap.
+const MAX_FILE_BYTES = 10 * 1024 * 1024;   // 10 MB per file
+const MAX_FILES = 15;                       // per request
+const MAX_TOTAL_BYTES = 40 * 1024 * 1024;   // 40 MB aggregate per request
+
 const storage = multer.memoryStorage();
 const upload = multer({
   storage,
-  limits: { fileSize: 20 * 1024 * 1024, files: 50 },
+  limits: {
+    fileSize: MAX_FILE_BYTES,
+    files: MAX_FILES,
+    fields: 20,
+    parts: MAX_FILES + 20,
+    headerPairs: 100,
+  },
   fileFilter: (_req, file, cb) => {
     const ext = path.extname(file.originalname).toLowerCase();
     const allowed = ['.csv', '.xlsx', '.xls', '.pdf'];
-    if (allowed.includes(ext)) {
-      cb(null, true);
-    } else {
+    if (!allowed.includes(ext)) {
       cb(new Error(`Unsupported file type: ${ext}. Allowed: CSV, Excel, PDF`));
+      return;
     }
+    // Reject path separators and control characters in the client-supplied name.
+    if (/[\/\\\0]/.test(file.originalname) || file.originalname.length > 255) {
+      cb(new Error('Invalid file name'));
+      return;
+    }
+    cb(null, true);
   },
 });
+
+/** Enforce the aggregate byte cap that multer's per-file limit cannot express. */
+function enforceTotalSize(req: Request, res: Response, next: NextFunction): void {
+  const files = (req.files as Express.Multer.File[] | undefined) ?? [];
+  const total = files.reduce((sum, f) => sum + f.size, 0);
+  if (total > MAX_TOTAL_BYTES) {
+    res.status(413).json({
+      error: `Upload too large: ${(total / 1048576).toFixed(1)} MB across ${files.length} files. Limit is ${MAX_TOTAL_BYTES / 1048576} MB per request.`,
+    });
+    return;
+  }
+  next();
+}
 
 // Helper: detect if a transaction looks like a transfer
 function detectTransferType(name: string, amount: number): { isTransfer: boolean; transferType?: string } {
@@ -191,7 +223,7 @@ function ensureDefaultCategories(userId: string): void {
 }
 
 // POST / - upload files, parse, detect duplicates, auto-create accounts
-router.post('/', upload.array('files', 50), async (req: Request, res: Response) => {
+router.post('/', upload.array('files', MAX_FILES), enforceTotalSize, async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
     const files = req.files as Express.Multer.File[];
