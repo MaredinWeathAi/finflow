@@ -41,7 +41,7 @@ const PASSWORD_CHANGE_ALLOWLIST = new Set([
   '/api/health',
 ]);
 
-export function authMiddleware(req: Request, res: Response, next: NextFunction): void {
+export async function authMiddleware(req: Request, res: Response, next: NextFunction): void {
   const authHeader = req.headers.authorization;
 
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -65,9 +65,7 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
   // deletion take effect immediately instead of up to a full token lifetime later.
   let row: { id: string; email: string; role: string | null; token_version: number | null; must_change_password: number | null } | undefined;
   try {
-    row = db
-      .prepare('SELECT id, email, role, token_version, must_change_password FROM users WHERE id = ?')
-      .get(decoded.id) as typeof row;
+    row = await db.get('SELECT id, email, role, token_version, must_change_password FROM users WHERE id = ?', decoded.id) as typeof row;
   } catch {
     res.status(503).json({ error: 'Service temporarily unavailable' });
     return;

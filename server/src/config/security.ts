@@ -16,21 +16,19 @@ export const IS_PROD = process.env.NODE_ENV === 'production';
 // Durable app secrets (survive restarts, portable to Postgres)
 // ---------------------------------------------------------------------------
 
-function readAppConfig(key: string): string | null {
+async function readAppConfig(key: string): string | null {
   try {
-    const row = db.prepare('SELECT value FROM app_config WHERE key = ?').get(key) as { value: string } | undefined;
+    const row = await db.get('SELECT value FROM app_config WHERE key = ?', key) as { value: string } | undefined;
     return row?.value ?? null;
   } catch {
     return null;
   }
 }
 
-function writeAppConfig(key: string, value: string): void {
+async function writeAppConfig(key: string, value: string): void {
   try {
-    db.prepare(
-      `INSERT INTO app_config (key, value, created_at, updated_at) VALUES (?, ?, ?, ?)
-       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
-    ).run(key, value, new Date().toISOString(), new Date().toISOString());
+    await db.run(`INSERT INTO app_config (key, value, created_at, updated_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`, key, value, new Date().toISOString(), new Date().toISOString());
   } catch (err) {
     console.error('[security] failed to persist app_config key', key, err);
   }
@@ -162,10 +160,10 @@ export function validatePassword(password: unknown, email?: string): PasswordChe
  * the legitimate owner out of their own data. Flagging closes the account to
  * useful work by an attacker while leaving the owner a path to recover.
  */
-export function enforceNoDefaultCredentials(): void {
+export async function enforceNoDefaultCredentials(): void {
   let flagged = 0;
   try {
-    const users = db.prepare('SELECT id, email, password_hash, must_change_password FROM users LIMIT 1000').all() as Array<{
+    const users = await db.all('SELECT id, email, password_hash, must_change_password FROM users LIMIT 1000') as Array<{
       id: string; email: string; password_hash: string; must_change_password: number | null;
     }>;
 
@@ -175,9 +173,7 @@ export function enforceNoDefaultCredentials(): void {
         try { return bcrypt.compareSync(candidate, u.password_hash); } catch { return false; }
       });
       if (hit) {
-        db.prepare(
-          `UPDATE users SET must_change_password = 1, token_version = COALESCE(token_version, 0) + 1, updated_at = ? WHERE id = ?`
-        ).run(new Date().toISOString(), u.id);
+        await db.run(`UPDATE users SET must_change_password = 1, token_version = COALESCE(token_version, 0) + 1, updated_at = ? WHERE id = ?`, new Date().toISOString(), u.id);
         flagged++;
         console.error(
           `[security] DEFAULT CREDENTIAL DETECTED for account ${maskEmail(u.email)} — ` +

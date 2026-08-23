@@ -16,14 +16,14 @@ db.pragma('foreign_keys = ON');
 const now = new Date().toISOString();
 
 // SAFETY CHECK: Never wipe real user data (uploaded transactions, upload sessions, etc.)
-const realUploadCount = (() => {
+const realUploadCount = (async () => {
   try {
-    return (db.prepare('SELECT COUNT(*) as count FROM upload_sessions').get() as any).count;
+    return (await db.get('SELECT COUNT(*) as count FROM upload_sessions') as any).count;
   } catch { return 0; }
 })();
-const realTxCount = (() => {
+const realTxCount = (async () => {
   try {
-    return (db.prepare("SELECT COUNT(*) as count FROM transactions WHERE source = 'upload'").get() as any).count;
+    return (await db.get("SELECT COUNT(*) as count FROM transactions WHERE source = 'upload'") as any).count;
   } catch { return 0; }
 })();
 
@@ -83,7 +83,7 @@ if (!BOOTSTRAP_PASSWORD && !IS_PROD) {
 
 // Clean existing SEED data only (never touch 'upload' or 'manual' sourced data)
 try {
-  const wipe = (sql: string) => db.prepare(sql).run({ bootstrapEmail: adminEmail });
+  const wipe = async (sql: string) => await db.run(sql, { bootstrapEmail: adminEmail });
   wipe(`DELETE FROM net_worth_snapshots WHERE user_id IN (SELECT id FROM users WHERE email=@bootstrapEmail)`);
   wipe(`DELETE FROM investments WHERE user_id IN (SELECT id FROM users WHERE email=@bootstrapEmail)`);
   wipe(`DELETE FROM goals WHERE user_id IN (SELECT id FROM users WHERE email=@bootstrapEmail)`);

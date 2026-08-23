@@ -1,4 +1,5 @@
 import Database, { type Database as DatabaseType } from 'better-sqlite3';
+import { SqliteSql, PostgresSql, translateDdl, type Sql } from './sql.js';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
@@ -49,14 +50,14 @@ function backupDatabase(): void {
 backupDatabase();
 
 console.log(`Database path: ${DB_PATH}`);
-const db: DatabaseType = new Database(DB_PATH);
+const rawSqlite: DatabaseType = new Database(DB_PATH);
 
 // Enable WAL mode for better concurrent read performance
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
+rawSqlite.pragma('journal_mode = WAL');
+rawSqlite.pragma('foreign_keys = ON');
 
 function initDb(): void {
-  db.exec(`
+  rawSqlite.exec(`
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
       email TEXT UNIQUE NOT NULL,
@@ -333,20 +334,20 @@ function initDb(): void {
     "ALTER TABLE password_reset_tokens ADD COLUMN requested_ip TEXT",
   ];
   for (const sql of migrations) {
-    try { db.exec(sql); } catch { /* column already exists */ }
+    try { rawSqlite.exec(sql); } catch { /* column already exists */ }
   }
 
   // Backfill: mark existing NULL-source records as 'seed' (they predate the source column)
   try {
-    const updated = db.prepare("UPDATE transactions SET source = 'seed' WHERE source IS NULL").run();
+    const updated = rawSqlite.prepare("UPDATE transactions SET source = 'seed' WHERE source IS NULL").run();
     if (updated.changes > 0) console.log(`  Backfilled ${updated.changes} transactions with source='seed'`);
-    const updatedAccts = db.prepare("UPDATE accounts SET source = 'seed' WHERE source IS NULL").run();
+    const updatedAccts = rawSqlite.prepare("UPDATE accounts SET source = 'seed' WHERE source IS NULL").run();
     if (updatedAccts.changes > 0) console.log(`  Backfilled ${updatedAccts.changes} accounts with source='seed'`);
   } catch { /* safe to ignore */ }
 
   // Create password reset tokens table if not exists
   try {
-    db.exec(`
+    rawSqlite.exec(`
       CREATE TABLE IF NOT EXISTS password_reset_tokens (
         id TEXT PRIMARY KEY,
         user_id TEXT NOT NULL,
@@ -365,7 +366,7 @@ function initDb(): void {
 
   // --- Security infrastructure tables (2026-08) ---
   try {
-    db.exec(`
+    rawSqlite.exec(`
       /* Durable app-level secrets and settings. Lets the app self-heal a missing
          JWT_SECRET without regenerating it (and invalidating every session) on
          each restart. */
@@ -399,7 +400,7 @@ function initDb(): void {
 
   // Backfill password_changed_at so the account-age signals are sane.
   try {
-    db.prepare('UPDATE users SET password_changed_at = created_at WHERE password_changed_at IS NULL').run();
+    rawSqlite.prepare('UPDATE users SET password_changed_at = created_at WHERE password_changed_at IS NULL').run();
   } catch { /* column may not exist on very old schemas */ }
 
   console.log('Database initialized successfully');
@@ -412,15 +413,15 @@ function initDb(): void {
 function hasRealUserData(): boolean {
   try {
     // Check for upload sessions (only created by real file uploads)
-    const uploadCount = (db.prepare('SELECT COUNT(*) as count FROM upload_sessions').get() as any).count;
+    const uploadCount = (rawSqlite.prepare('SELECT COUNT(*) as count FROM upload_sessions').get() as any).count;
     if (uploadCount > 0) return true;
 
     // Check for transactions marked as 'upload' or 'manual' source
-    const realTxCount = (db.prepare("SELECT COUNT(*) as count FROM transactions WHERE source IN ('upload', 'manual')").get() as any).count;
+    const realTxCount = (rawSqlite.prepare("SELECT COUNT(*) as count FROM transactions WHERE source IN ('upload', 'manual')").get() as any).count;
     if (realTxCount > 0) return true;
 
     // Check for accounts created from uploads
-    const realAcctCount = (db.prepare("SELECT COUNT(*) as count FROM accounts WHERE source = 'upload'").get() as any).count;
+    const realAcctCount = (rawSqlite.prepare("SELECT COUNT(*) as count FROM accounts WHERE source = 'upload'").get() as any).count;
     if (realAcctCount > 0) return true;
 
     return false;
@@ -429,4 +430,37 @@ function hasRealUserData(): boolean {
   }
 }
 
+/**
+ * The application data handle.
+ *
+ * This is the async adapter, not the raw better-sqlite3 object. Every call site
+ * awaits. Under DB_DRIVER=sqlite it resolves immediately (identical behaviour to
+ * the old synchronous code); under DB_DRIVER=postgres it talks to Railway Postgres.
+ */
+let db: Sql = new SqliteSql(rawSqlite);
+
+export function getDriver(): 'sqlite' | 'postgres' {
+  return process.env.DB_DRIVER === 'postgres' ? 'postgres' : 'sqlite';
+}
+
+/**
+ * Swap in the Postgres driver. Called once at boot, after initDb(), and only
+ * when DB_DRIVER=postgres and DATABASE_URL is present.
+ */
+export async function usePostgres(): Promise<void> {
+  const { default: pg } = await import('pg');
+  const pool = new pg.Pool({
+    connectionString: process.env.DATABASE_URL,
+    max: Number(process.env.PG_POOL_MAX ?? 10),
+    idleTimeoutMillis: 30_000,
+    connectionTimeoutMillis: 10_000,
+    ssl: process.env.DATABASE_URL?.includes('railway.internal') ? undefined : { rejectUnauthorized: false },
+  });
+  await pool.query('SELECT 1');
+  db = new PostgresSql(pool as any);
+  console.log('[db] driver: postgres');
+}
+
+/** Raw synchronous SQLite handle — boot-time schema work and the migrator only. */
+export { rawSqlite, translateDdl };
 export { db, initDb, hasRealUserData };
