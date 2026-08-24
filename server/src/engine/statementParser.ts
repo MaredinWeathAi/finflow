@@ -20,6 +20,8 @@ export interface ParsedTransaction {
   postingDate?: string;
   description: string;
   amount: number;
+  /** Amount exactly as printed on the statement, before sign normalization. */
+  rawAmount?: number;
   section: string;
   isTransfer: boolean;
   transferType?: string;
@@ -452,7 +454,8 @@ function parseBofaCheckingTransaction(
   section: string,
   metadata: StatementMetadata
 ): ParsedTransaction {
-  const date = normalizeDate(rawDate, parseInt(metadata.statementPeriod.end.split('-')[0], 10));
+  const resolved = resolveTxnDate(rawDate, metadata.statementPeriod);
+  const date = resolved.date;
   const amount = normalizeAmount(rawAmount);
 
   // Determine sign based on section
@@ -480,6 +483,7 @@ function parseBofaCheckingTransaction(
 
   // Extract flags
   const flags = extractFlags(description);
+  if (resolved.outOfRange) flags.push('date_out_of_range');
 
   return {
     date,
@@ -514,16 +518,18 @@ function parseBofaCreditCard(fullText: string, lines: string[]): StatementParseR
   while (i < lines.length) {
     const line = lines[i];
 
-    // Detect section headers
-    if (/Payments and Other Credits/i.test(line)) {
+    // Detect section headers (anchored so a transaction line such as
+    // "12/20 [TAB] 12/21 [TAB] INTEREST CHARGED ON PURCHASES [TAB] 1.23"
+    // is not swallowed as a header)
+    if (/^Payments and Other Credits/i.test(line)) {
       currentSection = 'payments';
       i++;
       continue;
-    } else if (/Purchases and Adjustments/i.test(line)) {
+    } else if (/^Purchases and Adjustments/i.test(line)) {
       currentSection = 'purchases';
       i++;
       continue;
-    } else if (/Interest Charged/i.test(line)) {
+    } else if (/^Interest Charged/i.test(line)) {
       currentSection = 'interest';
       i++;
       continue;
@@ -585,6 +591,12 @@ function parseBofaCreditCard(fullText: string, lines: string[]): StatementParseR
               currentSection,
               metadata
             );
+            if (txn.flags.includes('date_out_of_range')) {
+              errors.push(
+                `Date guard: "${description}" resolved to ${txn.date}, outside statement period ` +
+                `${metadata.statementPeriod.start || '?'}..${metadata.statementPeriod.end || '?'}`
+              );
+            }
             transactions.push(txn);
           } catch (err: any) {
             errors.push(`BofA CC line parse error: ${err.message}`);
@@ -595,6 +607,10 @@ function parseBofaCreditCard(fullText: string, lines: string[]): StatementParseR
 
     i++;
   }
+
+  // Normalize signs to the app convention (negative = outflow) based on the
+  // statement's own layout.
+  finalizeCreditCardSigns(transactions);
 
   // Calculate summary
   const summary = calculateSummary(transactions);
@@ -648,7 +664,10 @@ function extractBofaCreditCardMetadata(
       const startMonthNum = monthNameToNumber(startMonth);
       const endMonthNum = monthNameToNumber(endMonth);
       if (startMonthNum && endMonthNum) {
-        statementStart = `${year}-${String(startMonthNum).padStart(2, '0')}-${startDay.padStart(2, '0')}`;
+        // "December 18 - January 17, 2026" spans a year boundary: the single
+        // printed year belongs to the END date; the start is the prior year.
+        const startYear = startMonthNum > endMonthNum ? Number(year) - 1 : Number(year);
+        statementStart = `${startYear}-${String(startMonthNum).padStart(2, '0')}-${startDay.padStart(2, '0')}`;
         statementEnd = `${year}-${String(endMonthNum).padStart(2, '0')}-${endDay.padStart(2, '0')}`;
       }
     }
@@ -686,20 +705,16 @@ function parseBofaCreditCardTransaction(
   section: string,
   metadata: StatementMetadata
 ): ParsedTransaction {
-  // Infer year from statement period
-  const periodYear = metadata.statementPeriod.end.split('-')[0];
-  const date = normalizeDate(txDate, parseInt(periodYear, 10));
-  const postingDate = normalizeDate(postDate, parseInt(periodYear, 10));
+  // Infer year from the statement period, handling the December→January
+  // boundary (a MM/DD line lands in endYear unless that would put it after
+  // the period end, in which case it belongs to endYear − 1).
+  const resolved = resolveTxnDate(txDate, metadata.statementPeriod);
+  const date = resolved.date;
+  const postingDate = resolveTxnDate(postDate, metadata.statementPeriod).date;
   const amount = normalizeAmount(rawAmount);
 
-  // Determine sign based on section and raw amount
-  // Raw amounts from BofA CC statements already have sign for payments (negative)
-  let signedAmount = amount;
-  if (section === 'payments' && amount > 0) {
-    signedAmount = -Math.abs(amount);
-  } else if (section === 'purchases' || section === 'interest') {
-    signedAmount = Math.abs(amount);
-  }
+  // Sign is finalized per-statement by finalizeCreditCardSigns() (negative =
+  // outflow). Keep the printed value in rawAmount for that pass.
 
   // Detect transfer
   const { isTransfer, transferType, transferAccountRef } = detectTransfer(description);
@@ -712,12 +727,14 @@ function parseBofaCreditCardTransaction(
 
   // Extract flags
   const flags = extractFlags(description);
+  if (resolved.outOfRange) flags.push('date_out_of_range');
 
   return {
     date,
     postingDate,
     description,
-    amount: signedAmount,
+    amount,
+    rawAmount: amount,
     section,
     isTransfer,
     transferType,
@@ -921,6 +938,50 @@ function extractFlags(description: string): string[] {
 }
 
 // ---------------------------------------------------------------------------
+// Credit-card sign normalization
+// ---------------------------------------------------------------------------
+
+/**
+ * Normalize transaction signs for credit/loan statements to the app-wide
+ * convention: negative = outflow (a purchase, a fee, interest), positive =
+ * inflow (a payment to the card, a merchant refund).
+ *
+ * Statement layouts differ: most print charges as positive numbers under a
+ * "Purchases"/"New Charges" heading (with payments negative), while some
+ * exports are already signed (charges negative). The rule implemented:
+ *
+ * 1. Decide the layout from the statement itself: if the majority of raw
+ *    amounts in charge sections are positive, the statement uses the
+ *    "charges are positive" layout; otherwise it is already signed.
+ * 2. "charges positive" layout — negate every charge-section amount (a
+ *    positive charge becomes a negative outflow; a negative line inside the
+ *    charges section is a merchant credit and becomes a positive inflow).
+ *    Signed layout — keep charge-section amounts as printed.
+ * 3. Payment sections are always inflows: +abs(raw).
+ * 4. Interest/fee sections are always outflows: -abs(raw).
+ */
+function finalizeCreditCardSigns(transactions: ParsedTransaction[]): void {
+  const chargeRows = transactions.filter(
+    (t) => t.section === 'purchases' || t.section === 'charges'
+  );
+  const positives = chargeRows.filter((t) => (t.rawAmount ?? t.amount) > 0).length;
+  const chargesArePositive = chargeRows.length === 0 || positives * 2 >= chargeRows.length;
+
+  for (const t of transactions) {
+    const raw = t.rawAmount ?? t.amount;
+    if (t.section === 'payments') {
+      t.amount = Math.abs(raw);
+    } else if (t.section === 'interest') {
+      t.amount = -Math.abs(raw);
+    } else if (t.section === 'purchases' || t.section === 'charges') {
+      t.amount = chargesArePositive ? -raw : raw;
+    }
+    // Normalize -0
+    if (Object.is(t.amount, -0)) t.amount = 0;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Summary Calculation
 // ---------------------------------------------------------------------------
 
@@ -973,6 +1034,93 @@ function monthNameToNumber(name: string): number | null {
     jan: 1, feb: 2, mar: 3, apr: 4, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
   };
   return months[name.toLowerCase()] ?? null;
+}
+
+/** Days since epoch for a YYYY-MM-DD string (pure UTC math, no TZ mixing). */
+function epochDay(iso: string): number {
+  const [y, m, d] = iso.split('-').map(Number);
+  return Math.floor(Date.UTC(y, m - 1, d) / 86400000);
+}
+
+function isIsoDate(s: string | undefined): s is string {
+  return !!s && /^\d{4}-\d{2}-\d{2}$/.test(s);
+}
+
+function todayIso(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+/**
+ * How far before the statement-period start a parsed transaction date may
+ * plausibly fall (~13 months — covers back-dated adjustments and reversals).
+ */
+const MAX_DAYS_BEFORE_PERIOD_START = 400;
+
+export interface ResolvedDate {
+  date: string;
+  /**
+   * True when the date violates the statement-period guard: it lands after
+   * the period end (never legitimate — a statement cannot contain activity
+   * that post-dates its own closing date), or more than ~13 months before
+   * the period start.
+   */
+  outOfRange: boolean;
+}
+
+/**
+ * Resolve a month/day-only (MM/DD) transaction date against the statement
+ * period. Year rule: start from the period-END year; if the resulting date
+ * would land after the period end, the line belongs to the previous calendar
+ * year (December lines on a December→January statement), so use endYear − 1.
+ * When no period end was extracted, "today" is the anchor instead — a line
+ * item can never legitimately be in the future.
+ */
+export function resolveMmDdYear(
+  month: number,
+  day: number,
+  period: { start: string; end: string }
+): ResolvedDate {
+  const mm = String(month).padStart(2, '0');
+  const dd = String(day).padStart(2, '0');
+  const anchorEnd = isIsoDate(period.end) ? period.end : todayIso();
+
+  let year = Number(anchorEnd.slice(0, 4));
+  let date = `${year}-${mm}-${dd}`;
+  if (date > anchorEnd) {
+    // Year-boundary case: the line predates the anchor's calendar year.
+    year -= 1;
+    date = `${year}-${mm}-${dd}`;
+  }
+
+  let outOfRange = date > anchorEnd;
+  if (!outOfRange && isIsoDate(period.start)) {
+    outOfRange = epochDay(period.start) - epochDay(date) > MAX_DAYS_BEFORE_PERIOD_START;
+  }
+  return { date, outOfRange };
+}
+
+/**
+ * Resolve any raw statement transaction date. MM/DD lines get their year from
+ * the statement period (see resolveMmDdYear); dates that carry their own year
+ * are still checked against the guard so a bogus year is flagged instead of
+ * silently imported.
+ */
+export function resolveTxnDate(raw: string, period: { start: string; end: string }): ResolvedDate {
+  const trimmed = raw.trim();
+  const mmdd = trimmed.match(/^(\d{1,2})\/(\d{1,2})$/);
+  if (mmdd) {
+    return resolveMmDdYear(Number(mmdd[1]), Number(mmdd[2]), period);
+  }
+  const date = normalizeDate(trimmed);
+  // +1 day of grace on the "today" anchor to absorb timezone skew when the
+  // statement period could not be extracted.
+  const anchorEnd = isIsoDate(period.end) ? period.end : todayIso();
+  const grace = isIsoDate(period.end) ? 0 : 1;
+  let outOfRange = epochDay(date) > epochDay(anchorEnd) + grace;
+  if (!outOfRange && isIsoDate(period.start)) {
+    outOfRange = epochDay(period.start) - epochDay(date) > MAX_DAYS_BEFORE_PERIOD_START;
+  }
+  return { date, outOfRange };
 }
 
 export function normalizeDate(raw: string, fallbackYear?: number): string {
@@ -1108,17 +1256,11 @@ function parseAmexCreditCard(fullText: string, lines: string[]): StatementParseR
     if (amexLine1) {
       const [, rawDate, description, rawAmount] = amexLine1;
       try {
-        const periodYear = metadata.statementPeriod.end ? parseInt(metadata.statementPeriod.end.split('-')[0], 10) : new Date().getFullYear();
-        const date = normalizeDate(rawDate, periodYear);
-        let amount = normalizeAmount(rawAmount);
-
-        // Amex: charges are positive in the statement but should be negative (expenses)
-        // Payments are negative in statement but should be positive (credits to card)
-        if (currentSection === 'charges' || currentSection === 'interest') {
-          amount = -Math.abs(amount);
-        } else if (currentSection === 'payments') {
-          amount = Math.abs(amount);
-        }
+        // Year comes from the statement period (December→January boundary
+        // aware); sign is finalized by finalizeCreditCardSigns() below.
+        const resolved = resolveTxnDate(rawDate, metadata.statementPeriod);
+        const date = resolved.date;
+        const amount = normalizeAmount(rawAmount);
 
         const { isTransfer, transferType, transferAccountRef } = detectTransfer(description);
         const merchantName = cleanMerchantName(description);
@@ -1128,11 +1270,16 @@ function parseAmexCreditCard(fullText: string, lines: string[]): StatementParseR
         if (currentSection === 'interest') {
           flags.push('fee');
         }
+        if (resolved.outOfRange) {
+          flags.push('date_out_of_range');
+          errors.push(`Date guard: "${description}" resolved to ${date}, outside statement period ${metadata.statementPeriod.start || '?'}..${metadata.statementPeriod.end || '?'}`);
+        }
 
         transactions.push({
           date,
           description,
           amount,
+          rawAmount: amount,
           section: currentSection,
           isTransfer,
           transferType,
@@ -1153,25 +1300,24 @@ function parseAmexCreditCard(fullText: string, lines: string[]): StatementParseR
     if (amexLine2) {
       const [, rawDate, description, rawAmount] = amexLine2;
       try {
-        const periodYear = metadata.statementPeriod.end ? parseInt(metadata.statementPeriod.end.split('-')[0], 10) : new Date().getFullYear();
-        const date = normalizeDate(rawDate, periodYear);
-        let amount = normalizeAmount(rawAmount);
-
-        if (currentSection === 'charges' || currentSection === 'interest') {
-          amount = -Math.abs(amount);
-        } else if (currentSection === 'payments') {
-          amount = Math.abs(amount);
-        }
+        const resolved = resolveTxnDate(rawDate, metadata.statementPeriod);
+        const date = resolved.date;
+        const amount = normalizeAmount(rawAmount);
 
         const { isTransfer, transferType, transferAccountRef } = detectTransfer(description);
         const merchantName = cleanMerchantName(description);
         const category = autoCategorize(description, isTransfer);
         const flags = extractFlags(description);
+        if (resolved.outOfRange) {
+          flags.push('date_out_of_range');
+          errors.push(`Date guard: "${description}" resolved to ${date}, outside statement period ${metadata.statementPeriod.start || '?'}..${metadata.statementPeriod.end || '?'}`);
+        }
 
         transactions.push({
           date,
           description,
           amount,
+          rawAmount: amount,
           section: currentSection,
           isTransfer,
           transferType,
@@ -1214,25 +1360,24 @@ function parseAmexCreditCard(fullText: string, lines: string[]): StatementParseR
         if (rawAmount && descParts.length > 0) {
           const description = descParts.join(' ').trim();
           try {
-            const periodYear = metadata.statementPeriod.end ? parseInt(metadata.statementPeriod.end.split('-')[0], 10) : new Date().getFullYear();
-            const date = normalizeDate(possibleDate, periodYear);
-            let amount = normalizeAmount(rawAmount);
-
-            if (currentSection === 'charges' || currentSection === 'interest') {
-              amount = -Math.abs(amount);
-            } else if (currentSection === 'payments') {
-              amount = Math.abs(amount);
-            }
+            const resolved = resolveTxnDate(possibleDate, metadata.statementPeriod);
+            const date = resolved.date;
+            const amount = normalizeAmount(rawAmount);
 
             const { isTransfer, transferType, transferAccountRef } = detectTransfer(description);
             const merchantName = cleanMerchantName(description);
             const category = autoCategorize(description, isTransfer);
             const flags = extractFlags(description);
+            if (resolved.outOfRange) {
+              flags.push('date_out_of_range');
+              errors.push(`Date guard: "${description}" resolved to ${date}, outside statement period ${metadata.statementPeriod.start || '?'}..${metadata.statementPeriod.end || '?'}`);
+            }
 
             transactions.push({
               date,
               description,
               amount,
+              rawAmount: amount,
               section: currentSection,
               isTransfer,
               transferType,
@@ -1249,6 +1394,8 @@ function parseAmexCreditCard(fullText: string, lines: string[]): StatementParseR
       }
     }
   }
+
+  finalizeCreditCardSigns(transactions);
 
   const summary = calculateSummary(transactions);
 
@@ -1323,7 +1470,10 @@ function extractAmexMetadata(
       const smn = monthNameToNumber(sm);
       const emn = monthNameToNumber(em);
       if (smn && emn) {
-        statementStart = `${year}-${String(smn).padStart(2, '0')}-${sd.padStart(2, '0')}`;
+        // Year-boundary statements print only the end year ("December 15 -
+        // January 14, 2025"): the start belongs to the prior year.
+        const startYear = smn > emn ? Number(year) - 1 : Number(year);
+        statementStart = `${startYear}-${String(smn).padStart(2, '0')}-${sd.padStart(2, '0')}`;
         statementEnd = `${year}-${String(emn).padStart(2, '0')}-${ed.padStart(2, '0')}`;
       }
     }
@@ -1389,23 +1539,21 @@ function parseGenericCreditCardStatement(
     if (txMatch) {
       const [, rawDate, description, rawAmount] = txMatch;
       try {
-        const periodYear = metadata.statementPeriod.end ? parseInt(metadata.statementPeriod.end.split('-')[0], 10) : new Date().getFullYear();
-        const date = normalizeDate(rawDate, periodYear);
-        let amount = normalizeAmount(rawAmount);
-
-        if (currentSection === 'charges' || currentSection === 'interest') {
-          amount = -Math.abs(amount);
-        } else if (currentSection === 'payments') {
-          amount = Math.abs(amount);
-        }
+        const resolved = resolveTxnDate(rawDate, metadata.statementPeriod);
+        const date = resolved.date;
+        const amount = normalizeAmount(rawAmount);
 
         const { isTransfer, transferType, transferAccountRef } = detectTransfer(description);
         const merchantName = cleanMerchantName(description);
         const category = autoCategorize(description, isTransfer);
         const flags = extractFlags(description);
+        if (resolved.outOfRange) {
+          flags.push('date_out_of_range');
+          errors.push(`Date guard: "${description}" resolved to ${date}, outside statement period ${metadata.statementPeriod.start || '?'}..${metadata.statementPeriod.end || '?'}`);
+        }
 
         transactions.push({
-          date, description, amount, section: currentSection,
+          date, description, amount, rawAmount: amount, section: currentSection,
           isTransfer, transferType, transferAccountRef,
           merchantName, category, flags, rawLine: line,
         });
@@ -1429,24 +1577,22 @@ function parseGenericCreditCardStatement(
       }
       if (rawAmount && descParts.length > 0) {
         try {
-          const periodYear = metadata.statementPeriod.end ? parseInt(metadata.statementPeriod.end.split('-')[0], 10) : new Date().getFullYear();
-          const date = normalizeDate(tabFields[0], periodYear);
-          let amount = normalizeAmount(rawAmount);
-
-          if (currentSection === 'charges' || currentSection === 'interest') {
-            amount = -Math.abs(amount);
-          } else if (currentSection === 'payments') {
-            amount = Math.abs(amount);
-          }
+          const resolved = resolveTxnDate(tabFields[0], metadata.statementPeriod);
+          const date = resolved.date;
+          const amount = normalizeAmount(rawAmount);
 
           const description = descParts.filter(f => !/^\d{4}$/.test(f)).join(' ').trim();
           const { isTransfer, transferType, transferAccountRef } = detectTransfer(description);
           const merchantName = cleanMerchantName(description);
           const category = autoCategorize(description, isTransfer);
           const flags = extractFlags(description);
+          if (resolved.outOfRange) {
+            flags.push('date_out_of_range');
+            errors.push(`Date guard: "${description}" resolved to ${date}, outside statement period ${metadata.statementPeriod.start || '?'}..${metadata.statementPeriod.end || '?'}`);
+          }
 
           transactions.push({
-            date, description, amount, section: currentSection,
+            date, description, amount, rawAmount: amount, section: currentSection,
             isTransfer, transferType, transferAccountRef,
             merchantName, category, flags, rawLine: line,
           });
@@ -1456,6 +1602,8 @@ function parseGenericCreditCardStatement(
       }
     }
   }
+
+  finalizeCreditCardSigns(transactions);
 
   return { metadata, transactions, summary: calculateSummary(transactions), errors };
 }
@@ -1498,7 +1646,10 @@ function extractGenericCCMetadata(
       const smn = monthNameToNumber(sm);
       const emn = monthNameToNumber(em);
       if (smn && emn) {
-        statementStart = `${year}-${String(smn).padStart(2, '0')}-${sd.padStart(2, '0')}`;
+        // Year-boundary statements print only the end year; the start month
+        // being later than the end month means the start is the prior year.
+        const startYear = smn > emn ? Number(year) - 1 : Number(year);
+        statementStart = `${startYear}-${String(smn).padStart(2, '0')}-${sd.padStart(2, '0')}`;
         statementEnd = `${year}-${String(emn).padStart(2, '0')}-${ed.padStart(2, '0')}`;
       }
     }
@@ -1583,8 +1734,8 @@ function parseGenericCheckingStatement(
     if (txMatch) {
       const [, rawDate, description, rawAmount] = txMatch;
       try {
-        const periodYear = statementEnd ? parseInt(statementEnd.split('-')[0], 10) : new Date().getFullYear();
-        const date = normalizeDate(rawDate, periodYear);
+        const resolved = resolveTxnDate(rawDate, { start: statementStart, end: statementEnd });
+        const date = resolved.date;
         let amount = normalizeAmount(rawAmount);
 
         if (currentSection === 'withdrawals' || currentSection === 'fees' || currentSection === 'checks') {
@@ -1597,6 +1748,10 @@ function parseGenericCheckingStatement(
         const merchantName = cleanMerchantName(description);
         const category = autoCategorize(description, isTransfer);
         const flags = extractFlags(description);
+        if (resolved.outOfRange) {
+          flags.push('date_out_of_range');
+          errors.push(`Date guard: "${description}" resolved to ${date}, outside statement period ${statementStart || '?'}..${statementEnd || '?'}`);
+        }
 
         transactions.push({
           date, description, amount, section: currentSection,

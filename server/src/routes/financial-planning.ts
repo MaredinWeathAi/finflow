@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../db/database.js';
+import { ensureFlowClassification, liabilityOwed } from '../engine/flow.js';
 
 const router = Router();
 
@@ -80,8 +81,9 @@ function calculateNetWorth(
   const liabilitiesByType: Record<string, number> = {};
 
   for (const account of accounts) {
-    if (account.type === 'credit' || (LIABILITY_TYPES.includes(account.type) && account.balance !== 0)) {
-      const liabilityAmount = Math.abs(account.balance);
+    if (LIABILITY_TYPES.includes(account.type)) {
+      // Not abs(): an overpaid card (credit balance) is not MORE debt (audit D7)
+      const liabilityAmount = liabilityOwed(account.type, account.balance);
       totalLiabilities += liabilityAmount;
       liabilitiesByType[account.type] = (liabilitiesByType[account.type] || 0) + liabilityAmount;
     }
@@ -171,15 +173,17 @@ router.get('/client-profile', async (req: Request, res: Response) => {
 router.get('/living-expenses', async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
+    await ensureFlowClassification(userId);
     const currentMonth = getCurrentMonth();
     const { monthStart, monthEnd } = getMonthBounds(currentMonth);
 
-    // Get current month transactions
+    // Get current month real expenses (flow-classified: transfers and card
+    // payments are not living expenses; interest/fees are)
     const transactions = await db.all(`SELECT t.id, t.amount, t.category_id, t.name, t.date,
                 c.name as category_name, c.icon as category_icon, c.color as category_color
          FROM transactions t
          LEFT JOIN categories c ON t.category_id = c.id
-         WHERE t.user_id = ? AND t.date BETWEEN ? AND ? AND t.amount < 0
+         WHERE t.user_id = ? AND t.date BETWEEN ? AND ? AND t.flow_type IN ('expense', 'interest_fee')
          ORDER BY t.date DESC`, userId, monthStart, monthEnd) as any[];
 
     // Get recurring expenses
@@ -541,6 +545,7 @@ router.get('/net-worth', async (req: Request, res: Response) => {
 router.get('/comprehensive', async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
+    await ensureFlowClassification(userId);
     const currentMonth = getCurrentMonth();
     const { monthStart, monthEnd } = getMonthBounds(currentMonth);
 
@@ -553,7 +558,7 @@ router.get('/comprehensive', async (req: Request, res: Response) => {
          ORDER BY created_at DESC`, userId) as any[];
 
     // 3. Current month transactions
-    const transactions = await db.all(`SELECT t.id, t.amount, t.category_id, t.name, t.date,
+    const transactions = await db.all(`SELECT t.id, t.amount, t.category_id, t.name, t.date, t.flow_type,
                 c.name as category_name, c.icon as category_icon, c.color as category_color
          FROM transactions t
          LEFT JOIN categories c ON t.category_id = c.id
@@ -582,10 +587,10 @@ router.get('/comprehensive', async (req: Request, res: Response) => {
 
     // Calculate metrics for comprehensive response
 
-    // Expenses breakdown
+    // Expenses breakdown (flow-classified: transfers/card payments excluded)
     const expensesByCategory: any = {};
     let totalExpenses = 0;
-    for (const tx of transactions.filter((t: any) => t.amount < 0)) {
+    for (const tx of transactions.filter((t: any) => t.flow_type === 'expense' || t.flow_type === 'interest_fee')) {
       const categoryName = tx.category_name || 'Uncategorized';
       const amount = Math.abs(tx.amount);
       if (!expensesByCategory[categoryName]) {

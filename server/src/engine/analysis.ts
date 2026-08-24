@@ -1,5 +1,10 @@
 import crypto from 'crypto';
 import { db } from '../db/database.js';
+import { ensureFlowClassification, liabilityOwed } from './flow.js';
+
+// All income/expense/transfer aggregates in this file read the persisted
+// flow_type (see engine/flow.ts) — the sign of the amount is never used to
+// infer income, and the old in-file transfer keyword lists are gone.
 
 // ---------------------------------------------------------------------------
 // Types
@@ -184,7 +189,8 @@ async function analyzeAccounts(userId: string): Promise<{ summaries: AccountSumm
     if (acct.is_hidden) continue;
 
     if (LIABILITY_TYPES.includes(acct.type)) {
-      totalLiabilities += Math.abs(acct.balance);
+      // Not abs(): an overpaid card (credit balance) is not MORE debt (D7)
+      totalLiabilities += liabilityOwed(acct.type, acct.balance);
     } else if (!investmentAccountIds.has(acct.id)) {
       // Only count non-investment-linked accounts as cash assets
       totalAccountAssets += acct.balance;
@@ -202,9 +208,9 @@ async function analyzeAccounts(userId: string): Promise<{ summaries: AccountSumm
 // ---------------------------------------------------------------------------
 
 async function analyzeIncome(userId: string): Promise<{ sources: IncomeSource[]; total: number; avgMonthly: number }> {
-  // Get all income transactions (positive amounts)
+  // Real income only — transfers in, card payments and refunds are excluded
   const incomeTransactions = await db.all(`SELECT name, amount, date FROM transactions
-     WHERE user_id = ? AND amount > 0
+     WHERE user_id = ? AND flow_type = 'income'
      ORDER BY date DESC`, userId) as any[];
 
   // Group by normalized merchant name
@@ -242,7 +248,7 @@ async function analyzeIncome(userId: string): Promise<{ sources: IncomeSource[];
   sources.sort((a, b) => b.totalAmount - a.totalAmount);
 
   // Calculate avg monthly based on date range
-  const dateRange = await db.get(`SELECT MIN(date) as "minDate", MAX(date) as "maxDate" FROM transactions WHERE user_id = ? AND amount > 0`, userId) as any;
+  const dateRange = await db.get(`SELECT MIN(date) as "minDate", MAX(date) as "maxDate" FROM transactions WHERE user_id = ? AND flow_type = 'income'`, userId) as any;
 
   let months = 1;
   if (dateRange.minDate && dateRange.maxDate) {
@@ -262,7 +268,7 @@ async function analyzeExpenses(userId: string): Promise<{ merchants: MerchantSum
   const expenses = await db.all(`SELECT t.name, t.amount, t.date, c.name as category_name
      FROM transactions t
      LEFT JOIN categories c ON t.category_id = c.id
-     WHERE t.user_id = ? AND t.amount < 0
+     WHERE t.user_id = ? AND t.flow_type IN ('expense', 'interest_fee')
      ORDER BY t.date DESC`, userId) as any[];
 
   const grouped = new Map<string, { amounts: number[]; dates: string[]; category?: string }>();
@@ -299,7 +305,7 @@ async function analyzeExpenses(userId: string): Promise<{ merchants: MerchantSum
 
   merchants.sort((a, b) => b.totalSpent - a.totalSpent);
 
-  const dateRange = await db.get(`SELECT MIN(date) as "minDate", MAX(date) as "maxDate" FROM transactions WHERE user_id = ? AND amount < 0`, userId) as any;
+  const dateRange = await db.get(`SELECT MIN(date) as "minDate", MAX(date) as "maxDate" FROM transactions WHERE user_id = ? AND flow_type IN ('expense', 'interest_fee')`, userId) as any;
 
   let months = 1;
   if (dateRange.minDate && dateRange.maxDate) {
@@ -316,72 +322,39 @@ async function analyzeExpenses(userId: string): Promise<{ merchants: MerchantSum
 // ---------------------------------------------------------------------------
 
 async function analyzeTransfers(userId: string): Promise<{ transfers: TransferPair[]; total: number; count: number }> {
-  // Find transactions with transfer-like names
-  const transferKeywords = [
-    'transfer', 'xfer', 'online banking transfer', 'ach transfer',
-    'wire', 'zelle', 'venmo', 'paypal transfer', 'internal transfer',
-    'from savings', 'to savings', 'from checking', 'to checking',
-    'mobile transfer', 'funds transfer',
-  ];
-
-  const allTransactions = await db.all(`SELECT t.id, t.name, t.amount, t.date, t.account_id, t.notes,
-            a.name as account_name, a.type as account_type
+  // The flow classifier already matched internal transfer pairs (both legs
+  // carry transfer_pair_id) and labelled card payments — just read them back.
+  const rows = await db.all(`SELECT t.id, t.name, t.amount, t.date, t.transfer_pair_id,
+            a.name as account_name
      FROM transactions t
      JOIN accounts a ON t.account_id = a.id
-     WHERE t.user_id = ?
+     WHERE t.user_id = ? AND t.flow_type IN ('transfer', 'debt_payment')
      ORDER BY t.date DESC, ABS(t.amount) DESC`, userId) as any[];
 
+  const byId = new Map<string, any>(rows.map((r: any) => [r.id, r]));
+  const seen = new Set<string>();
   const transfers: TransferPair[] = [];
-  const matched = new Set<string>();
   let total = 0;
 
-  // Find matching pairs (same absolute amount, opposite signs, within 3 days)
-  for (let i = 0; i < allTransactions.length; i++) {
-    const txn = allTransactions[i];
-    if (matched.has(txn.id)) continue;
+  for (const txn of rows) {
+    if (seen.has(txn.id)) continue;
+    seen.add(txn.id);
 
-    const isTransferLike = transferKeywords.some(kw => txn.name.toLowerCase().includes(kw));
-    if (!isTransferLike) continue;
-
-    // Look for matching opposite transaction
-    for (let j = i + 1; j < allTransactions.length; j++) {
-      const other = allTransactions[j];
-      if (matched.has(other.id)) continue;
-      if (other.account_id === txn.account_id) continue;
-
-      const amtMatch = Math.abs(Math.abs(txn.amount) - Math.abs(other.amount)) < 0.01;
-      const oppositeSign = (txn.amount > 0 && other.amount < 0) || (txn.amount < 0 && other.amount > 0);
-
-      if (amtMatch && oppositeSign) {
-        const d1 = new Date(txn.date);
-        const d2 = new Date(other.date);
-        const daysDiff = Math.abs(d1.getTime() - d2.getTime()) / (1000 * 60 * 60 * 24);
-
-        if (daysDiff <= 3) {
-          matched.add(txn.id);
-          matched.add(other.id);
-
-          const from = txn.amount < 0 ? txn : other;
-          const to = txn.amount > 0 ? txn : other;
-
-          transfers.push({
-            fromAccount: from.account_name,
-            toAccount: to.account_name,
-            amount: money(Math.abs(from.amount)),
-            date: from.date,
-            description: from.name,
-            status: 'matched',
-          });
-
-          total += Math.abs(from.amount);
-          break;
-        }
-      }
-    }
-
-    // If no match found, it's an unmatched transfer
-    if (!matched.has(txn.id)) {
-      matched.add(txn.id);
+    const other = txn.transfer_pair_id ? byId.get(txn.transfer_pair_id) : undefined;
+    if (other && !seen.has(other.id)) {
+      seen.add(other.id);
+      const from = txn.amount < 0 ? txn : other;
+      const to = txn.amount < 0 ? other : txn;
+      transfers.push({
+        fromAccount: from.account_name,
+        toAccount: to.account_name,
+        amount: money(Math.abs(from.amount)),
+        date: from.date,
+        description: from.name,
+        status: 'matched',
+      });
+      total += Math.abs(from.amount);
+    } else {
       transfers.push({
         fromAccount: txn.amount < 0 ? txn.account_name : 'External',
         toAccount: txn.amount > 0 ? txn.account_name : 'External',
@@ -404,32 +377,22 @@ async function analyzeTransfers(userId: string): Promise<{ transfers: TransferPa
 async function computeMonthlyCashFlow(userId: string): Promise<CashFlowMonth[]> {
   const rows = await db.all(`SELECT
        substr(date, 1, 7) as month,
-       SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) as income,
-       SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END) as expenses
+       SUM(CASE WHEN flow_type = 'income' THEN amount ELSE 0 END) as income,
+       SUM(CASE WHEN flow_type IN ('expense', 'interest_fee') THEN ABS(amount) ELSE 0 END) as expenses,
+       SUM(CASE WHEN flow_type IN ('transfer', 'debt_payment') THEN ABS(amount) ELSE 0 END) as transfers
      FROM transactions
      WHERE user_id = ?
      GROUP BY substr(date, 1, 7)
      ORDER BY month DESC
      LIMIT 12`, userId) as any[];
 
-  // Get transfer amounts per month
-  const transferKeywords = ['transfer', 'xfer', 'internal', 'from savings', 'to savings', 'from checking', 'to checking'];
-
-  const months: CashFlowMonth[] = [];
-  for (const r of rows) {
-    const transferAmount = ((await db.get(`SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
-       WHERE user_id = ? AND substr(date, 1, 7) = ? AND (
-         ${transferKeywords.map(() => 'LOWER(name) LIKE ?').join(' OR ')}
-       )`, userId, r.month, ...transferKeywords.map(k => `%${k}%`)) as any)).total;
-
-    months.push({
-      month: r.month,
-      income: Math.round(r.income * 100) / 100,
-      expenses: Math.round(r.expenses * 100) / 100,
-      transfers: Math.round(transferAmount * 100) / 100,
-      net: Math.round((r.income - r.expenses) * 100) / 100,
-    });
-  }
+  const months: CashFlowMonth[] = rows.map((r: any) => ({
+    month: r.month,
+    income: Math.round(r.income * 100) / 100,
+    expenses: Math.round(r.expenses * 100) / 100,
+    transfers: Math.round(r.transfers * 100) / 100,
+    net: Math.round((r.income - r.expenses) * 100) / 100,
+  }));
   return months.reverse();
 }
 
@@ -466,7 +429,7 @@ async function detectPatterns(
   const categorySpending = await db.all(`SELECT c.name, SUM(ABS(t.amount)) as total
      FROM transactions t
      JOIN categories c ON t.category_id = c.id
-     WHERE t.user_id = ? AND t.amount < 0
+     WHERE t.user_id = ? AND t.flow_type IN ('expense', 'interest_fee')
      GROUP BY c.id
      ORDER BY total DESC
      LIMIT 5`, userId) as any[];
@@ -524,7 +487,7 @@ async function detectPatterns(
 
   // 5. Large transaction detection
   const largeTxns = (await db.get(`SELECT COUNT(*) as cnt, SUM(ABS(amount)) as total FROM transactions
-     WHERE user_id = ? AND ABS(amount) > 500`, userId) as any);
+     WHERE user_id = ? AND flow_type IN ('expense', 'interest_fee') AND ABS(amount) > 500`, userId) as any);
 
   if (largeTxns.cnt > 0) {
     patterns.push({
@@ -547,9 +510,8 @@ async function detectPatterns(
               SUM(ABS(t.amount)) as total
        FROM transactions t
        JOIN categories c ON t.category_id = c.id
-       WHERE t.user_id = ? AND t.amount < 0
+       WHERE t.user_id = ? AND t.flow_type IN ('expense', 'interest_fee')
          AND substr(t.date, 1, 7) != ?
-         AND LOWER(c.name) NOT IN ('cc pmt', 'transfer')
        GROUP BY c.id, substr(t.date, 1, 7)
        ORDER BY c.name, month`, userId, currentMonthKey) as any[];
 
@@ -627,8 +589,7 @@ async function detectPatterns(
               COUNT(*) as cnt
        FROM transactions t
        JOIN categories c ON t.category_id = c.id
-       WHERE t.user_id = ? AND t.amount < 0
-         AND LOWER(c.name) NOT IN ('cc pmt', 'transfer')
+       WHERE t.user_id = ? AND t.flow_type IN ('expense', 'interest_fee')
        GROUP BY c.id
        -- HAVING cannot reference a SELECT alias in Postgres (it is evaluated
        -- before the select list); SQLite permits it. Repeat the aggregate.
@@ -640,7 +601,7 @@ async function detectPatterns(
       // Find transactions > 3x the category average
       const bigOnes = await db.all(`SELECT t.name, ABS(t.amount) as amount, t.date
          FROM transactions t
-         WHERE t.user_id = ? AND t.category_id = ? AND t.amount < 0
+         WHERE t.user_id = ? AND t.category_id = ? AND t.flow_type IN ('expense', 'interest_fee')
            -- 3.0 not 3: Postgres infers the bound parameter's type from the
            -- literal, so a bare integer types the parameter as integer and
            -- rejects a fractional average. SQLite coerced it silently.
@@ -820,6 +781,9 @@ function generateNarrative(
 // ---------------------------------------------------------------------------
 
 export async function generateFinancialAnalysis(userId: string): Promise<FinancialAnalysis> {
+  // Every aggregate below reads flow_type; make sure all rows are classified.
+  await ensureFlowClassification(userId);
+
   // Account analysis
   const { summaries: accountSummaries, totalAssets, totalLiabilities } = await analyzeAccounts(userId);
 

@@ -244,7 +244,7 @@ export interface PendingItem {
   parsed_category: string | null
   matched_category_id: string | null
   matched_account_id: string | null
-  status: 'pending' | 'approved' | 'skipped' | 'imported' | 'duplicate'
+  status: 'pending' | 'approved' | 'skipped' | 'imported' | 'duplicate' | 'flagged'
   duplicate_of: string | null
   confidence: number
   raw_data: Record<string, string>

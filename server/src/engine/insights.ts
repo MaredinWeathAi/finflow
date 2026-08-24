@@ -1,5 +1,11 @@
 import crypto from 'crypto';
 import { db } from '../db/database.js';
+import { ensureFlowClassification, liabilityOwed } from './flow.js';
+
+// All income/expense aggregates in this file use the persisted flow_type
+// (see engine/flow.ts) — never the sign of the amount. Transfers, credit-card
+// payments (debt_payment) and refunds are excluded from income; interest and
+// fees count as expenses.
 
 // ---------------------------------------------------------------------------
 // Types
@@ -160,10 +166,10 @@ async function computeHealthScore(userId: string): Promise<HealthScore> {
   const curStart = getCurrentMonthStart();
   const threeMonthsAgo = getMonthStartNBack(3);
   const income3m = (await db.get(`SELECT COALESCE(SUM(amount), 0) as total FROM transactions
-     WHERE user_id = ? AND amount > 0 AND date >= ? AND date <= ?`, userId, threeMonthsAgo, getCurrentMonthEnd()) as any).total;
+     WHERE user_id = ? AND flow_type = 'income' AND date >= ? AND date <= ?`, userId, threeMonthsAgo, getCurrentMonthEnd()) as any).total;
 
   const expenses3m = (await db.get(`SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
-     WHERE user_id = ? AND amount < 0 AND date >= ? AND date <= ?`, userId, threeMonthsAgo, getCurrentMonthEnd()) as any).total;
+     WHERE user_id = ? AND flow_type IN ('expense', 'interest_fee') AND date >= ? AND date <= ?`, userId, threeMonthsAgo, getCurrentMonthEnd()) as any).total;
 
   const savingsRate3m = income3m > 0 ? (income3m - expenses3m) / income3m : 0;
   let savingsScore = 0;
@@ -183,8 +189,8 @@ async function computeHealthScore(userId: string): Promise<HealthScore> {
   let withinBudget = 0;
   let totalBudgets = budgets.length;
   for (const b of budgets) {
-    const spent = (await db.get(`SELECT COALESCE(SUM(ABS(amount)), 0) as spent FROM transactions
-       WHERE user_id = ? AND category_id = ? AND amount < 0
+    const spent = (await db.get(`SELECT COALESCE(SUM(CASE WHEN flow_type IN ('expense', 'interest_fee') THEN ABS(amount) ELSE -amount END), 0) as spent FROM transactions
+       WHERE user_id = ? AND category_id = ? AND flow_type IN ('expense', 'interest_fee', 'refund')
          AND date >= ? AND date <= ?`, userId, b.category_id, curStart, getCurrentMonthEnd()) as any).spent;
     const limit = b.amount + (b.rollover_amount || 0);
     if (spent <= limit) withinBudget++;
@@ -193,11 +199,18 @@ async function computeHealthScore(userId: string): Promise<HealthScore> {
   factors.push({ name: 'Budget Adherence', score: adherenceScore, weight: 0.25 });
 
   // --- Debt ratio factor (15% weight) ---
-  const assets = (await db.get(`SELECT COALESCE(SUM(balance), 0) as total FROM accounts
-     WHERE user_id = ? AND balance > 0`, userId) as any).total;
-
-  const liabilities = (await db.get(`SELECT COALESCE(SUM(ABS(balance)), 0) as total FROM accounts
-     WHERE user_id = ? AND balance < 0`, userId) as any).total;
+  // Type-aware, not sign-blind (audit D7): a positive-stored loan balance is
+  // debt, not an asset, and an overpaid card is not counted as debt.
+  const acctRows = await db.all(`SELECT type, balance FROM accounts WHERE user_id = ? AND is_hidden = 0`, userId) as any[];
+  let assets = 0;
+  let liabilities = 0;
+  for (const a of acctRows) {
+    if (['credit', 'loan', 'mortgage'].includes(a.type)) {
+      liabilities += liabilityOwed(a.type, a.balance || 0);
+    } else if ((a.balance || 0) > 0) {
+      assets += a.balance;
+    }
+  }
 
   const debtRatio = assets > 0 ? liabilities / assets : 1;
   let debtScore = 100;
@@ -226,7 +239,7 @@ async function computeHealthScore(userId: string): Promise<HealthScore> {
       return `${parts[0]}-${String(parts[1]).padStart(2, '0')}-${String(last).padStart(2, '0')}`;
     })();
     const mIncome = (await db.get(`SELECT COALESCE(SUM(amount), 0) as total FROM transactions
-       WHERE user_id = ? AND amount > 0 AND date >= ? AND date <= ?`, userId, mStart, mEnd) as any).total;
+       WHERE user_id = ? AND flow_type = 'income' AND date >= ? AND date <= ?`, userId, mStart, mEnd) as any).total;
     if (mIncome > 0) monthlyIncomes.push(mIncome);
   }
 
@@ -285,8 +298,8 @@ async function analyzeBudgetAdherence(userId: string): Promise<Insight[]> {
      WHERE b.user_id = ? AND (b.month = ? OR b.month = ?)`, userId, curStart, curMonthPrefix) as any[];
 
   for (const b of budgets) {
-    const spent = (await db.get(`SELECT COALESCE(SUM(ABS(amount)), 0) as spent FROM transactions
-       WHERE user_id = ? AND category_id = ? AND amount < 0
+    const spent = (await db.get(`SELECT COALESCE(SUM(CASE WHEN flow_type IN ('expense', 'interest_fee') THEN ABS(amount) ELSE -amount END), 0) as spent FROM transactions
+       WHERE user_id = ? AND category_id = ? AND flow_type IN ('expense', 'interest_fee', 'refund')
          AND date >= ? AND date <= ?`, userId, b.category_id, curStart, curEnd) as any).spent;
 
     const limit = b.amount + (b.rollover_amount || 0);
@@ -346,7 +359,7 @@ async function analyzeSpendingTrends(userId: string): Promise<Insight[]> {
             COALESCE(SUM(ABS(t.amount)), 0) as spent
      FROM categories c
      LEFT JOIN transactions t ON t.category_id = c.id
-       AND t.user_id = ? AND t.amount < 0
+       AND t.user_id = ? AND t.flow_type IN ('expense', 'interest_fee')
        AND t.date >= ? AND t.date <= ?
      WHERE c.user_id = ? AND c.is_income = 0
      GROUP BY c.id, c.name`, userId, curStart, curEnd, userId) as any[];
@@ -355,7 +368,7 @@ async function analyzeSpendingTrends(userId: string): Promise<Insight[]> {
             COALESCE(SUM(ABS(t.amount)), 0) as spent
      FROM categories c
      LEFT JOIN transactions t ON t.category_id = c.id
-       AND t.user_id = ? AND t.amount < 0
+       AND t.user_id = ? AND t.flow_type IN ('expense', 'interest_fee')
        AND t.date >= ? AND t.date <= ?
      WHERE c.user_id = ? AND c.is_income = 0
      GROUP BY c.id`, userId, prevStart, prevEnd, userId) as any[];
@@ -484,10 +497,10 @@ async function analyzeSavingsRate(userId: string): Promise<Insight[]> {
   const curEnd = getCurrentMonthEnd();
 
   const income = (await db.get(`SELECT COALESCE(SUM(amount), 0) as total FROM transactions
-     WHERE user_id = ? AND amount > 0 AND date >= ? AND date <= ?`, userId, threeMonthsAgo, curEnd) as any).total;
+     WHERE user_id = ? AND flow_type = 'income' AND date >= ? AND date <= ?`, userId, threeMonthsAgo, curEnd) as any).total;
 
   const expenses = (await db.get(`SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
-     WHERE user_id = ? AND amount < 0 AND date >= ? AND date <= ?`, userId, threeMonthsAgo, curEnd) as any).total;
+     WHERE user_id = ? AND flow_type IN ('expense', 'interest_fee') AND date >= ? AND date <= ?`, userId, threeMonthsAgo, curEnd) as any).total;
 
   const netSavings = income - expenses;
   const savingsRate = income > 0 ? netSavings / income : 0;
@@ -573,9 +586,9 @@ async function analyzeGoalProgress(userId: string): Promise<Insight[]> {
       const threeMonthsAgo = getMonthStartNBack(3);
       const curEnd = getCurrentMonthEnd();
       const recentIncome = (await db.get(`SELECT COALESCE(SUM(amount), 0) as total FROM transactions
-         WHERE user_id = ? AND amount > 0 AND date >= ? AND date <= ?`, userId, threeMonthsAgo, curEnd) as any).total;
+         WHERE user_id = ? AND flow_type = 'income' AND date >= ? AND date <= ?`, userId, threeMonthsAgo, curEnd) as any).total;
       const recentExpenses = (await db.get(`SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
-         WHERE user_id = ? AND amount < 0 AND date >= ? AND date <= ?`, userId, threeMonthsAgo, curEnd) as any).total;
+         WHERE user_id = ? AND flow_type IN ('expense', 'interest_fee') AND date >= ? AND date <= ?`, userId, threeMonthsAgo, curEnd) as any).total;
       const avgMonthlySurplus = (recentIncome - recentExpenses) / 3;
 
       if (requiredMonthly > avgMonthlySurplus * 0.8) {
@@ -860,10 +873,10 @@ async function computeMonthlyVsAnnualView(userId: string): Promise<{ monthlyView
   const curEnd = getCurrentMonthEnd();
 
   const monthIncome = (await db.get(`SELECT COALESCE(SUM(amount), 0) as total FROM transactions
-     WHERE user_id = ? AND amount > 0 AND date >= ? AND date <= ?`, userId, curStart, curEnd) as any).total;
+     WHERE user_id = ? AND flow_type = 'income' AND date >= ? AND date <= ?`, userId, curStart, curEnd) as any).total;
 
   const monthExpenses = (await db.get(`SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
-     WHERE user_id = ? AND amount < 0 AND date >= ? AND date <= ?`, userId, curStart, curEnd) as any).total;
+     WHERE user_id = ? AND flow_type IN ('expense', 'interest_fee') AND date >= ? AND date <= ?`, userId, curStart, curEnd) as any).total;
 
   // Monthly recurring total (active recurring expenses normalized to monthly)
   const recurringItems = await db.all(`SELECT amount, frequency FROM recurring_expenses
@@ -895,10 +908,10 @@ async function computeMonthlyVsAnnualView(userId: string): Promise<{ monthlyView
   const yearEnd = getAnnualEnd();
 
   const yearIncome = (await db.get(`SELECT COALESCE(SUM(amount), 0) as total FROM transactions
-     WHERE user_id = ? AND amount > 0 AND date >= ? AND date <= ?`, userId, yearStart, yearEnd) as any).total;
+     WHERE user_id = ? AND flow_type = 'income' AND date >= ? AND date <= ?`, userId, yearStart, yearEnd) as any).total;
 
   const yearExpenses = (await db.get(`SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
-     WHERE user_id = ? AND amount < 0 AND date >= ? AND date <= ?`, userId, yearStart, yearEnd) as any).total;
+     WHERE user_id = ? AND flow_type IN ('expense', 'interest_fee') AND date >= ? AND date <= ?`, userId, yearStart, yearEnd) as any).total;
 
   const annualRecurring = monthRecurring * 12;
   const yearNet = yearIncome - yearExpenses;
@@ -920,6 +933,9 @@ async function computeMonthlyVsAnnualView(userId: string): Promise<{ monthlyView
 // ---------------------------------------------------------------------------
 
 export async function generateInsights(userId: string): Promise<InsightsResult> {
+  // Every aggregate below reads flow_type; make sure all rows are classified.
+  await ensureFlowClassification(userId);
+
   // Compute health score
   const healthScore = await computeHealthScore(userId);
 

@@ -62,6 +62,7 @@ function StatusBadge({ status }: { status: PendingItem['status'] }) {
     skipped: { label: 'Skipped', className: 'bg-red-500/10 text-red-400' },
     duplicate: { label: 'Duplicate', className: 'bg-amber-500/10 text-amber-400' },
     imported: { label: 'Imported', className: 'bg-blue-500/10 text-blue-400' },
+    flagged: { label: 'Check Date', className: 'bg-red-500/10 text-red-400' },
   }
   const c = config[status] || config.pending
   return (

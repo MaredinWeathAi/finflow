@@ -1,12 +1,20 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../db/database.js';
+import { ensureFlowClassification, getFlowDataNotes, liabilityOwed } from '../engine/flow.js';
 
 const router = Router();
+
+// Aggregation contract (see engine/flow.ts): income and expenses come from the
+// persisted flow_type, never from the sign of the amount. Transfers between
+// owned accounts, credit-card payments (debt_payment), and refunds are excluded
+// from income; interest/fees are real expenses; refunds net against their
+// category in rollups.
 
 // GET /monthly?month=YYYY-MM-DD - monthly report
 router.get('/monthly', async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
+    await ensureFlowClassification(userId);
     const month = (req.query.month as string) || new Date().toISOString().substring(0, 10);
     const monthStr = month.substring(0, 7) + '-01';
 
@@ -14,28 +22,28 @@ router.get('/monthly', async (req: Request, res: Response) => {
     const endOfMonth = new Date(year, mon, 0);
     const endDate = `${year}-${String(mon).padStart(2, '0')}-${String(endOfMonth.getDate()).padStart(2, '0')}`;
 
-    // Total income (positive amounts)
+    // Total income (flow-classified; transfers/debt payments/refunds excluded)
     const incomeResult = await db.get(`SELECT COALESCE(SUM(amount), 0) as total
          FROM transactions
-         WHERE user_id = ? AND amount > 0 AND date >= ? AND date <= ?`, userId, monthStr, endDate) as any;
+         WHERE user_id = ? AND flow_type = 'income' AND date >= ? AND date <= ?`, userId, monthStr, endDate) as any;
 
-    // Total expenses (negative amounts)
+    // Total expenses (real spending + interest/fees)
     const expenseResult = await db.get(`SELECT COALESCE(SUM(ABS(amount)), 0) as total
          FROM transactions
-         WHERE user_id = ? AND amount < 0 AND date >= ? AND date <= ?`, userId, monthStr, endDate) as any;
+         WHERE user_id = ? AND flow_type IN ('expense', 'interest_fee') AND date >= ? AND date <= ?`, userId, monthStr, endDate) as any;
 
     const income = Math.round(incomeResult.total * 100) / 100;
     const expenses = Math.round(expenseResult.total * 100) / 100;
     const net = Math.round((income - expenses) * 100) / 100;
     const savingsRate = income > 0 ? Math.round(((income - expenses) / income) * 10000) / 100 : 0;
 
-    // Top expense categories
+    // Top expense categories (refunds net against their category)
     const topCategories = await db.all(`SELECT c.id, c.name, c.icon, c.color,
-                COALESCE(SUM(ABS(t.amount)), 0) as total,
+                COALESCE(SUM(CASE WHEN t.flow_type IN ('expense', 'interest_fee') THEN ABS(t.amount) ELSE -t.amount END), 0) as total,
                 COUNT(t.id) as transaction_count
          FROM transactions t
          JOIN categories c ON t.category_id = c.id
-         WHERE t.user_id = ? AND t.amount < 0 AND t.date >= ? AND t.date <= ?
+         WHERE t.user_id = ? AND t.flow_type IN ('expense', 'interest_fee', 'refund') AND t.date >= ? AND t.date <= ?
          GROUP BY c.id
          ORDER BY total DESC
          LIMIT 10`, userId, monthStr, endDate);
@@ -43,6 +51,8 @@ router.get('/monthly', async (req: Request, res: Response) => {
     // Transaction count
     const txCount = await db.get(`SELECT COUNT(*) as count FROM transactions
          WHERE user_id = ? AND date >= ? AND date <= ?`, userId, monthStr, endDate) as any;
+
+    const dataNotes = await getFlowDataNotes(db, userId);
 
     res.json({
       month: monthStr,
@@ -59,6 +69,7 @@ router.get('/monthly', async (req: Request, res: Response) => {
       })),
       budget_adherence: 0,
       transaction_count: txCount.count,
+      data_notes: dataNotes,
     });
   } catch (error) {
     console.error('Monthly report error:', error);
@@ -70,6 +81,7 @@ router.get('/monthly', async (req: Request, res: Response) => {
 router.get('/annual', async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
+    await ensureFlowClassification(userId);
     const year = (req.query.year as string) || String(new Date().getFullYear());
     const startDate = `${year}-01-01`;
     const endDate = `${year}-12-31`;
@@ -77,8 +89,8 @@ router.get('/annual', async (req: Request, res: Response) => {
     // Monthly breakdown
     const monthlyData = (await db.all(`SELECT
            substr(date, 1, 7) as month,
-           SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) as income,
-           SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END) as expenses
+           SUM(CASE WHEN flow_type = 'income' THEN amount ELSE 0 END) as income,
+           SUM(CASE WHEN flow_type IN ('expense', 'interest_fee') THEN ABS(amount) ELSE 0 END) as expenses
          FROM transactions
          WHERE user_id = ? AND date >= ? AND date <= ?
          GROUP BY substr(date, 1, 7)
@@ -92,8 +104,8 @@ router.get('/annual', async (req: Request, res: Response) => {
 
     // Annual totals
     const totalsResult = await db.get(`SELECT
-           SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) as total_income,
-           SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END) as total_expenses,
+           SUM(CASE WHEN flow_type = 'income' THEN amount ELSE 0 END) as total_income,
+           SUM(CASE WHEN flow_type IN ('expense', 'interest_fee') THEN ABS(amount) ELSE 0 END) as total_expenses,
            COUNT(*) as transaction_count
          FROM transactions
          WHERE user_id = ? AND date >= ? AND date <= ?`, userId, startDate, endDate) as any;
@@ -104,16 +116,18 @@ router.get('/annual', async (req: Request, res: Response) => {
     const avgMonthlyIncome = Math.round((totalIncome / 12) * 100) / 100;
     const avgMonthlyExpenses = Math.round((totalExpenses / 12) * 100) / 100;
 
-    // Top categories for the year
+    // Top categories for the year (refunds net against their category)
     const topCategories = await db.all(`SELECT c.id, c.name, c.icon, c.color,
-                COALESCE(SUM(ABS(t.amount)), 0) as total,
+                COALESCE(SUM(CASE WHEN t.flow_type IN ('expense', 'interest_fee') THEN ABS(t.amount) ELSE -t.amount END), 0) as total,
                 COUNT(t.id) as transaction_count
          FROM transactions t
          JOIN categories c ON t.category_id = c.id
-         WHERE t.user_id = ? AND t.amount < 0 AND t.date >= ? AND t.date <= ?
+         WHERE t.user_id = ? AND t.flow_type IN ('expense', 'interest_fee', 'refund') AND t.date >= ? AND t.date <= ?
          GROUP BY c.id
          ORDER BY total DESC
          LIMIT 10`, userId, startDate, endDate);
+
+    const dataNotes = await getFlowDataNotes(db, userId);
 
     res.json({
       year,
@@ -126,6 +140,7 @@ router.get('/annual', async (req: Request, res: Response) => {
       transactionCount: totalsResult.transaction_count,
       monthlyBreakdown: monthlyData,
       topCategories,
+      data_notes: dataNotes,
     });
   } catch (error) {
     console.error('Annual report error:', error);
@@ -139,6 +154,7 @@ router.get('/annual', async (req: Request, res: Response) => {
 router.get('/cashflow', async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
+    await ensureFlowClassification(userId);
     const period = (req.query.period as string) || '6m';
 
     // Parse period
@@ -147,14 +163,6 @@ router.get('/cashflow', async (req: Request, res: Response) => {
     if (match) {
       months = parseInt(match[1]);
     }
-
-    // Get Transfer category to exclude from expenses (internal moves, not real expenses)
-    // CC PMT is a real expense — it represents paying off credit card debt
-    const transferCat = await db.get(`SELECT id FROM categories WHERE user_id = ? AND LOWER(name) = 'transfer'`, userId) as any;
-    const cfExpExcludeIds = [transferCat?.id].filter(Boolean);
-    const cfExpExcludeClause = cfExpExcludeIds.length > 0
-      ? `AND (category_id IS NULL OR category_id NOT IN (${cfExpExcludeIds.map(() => '?').join(', ')}))`
-      : 'AND 1=1';
 
     // Find the N most recent COMPLETE months with data (exclude current partial month)
     // Fetch N+1 so we can drop a partial first month and still have up to N
@@ -196,27 +204,18 @@ router.get('/cashflow', async (req: Request, res: Response) => {
     const newestLastDay = new Date(ny, nm, 0).getDate();
     const endStr = `${newestYM}-${String(newestLastDay).padStart(2, '0')}`;
 
-    // Income: ALL positive amounts (no exclusions)
-    // Expenses: exclude Transfer only (internal account moves)
-    const incomeRows = await db.all(`SELECT substr(date, 1, 7) as month, SUM(amount) as income
+    // Income and expenses come from flow_type: transfers, debt payments and
+    // refunds are excluded from both sides (no more keyword/category guessing).
+    const flowRows = await db.all(`SELECT substr(date, 1, 7) as month,
+         SUM(CASE WHEN flow_type = 'income' THEN amount ELSE 0 END) as income,
+         SUM(CASE WHEN flow_type IN ('expense', 'interest_fee') THEN ABS(amount) ELSE 0 END) as expenses
        FROM transactions
-       WHERE user_id = ? AND amount > 0 AND date >= ? AND date <= ?
+       WHERE user_id = ? AND date >= ? AND date <= ?
        GROUP BY substr(date, 1, 7)`, userId, startStr, endStr) as any[];
 
-    const expenseRows = await db.all(`SELECT substr(date, 1, 7) as month, SUM(ABS(amount)) as expenses
-       FROM transactions
-       WHERE user_id = ? AND amount < 0 AND date >= ? AND date <= ? ${cfExpExcludeClause}
-       GROUP BY substr(date, 1, 7)`, userId, startStr, endStr, ...cfExpExcludeIds) as any[];
-
-    // Merge income and expense rows by month
     const monthMap = new Map<string, { income: number; expenses: number }>();
-    for (const row of incomeRows) {
-      monthMap.set(row.month, { income: row.income || 0, expenses: 0 });
-    }
-    for (const row of expenseRows) {
-      const existing = monthMap.get(row.month) || { income: 0, expenses: 0 };
-      existing.expenses = row.expenses || 0;
-      monthMap.set(row.month, existing);
+    for (const row of flowRows) {
+      monthMap.set(row.month, { income: row.income || 0, expenses: row.expenses || 0 });
     }
 
     // Build result from the oldest to newest month with data, filling gaps between with $0
@@ -263,28 +262,29 @@ router.get('/networth-history', async (req: Request, res: Response) => {
 router.get('/summary', async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
+    await ensureFlowClassification(userId);
     const month = (req.query.month as string) || new Date().toISOString().substring(0, 7);
     const monthStart = month + '-01';
     const [year, mon] = month.split('-').map(Number);
     const endOfMonth = new Date(year, mon, 0);
     const monthEnd = `${year}-${String(mon).padStart(2, '0')}-${String(endOfMonth.getDate()).padStart(2, '0')}`;
 
-    // Income and expenses
-    const incomeResult = await db.get(`SELECT COALESCE(SUM(amount), 0) as total FROM transactions WHERE user_id = ? AND amount > 0 AND date >= ? AND date <= ?`, userId, monthStart, monthEnd) as any;
+    // Income and expenses (flow-classified)
+    const incomeResult = await db.get(`SELECT COALESCE(SUM(amount), 0) as total FROM transactions WHERE user_id = ? AND flow_type = 'income' AND date >= ? AND date <= ?`, userId, monthStart, monthEnd) as any;
 
-    const expenseResult = await db.get(`SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions WHERE user_id = ? AND amount < 0 AND date >= ? AND date <= ?`, userId, monthStart, monthEnd) as any;
+    const expenseResult = await db.get(`SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions WHERE user_id = ? AND flow_type IN ('expense', 'interest_fee') AND date >= ? AND date <= ?`, userId, monthStart, monthEnd) as any;
 
     const income = Math.round(incomeResult.total * 100) / 100;
     const expenses = Math.round(expenseResult.total * 100) / 100;
 
-    // Category breakdown (expenses)
+    // Category breakdown (expenses; refunds net against their category)
     const expenseCategories = await db.all(`
       SELECT c.id, c.name, c.icon, c.color,
-        COALESCE(SUM(ABS(t.amount)), 0) as total,
+        COALESCE(SUM(CASE WHEN t.flow_type IN ('expense', 'interest_fee') THEN ABS(t.amount) ELSE -t.amount END), 0) as total,
         COUNT(t.id) as count
       FROM transactions t
       JOIN categories c ON t.category_id = c.id
-      WHERE t.user_id = ? AND t.amount < 0 AND t.date >= ? AND t.date <= ?
+      WHERE t.user_id = ? AND t.flow_type IN ('expense', 'interest_fee', 'refund') AND t.date >= ? AND t.date <= ?
       GROUP BY c.id ORDER BY total DESC
     `, userId, monthStart, monthEnd) as any[];
 
@@ -295,7 +295,7 @@ router.get('/summary', async (req: Request, res: Response) => {
         COUNT(t.id) as count
       FROM transactions t
       JOIN categories c ON t.category_id = c.id
-      WHERE t.user_id = ? AND t.amount > 0 AND t.date >= ? AND t.date <= ?
+      WHERE t.user_id = ? AND t.flow_type = 'income' AND t.date >= ? AND t.date <= ?
       GROUP BY c.id ORDER BY total DESC
     `, userId, monthStart, monthEnd) as any[];
 
@@ -305,11 +305,11 @@ router.get('/summary', async (req: Request, res: Response) => {
     // Goals progress
     const goals = await db.all('SELECT id, name, target_amount, current_amount, target_date, icon, color FROM goals WHERE user_id = ? AND is_completed = 0', userId) as any[];
 
-    // Budget performance
+    // Budget performance (spent = real spending net of refunds)
     const budgets = await db.all(`
       SELECT b.*, c.name as category_name, c.icon as category_icon, c.color as category_color,
-        (SELECT COALESCE(SUM(ABS(t.amount)), 0) FROM transactions t
-         WHERE t.user_id = ? AND t.category_id = b.category_id AND t.amount < 0
+        (SELECT COALESCE(SUM(CASE WHEN t.flow_type IN ('expense', 'interest_fee') THEN ABS(t.amount) ELSE -t.amount END), 0) FROM transactions t
+         WHERE t.user_id = ? AND t.category_id = b.category_id AND t.flow_type IN ('expense', 'interest_fee', 'refund')
          AND t.date >= ? AND t.date < date(?, '+1 month')) as spent
       FROM budgets b
       LEFT JOIN categories c ON b.category_id = c.id
@@ -319,8 +319,8 @@ router.get('/summary', async (req: Request, res: Response) => {
     // Daily spending trend for this month
     const dailySpending = await db.all(`
       SELECT date,
-        SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) as income,
-        SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END) as expenses
+        SUM(CASE WHEN flow_type = 'income' THEN amount ELSE 0 END) as income,
+        SUM(CASE WHEN flow_type IN ('expense', 'interest_fee') THEN ABS(amount) ELSE 0 END) as expenses
       FROM transactions
       WHERE user_id = ? AND date >= ? AND date <= ?
       GROUP BY date ORDER BY date ASC
@@ -331,25 +331,27 @@ router.get('/summary', async (req: Request, res: Response) => {
     const trendStart = `${sixMonthsAgo.getFullYear()}-${String(sixMonthsAgo.getMonth() + 1).padStart(2, '0')}-01`;
     const monthlyTrend = await db.all(`
       SELECT substr(date, 1, 7) as month,
-        SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) as income,
-        SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END) as expenses
+        SUM(CASE WHEN flow_type = 'income' THEN amount ELSE 0 END) as income,
+        SUM(CASE WHEN flow_type IN ('expense', 'interest_fee') THEN ABS(amount) ELSE 0 END) as expenses
       FROM transactions
       WHERE user_id = ? AND date >= ? AND date <= ?
       GROUP BY substr(date, 1, 7)
       ORDER BY month ASC
     `, userId, trendStart, monthEnd) as any[];
 
-    // Top merchants
+    // Top merchants (real spending only)
     const topMerchants = await db.all(`
       SELECT name, COUNT(*) as count, SUM(ABS(amount)) as total
       FROM transactions
-      WHERE user_id = ? AND amount < 0 AND date >= ? AND date <= ?
+      WHERE user_id = ? AND flow_type IN ('expense', 'interest_fee') AND date >= ? AND date <= ?
       GROUP BY LOWER(TRIM(name))
       ORDER BY total DESC LIMIT 10
     `, userId, monthStart, monthEnd) as any[];
 
     // Transaction count
     const txCount = (await db.get('SELECT COUNT(*) as count FROM transactions WHERE user_id = ? AND date >= ? AND date <= ?', userId, monthStart, monthEnd) as any).count;
+
+    const dataNotes = await getFlowDataNotes(db, userId);
 
     res.json({
       month,
@@ -371,6 +373,7 @@ router.get('/summary', async (req: Request, res: Response) => {
         net: Math.round((m.income - m.expenses) * 100) / 100,
       })),
       topMerchants,
+      data_notes: dataNotes,
     });
   } catch (error) {
     console.error('Summary report error:', error);
@@ -382,36 +385,22 @@ router.get('/summary', async (req: Request, res: Response) => {
 router.get('/dashboard-summary', async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
+    await ensureFlowClassification(userId);
     const month = (req.query.month as string) || new Date().toISOString().substring(0, 7);
     const monthStart = month + '-01';
     const [year, mon] = month.split('-').map(Number);
     const endOfMonth = new Date(year, mon, 0);
     const monthEnd = `${year}-${String(mon).padStart(2, '0')}-${String(endOfMonth.getDate()).padStart(2, '0')}`;
 
-    // Get Transfer category — excluded from expenses (internal account moves, not real expenses)
-    // CC PMT is a real expense — it represents paying off credit card debt, so it counts.
-    const transferCategory = await db.get(`SELECT id FROM categories WHERE user_id = ? AND LOWER(name) = 'transfer'`, userId) as any;
-    const transferCategoryId = transferCategory?.id;
-
-    const ccPmtCategory = await db.get(`SELECT id FROM categories WHERE user_id = ? AND LOWER(name) = 'cc pmt'`, userId) as any;
-    const ccPmtCategoryId = ccPmtCategory?.id;
-
-    // Only exclude Transfer from expenses — CC PMT is a real expense
-    const expenseExcludeIds = [transferCategoryId].filter(Boolean);
-    const buildExpenseExcludeClause = () => {
-      if (expenseExcludeIds.length === 0) return 'AND 1=1';
-      const placeholders = expenseExcludeIds.map(() => '?').join(', ');
-      return `AND (category_id IS NULL OR category_id NOT IN (${placeholders}))`;
-    };
-
-    // Income: ALL positive amounts, no exclusions
+    // Income: flow-classified. Card payments arriving on a card (debt_payment),
+    // internal transfers, and refunds are never income.
     const incomeResult = await db.get(`SELECT COALESCE(SUM(amount), 0) as total FROM transactions
-       WHERE user_id = ? AND amount > 0 AND date >= ? AND date <= ?`, userId, monthStart, monthEnd) as any;
+       WHERE user_id = ? AND flow_type = 'income' AND date >= ? AND date <= ?`, userId, monthStart, monthEnd) as any;
 
-    // Expenses: exclude Transfer only (internal account moves)
-    const expenseExcludeParams = [userId, monthStart, monthEnd, ...expenseExcludeIds];
+    // Expenses: real spending + interest/fees. The funding leg of a card
+    // payment is a transfer (its purchases are already counted on the card).
     const expenseResult = await db.get(`SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
-       WHERE user_id = ? AND amount < 0 AND date >= ? AND date <= ? ${buildExpenseExcludeClause()}`, ...expenseExcludeParams) as any;
+       WHERE user_id = ? AND flow_type IN ('expense', 'interest_fee') AND date >= ? AND date <= ?`, userId, monthStart, monthEnd) as any;
 
     const income = Math.round(incomeResult.total * 100) / 100;
     const expenses = Math.round(expenseResult.total * 100) / 100;
@@ -428,36 +417,30 @@ router.get('/dashboard-summary', async (req: Request, res: Response) => {
        ORDER BY name`, userId) as any[];
 
     // CC debt should be a positive number representing how much is owed.
-    // Credit card balances are stored as negative values in the DB.
-    const totalCCDebt = creditCards.reduce((sum, cc) => sum + Math.abs(cc.balance || 0), 0);
+    // Credit card balances are stored as negative values in the DB; an
+    // overpaid card (credit balance) owes 0 — never abs() (audit D7).
+    const totalCCDebt = creditCards.reduce((sum, cc) => sum + liabilityOwed('credit', cc.balance || 0), 0);
 
-    // CC spending this month (charges on CC accounts)
+    // CC spending this month (real purchases charged to CC accounts)
     const ccSpendingResult = await db.get(`SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
        WHERE user_id = ? AND account_id IN (
          SELECT id FROM accounts WHERE user_id = ? AND type = 'credit'
-       ) AND amount < 0 AND date >= ? AND date <= ?`, userId, userId, monthStart, monthEnd) as any;
+       ) AND flow_type IN ('expense', 'interest_fee') AND date >= ? AND date <= ?`, userId, userId, monthStart, monthEnd) as any;
     const ccSpendingThisMonth = Math.round(ccSpendingResult.total * 100) / 100;
 
-    // CC interest/fees (transactions on CC accounts with names matching patterns)
+    // CC interest/fees (flow-classified, no name guessing)
     const ccInterestFeesResult = await db.get(`SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
        WHERE user_id = ? AND account_id IN (
          SELECT id FROM accounts WHERE user_id = ? AND type = 'credit'
-       ) AND amount < 0 AND date >= ? AND date <= ?
-       AND (LOWER(name) LIKE '%interest%' OR LOWER(name) LIKE '%finance charge%'
-            OR LOWER(name) LIKE '%late fee%' OR LOWER(name) LIKE '%annual fee%'
-            OR LOWER(name) LIKE '%penalty%')`, userId, userId, monthStart, monthEnd) as any;
+       ) AND flow_type = 'interest_fee' AND date >= ? AND date <= ?`, userId, userId, monthStart, monthEnd) as any;
     const ccInterestFees = Math.round(ccInterestFeesResult.total * 100) / 100;
 
-    // Transfers in/out
-    let transfersInResult = { total: 0 };
-    let transfersOutResult = { total: 0 };
-    if (transferCategoryId) {
-      transfersInResult = await db.get(`SELECT COALESCE(SUM(amount), 0) as total FROM transactions
-         WHERE user_id = ? AND category_id = ? AND amount > 0 AND date >= ? AND date <= ?`, userId, transferCategoryId, monthStart, monthEnd) as any;
+    // Transfers in/out (flow-classified internal moves)
+    const transfersInResult = await db.get(`SELECT COALESCE(SUM(amount), 0) as total FROM transactions
+       WHERE user_id = ? AND flow_type = 'transfer' AND amount > 0 AND date >= ? AND date <= ?`, userId, monthStart, monthEnd) as any;
 
-      transfersOutResult = await db.get(`SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
-         WHERE user_id = ? AND category_id = ? AND amount < 0 AND date >= ? AND date <= ?`, userId, transferCategoryId, monthStart, monthEnd) as any;
-    }
+    const transfersOutResult = await db.get(`SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
+       WHERE user_id = ? AND flow_type = 'transfer' AND amount < 0 AND date >= ? AND date <= ?`, userId, monthStart, monthEnd) as any;
     const transfersIn = Math.round(transfersInResult.total * 100) / 100;
     const transfersOut = Math.round(transfersOutResult.total * 100) / 100;
 
@@ -468,22 +451,17 @@ router.get('/dashboard-summary', async (req: Request, res: Response) => {
 
     const totalCash = cashAccounts.reduce((sum, acc) => sum + (acc.balance || 0), 0);
 
-    // Top expense categories (excluding transfers AND income-flagged categories)
-    const topExpenseExcludeIds = [transferCategoryId].filter(Boolean);
-    const topExpenseExcludeClause = topExpenseExcludeIds.length > 0
-      ? `AND c.id NOT IN (${topExpenseExcludeIds.map(() => '?').join(', ')})`
-      : 'AND 1=1';
+    // Top expense categories (refunds net against their category)
     const topExpenses = await db.all(`SELECT c.id, c.name, c.icon, c.color,
-              COALESCE(SUM(ABS(t.amount)), 0) as total,
+              COALESCE(SUM(CASE WHEN t.flow_type IN ('expense', 'interest_fee') THEN ABS(t.amount) ELSE -t.amount END), 0) as total,
               COUNT(t.id) as transaction_count
        FROM transactions t
        JOIN categories c ON t.category_id = c.id
-       WHERE t.user_id = ? AND t.amount < 0 AND t.date >= ? AND t.date <= ?
+       WHERE t.user_id = ? AND t.flow_type IN ('expense', 'interest_fee', 'refund') AND t.date >= ? AND t.date <= ?
              AND c.is_income = 0
-             ${topExpenseExcludeClause}
        GROUP BY c.id
        ORDER BY CASE WHEN LOWER(c.name) = 'uncategorized' THEN 1 ELSE 0 END ASC, total DESC
-       LIMIT 10`, userId, monthStart, monthEnd, ...topExpenseExcludeIds) as any[];
+       LIMIT 10`, userId, monthStart, monthEnd) as any[];
 
     // Top income categories (this month)
     const topIncome = await db.all(`SELECT c.id, c.name, c.icon, c.color,
@@ -491,7 +469,7 @@ router.get('/dashboard-summary', async (req: Request, res: Response) => {
               COUNT(t.id) as transaction_count
        FROM transactions t
        JOIN categories c ON t.category_id = c.id
-       WHERE t.user_id = ? AND t.amount > 0 AND t.date >= ? AND t.date <= ?
+       WHERE t.user_id = ? AND t.flow_type = 'income' AND t.date >= ? AND t.date <= ?
        GROUP BY c.id
        ORDER BY total DESC
        LIMIT 10`, userId, monthStart, monthEnd) as any[];
@@ -566,14 +544,12 @@ router.get('/dashboard-summary', async (req: Request, res: Response) => {
       sixMonthEnd = `${newestYM}-${String(newestLastDay).padStart(2, '0')}`;
     }
 
-    // 6-month income: ALL positive amounts, no exclusions
+    // 6-month income and expenses (flow-classified)
     const avgIncomeResult = await db.get(`SELECT COALESCE(SUM(amount), 0) as total FROM transactions
-       WHERE user_id = ? AND amount > 0 AND date >= ? AND date <= ?`, userId, sixMonthStart, sixMonthEnd) as any;
+       WHERE user_id = ? AND flow_type = 'income' AND date >= ? AND date <= ?`, userId, sixMonthStart, sixMonthEnd) as any;
 
-    // 6-month expenses: exclude Transfer only
-    const sixMoExpenseParams = [userId, sixMonthStart, sixMonthEnd, ...expenseExcludeIds];
     const avgExpenseResult = await db.get(`SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
-       WHERE user_id = ? AND amount < 0 AND date >= ? AND date <= ? ${buildExpenseExcludeClause()}`, ...sixMoExpenseParams) as any;
+       WHERE user_id = ? AND flow_type IN ('expense', 'interest_fee') AND date >= ? AND date <= ?`, userId, sixMonthStart, sixMonthEnd) as any;
 
     const avgMonthlyIncome = Math.round((avgIncomeResult.total / monthCount) * 100) / 100;
     const avgMonthlyExpenses = Math.round((avgExpenseResult.total / monthCount) * 100) / 100;
@@ -592,37 +568,29 @@ router.get('/dashboard-summary', async (req: Request, res: Response) => {
       const lmStart = lastYM + '-01';
       const lmLastDay = new Date(ly, lm, 0).getDate();
       const lmEnd = `${lastYM}-${String(lmLastDay).padStart(2, '0')}`;
-      // Last month income: ALL positive amounts, no exclusions
       const lmIncomeResult = await db.get(`SELECT COALESCE(SUM(amount), 0) as total FROM transactions
-         WHERE user_id = ? AND amount > 0 AND date >= ? AND date <= ?`, userId, lmStart, lmEnd) as any;
+         WHERE user_id = ? AND flow_type = 'income' AND date >= ? AND date <= ?`, userId, lmStart, lmEnd) as any;
 
-      // Last month expenses: exclude Transfer only
-      const lmExpenseParams = [userId, lmStart, lmEnd, ...expenseExcludeIds];
       const lmExpenseResult = await db.get(`SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
-         WHERE user_id = ? AND amount < 0 AND date >= ? AND date <= ? ${buildExpenseExcludeClause()}`, ...lmExpenseParams) as any;
+         WHERE user_id = ? AND flow_type IN ('expense', 'interest_fee') AND date >= ? AND date <= ?`, userId, lmStart, lmEnd) as any;
 
       lastMonthIncome = Math.round(lmIncomeResult.total * 100) / 100;
       lastMonthExpenses = Math.round(lmExpenseResult.total * 100) / 100;
     }
     const lastMonthSavings = Math.round((lastMonthIncome - lastMonthExpenses) * 100) / 100;
 
-    // Top 10 expense categories (6-month average) excluding transfers AND income-flagged categories
-    const topExpense6MoExcludeIds = [transferCategoryId].filter(Boolean);
-    const topExpense6MoExcludeClause = topExpense6MoExcludeIds.length > 0
-      ? `AND c.id NOT IN (${topExpense6MoExcludeIds.map(() => '?').join(', ')})`
-      : 'AND 1=1';
+    // Top 10 expense categories (6-month, refunds net against their category)
     const topExpenses6Mo = await db.all(`SELECT c.id, c.name, c.icon, c.color,
-              COALESCE(SUM(ABS(t.amount)), 0) as total,
+              COALESCE(SUM(CASE WHEN t.flow_type IN ('expense', 'interest_fee') THEN ABS(t.amount) ELSE -t.amount END), 0) as total,
               COUNT(t.id) as transaction_count,
               COUNT(DISTINCT substr(t.date, 1, 7)) as months_with_data
        FROM transactions t
        JOIN categories c ON t.category_id = c.id
-       WHERE t.user_id = ? AND t.amount < 0 AND t.date >= ? AND t.date <= ?
+       WHERE t.user_id = ? AND t.flow_type IN ('expense', 'interest_fee', 'refund') AND t.date >= ? AND t.date <= ?
              AND c.is_income = 0
-             ${topExpense6MoExcludeClause}
        GROUP BY c.id
        ORDER BY CASE WHEN LOWER(c.name) = 'uncategorized' THEN 1 ELSE 0 END ASC, total DESC
-       LIMIT 10`, userId, sixMonthStart, sixMonthEnd, ...topExpense6MoExcludeIds) as any[];
+       LIMIT 10`, userId, sixMonthStart, sixMonthEnd) as any[];
 
     // Top income categories (6-month average)
     const topIncome6Mo = await db.all(`SELECT c.id, c.name, c.icon, c.color,
@@ -631,10 +599,13 @@ router.get('/dashboard-summary', async (req: Request, res: Response) => {
               COUNT(DISTINCT substr(t.date, 1, 7)) as months_with_data
        FROM transactions t
        JOIN categories c ON t.category_id = c.id
-       WHERE t.user_id = ? AND t.amount > 0 AND t.date >= ? AND t.date <= ?
+       WHERE t.user_id = ? AND t.flow_type = 'income' AND t.date >= ? AND t.date <= ?
        GROUP BY c.id
        ORDER BY total DESC
        LIMIT 10`, userId, sixMonthStart, sixMonthEnd) as any[];
+
+    // Reclassification transparency for the UI ("reclassified N rows")
+    const dataNotes = await getFlowDataNotes(db, userId);
 
     res.json({
       income,
@@ -711,6 +682,7 @@ router.get('/dashboard-summary', async (req: Request, res: Response) => {
         avgAmount: Math.round((c.total / Math.max(c.months_with_data, 1)) * 100) / 100,
         count: c.transaction_count,
       })),
+      data_notes: dataNotes,
     });
   } catch (error) {
     console.error('Dashboard summary error:', error);

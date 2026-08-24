@@ -271,12 +271,24 @@ router.post('/', upload.array('files', MAX_FILES), enforceTotalSize, async (req:
         // Create pending items from parsed rows
         const INSERT_PENDING_SQL =
           `INSERT INTO pending_items (id, session_id, file_id, user_id, item_type, raw_data, parsed_name, parsed_amount, parsed_date, parsed_category, matched_category_id, matched_account_id, status, confidence, created_at)
-           VALUES (?, ?, ?, ?, 'transaction', ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`;
+           VALUES (?, ?, ?, ?, 'transaction', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
         const filePendingItems: PendingItemData[] = [];
+        let flaggedDateCount = 0;
+
+        // Date guard: no imported transaction may post-date the statement
+        // period it came from (or, when no period was extracted, the upload
+        // date + a small grace). Violations are flagged for review instead of
+        // being imported quietly.
+        const periodEnd = result.statementMeta?.period?.end || '';
+        const uploadCutoff = new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10);
 
         for (const row of result.rows) {
           const itemId = crypto.randomUUID();
+
+          const dateOutOfRange =
+            (row.flags ?? []).includes('date_out_of_range') ||
+            (/^\d{4}-\d{2}-\d{2}$/.test(periodEnd) ? row.date > periodEnd : row.date > uploadCutoff);
 
           // Auto-categorize
           const catResult = await categorizeItem(row.name, row.amount, userId);
@@ -320,18 +332,39 @@ router.post('/', upload.array('files', MAX_FILES), enforceTotalSize, async (req:
           // Classify income type
           const incomeType = classifyIncomeType(row.name, finalAmount);
 
+          const itemStatus = dateOutOfRange ? 'flagged' : 'pending';
+          if (dateOutOfRange) flaggedDateCount++;
+
+          const dateWarning = dateOutOfRange
+            ? (periodEnd
+                ? `Parsed date ${row.date} is after the statement period end (${periodEnd}) — likely a year-inference problem. Review and correct before importing.`
+                : `Parsed date ${row.date} is in the future — review and correct before importing.`)
+            : undefined;
+
           await db.run(INSERT_PENDING_SQL,
             itemId, sessionId, fileId, userId,
-            JSON.stringify({ ...row.rawData, incomeType, transferType: transferInfo.transferType || row.transferType || null }),
+            JSON.stringify({ ...row.rawData, incomeType, transferType: transferInfo.transferType || row.transferType || null, ...(dateWarning ? { dateWarning } : {}) }),
             row.name,
             finalAmount,
             row.date,
             row.category || finalCategoryName || null,
             finalCategoryId,
             autoAccountId,
+            itemStatus,
             catResult.confidence,
             now
           );
+
+          if (dateOutOfRange) {
+            await db.run(`INSERT INTO clarifications (id, user_id, source, item_type, title, description, context, status, created_at)
+               VALUES (?, ?, 'upload', 'date', ?, ?, ?, 'pending', ?)`,
+              crypto.randomUUID(), userId,
+              `Suspicious date: ${row.name}`,
+              dateWarning,
+              JSON.stringify({ itemId, name: row.name, amount: finalAmount, date: row.date, statementPeriodEnd: periodEnd || null }),
+              now
+            );
+          }
 
           filePendingItems.push({
             id: itemId,
@@ -361,6 +394,7 @@ router.post('/', upload.array('files', MAX_FILES), enforceTotalSize, async (req:
           depositCount,
           withdrawalCount,
           transferCount,
+          flaggedDateCount,
           statementMeta: result.statementMeta,
           autoAccountId,
         });
@@ -424,6 +458,7 @@ router.post('/', upload.array('files', MAX_FILES), enforceTotalSize, async (req:
       files: fileResults,
       totalItems,
       duplicateItems: duplicateCount,
+      flaggedDateItems: fileResults.reduce((sum, f) => sum + (f.flaggedDateCount || 0), 0),
       uncategorizedItems: uncategorized.length,
       duplicates: allDuplicateMatches.filter(d => d.score >= 50),
     });
@@ -644,7 +679,10 @@ router.post('/sessions/:id/import', async (req: Request, res: Response) => {
     // - default (Import Approved): import approved items AND pending items that have a category assigned
     let items: any[];
     if (importAll) {
-      items = await db.all(`SELECT * FROM pending_items WHERE session_id = ? AND user_id = ? AND status NOT IN ('skipped', 'imported')`, id, userId) as any[];
+      // 'flagged' items (date guard violations) are never imported implicitly:
+      // the user must review them and explicitly approve (which changes the
+      // status) after correcting the date.
+      items = await db.all(`SELECT * FROM pending_items WHERE session_id = ? AND user_id = ? AND status NOT IN ('skipped', 'imported', 'flagged')`, id, userId) as any[];
     } else {
       items = await db.all(`SELECT * FROM pending_items WHERE session_id = ? AND user_id = ? AND (status = 'approved' OR (status = 'pending' AND matched_category_id IS NOT NULL AND matched_category_id != ''))`, id, userId) as any[];
     }

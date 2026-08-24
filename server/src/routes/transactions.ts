@@ -1,5 +1,11 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../db/database.js';
+import {
+  ensureFlowClassification,
+  reclassifyTransactionFlow,
+  reclassifyTransactionsFlow,
+  handleTransactionFlowDeleted,
+} from '../engine/flow.js';
 
 const router = Router();
 
@@ -7,6 +13,7 @@ const router = Router();
 router.get('/', async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
+    await ensureFlowClassification(userId);
     const page = Math.max(1, parseInt(req.query.page as string) || 1);
     const limit = Math.min(200, Math.max(1, parseInt(req.query.limit as string) || 50));
     const offset = (page - 1) * limit;
@@ -64,9 +71,9 @@ router.get('/', async (req: Request, res: Response) => {
     }
 
     if (type === 'income') {
-      conditions.push('t.amount > 0');
+      conditions.push(`t.flow_type = 'income'`);
     } else if (type === 'expense') {
-      conditions.push('t.amount < 0');
+      conditions.push(`t.flow_type IN ('expense', 'interest_fee')`);
     }
 
     if (isPending !== undefined && isPending !== '') {
@@ -99,8 +106,8 @@ router.get('/', async (req: Request, res: Response) => {
 
     // Get total count + aggregate income/expenses across ALL matching rows (not just page)
     const countResult = await db.get(`SELECT COUNT(*) as total,
-                COALESCE(SUM(CASE WHEN t.amount > 0 THEN t.amount ELSE 0 END), 0) as "totalIncome",
-                COALESCE(SUM(CASE WHEN t.amount < 0 THEN ABS(t.amount) ELSE 0 END), 0) as "totalExpenses"
+                COALESCE(SUM(CASE WHEN t.flow_type = 'income' THEN t.amount ELSE 0 END), 0) as "totalIncome",
+                COALESCE(SUM(CASE WHEN t.flow_type IN ('expense', 'interest_fee') THEN ABS(t.amount) ELSE 0 END), 0) as "totalExpenses"
          FROM transactions t WHERE ${whereClause}`, ...params) as any;
     const total = countResult.total;
     const totalIncome = Math.round(countResult.totalIncome * 100) / 100;
@@ -174,6 +181,10 @@ router.post('/', async (req: Request, res: Response) => {
     // Update account balance
     await db.run('UPDATE accounts SET balance = balance + ?, updated_at = ? WHERE id = ?', amount, now, account_id);
 
+    // Classify the new row's flow (income/expense/transfer/…), matching
+    // transfer pairs against existing history.
+    await reclassifyTransactionFlow(db, req.user!.id, id);
+
     const transaction = await db.get(`SELECT t.*, c.name as category_name, c.icon as category_icon, c.color as category_color, a.name as account_name
          FROM transactions t
          LEFT JOIN categories c ON t.category_id = c.id
@@ -192,7 +203,7 @@ router.post('/', async (req: Request, res: Response) => {
 // PUT /:id - update transaction
 router.put('/:id', async (req: Request, res: Response) => {
   try {
-    const { id } = req.params;
+    const id = String(req.params.id);
 
     const existing = await db.get('SELECT * FROM transactions WHERE id = ? AND user_id = ?', id, req.user!.id) as any;
 
@@ -246,6 +257,9 @@ router.put('/:id', async (req: Request, res: Response) => {
         updated_at = ?
        WHERE id = ? AND user_id = ?`, account_id ?? null, name ?? null, amount !== undefined ? amount : null, category_id !== undefined ? category_id : null, date ?? null, notes !== undefined ? notes : null, is_pending !== undefined ? (is_pending ? 1 : 0) : null, is_recurring !== undefined ? (is_recurring ? 1 : 0) : null, recurring_id !== undefined ? recurring_id : null, tags !== undefined ? JSON.stringify(tags) : null, now, id, req.user!.id);
 
+    // Amount/account/name/date/category edits can all change what this row IS.
+    await reclassifyTransactionFlow(db, req.user!.id, id);
+
     const transaction = await db.get(`SELECT t.*, c.name as category_name, c.icon as category_icon, c.color as category_color, a.name as account_name
          FROM transactions t
          LEFT JOIN categories c ON t.category_id = c.id
@@ -264,7 +278,7 @@ router.put('/:id', async (req: Request, res: Response) => {
 // DELETE /:id - delete transaction
 router.delete('/:id', async (req: Request, res: Response) => {
   try {
-    const { id } = req.params;
+    const id = String(req.params.id);
 
     const existing = await db.get('SELECT * FROM transactions WHERE id = ? AND user_id = ?', id, req.user!.id) as any;
 
@@ -278,6 +292,10 @@ router.delete('/:id', async (req: Request, res: Response) => {
     await db.run('UPDATE accounts SET balance = balance - ?, updated_at = ? WHERE id = ?', existing.amount, now, existing.account_id);
 
     await db.run('DELETE FROM transactions WHERE id = ? AND user_id = ?', id, req.user!.id);
+
+    // If the deleted row was one leg of a transfer pair, re-classify the
+    // surviving counterpart (it is no longer part of a matched transfer).
+    await handleTransactionFlowDeleted(db, req.user!.id, existing.transfer_pair_id || null);
 
     res.json({ message: 'Transaction deleted successfully' });
   } catch (error) {
@@ -318,6 +336,10 @@ router.post('/bulk-categorize', async (req: Request, res: Response) => {
       }
       return updated;
     });
+
+    // A category change (e.g. to/from Transfer or CC PMT) can change what a
+    // transaction IS — re-run the flow classifier for the touched rows.
+    await reclassifyTransactionsFlow(db, req.user!.id, transactionIds as string[]);
 
     res.json({ message: `${updated} transactions updated`, updated });
   } catch (error) {
@@ -393,6 +415,14 @@ router.post('/recategorize', async (req: Request, res: Response) => {
         console.error('Rule creation error:', e);
       }
     }
+
+    // Re-classify flows for everything sharing this name (category signals
+    // like Transfer / CC PMT feed the flow classifier).
+    const touched = await db.all(
+      `SELECT id FROM transactions WHERE user_id = ? AND LOWER(TRIM(name)) = ?`,
+      userId, transaction.name.toLowerCase().trim(),
+    ) as any[];
+    await reclassifyTransactionsFlow(db, userId, touched.map((t: any) => t.id));
 
     res.json({
       message: `Updated ${updatedCount} transaction${updatedCount !== 1 ? 's' : ''}`,

@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../db/database.js';
+import { ensureFlowClassification } from '../engine/flow.js';
 import { subMonths } from 'date-fns';
 
 const router = Router();
@@ -148,6 +149,7 @@ router.post('/:id/contribute', async (req: Request, res: Response) => {
 router.get('/recommendations', async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
+    await ensureFlowClassification(userId);
     const recommendations: GoalRecommendation[] = [];
 
     // Get last 3 months of transactions to analyze spending patterns
@@ -161,7 +163,7 @@ router.get('/recommendations', async (req: Request, res: Response) => {
           COUNT(*) as count
         FROM transactions t
         JOIN categories c ON t.category_id = c.id
-        WHERE t.user_id = ? AND t.date >= ? AND t.amount < 0 AND NOT c.is_income
+        WHERE t.user_id = ? AND t.date >= ? AND t.flow_type IN ('expense', 'interest_fee') AND NOT c.is_income
         GROUP BY c.id
         ORDER BY total DESC
         LIMIT 5
@@ -183,8 +185,8 @@ router.get('/recommendations', async (req: Request, res: Response) => {
 
     const monthlyStats = await db.get(`
         SELECT
-          SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) as income,
-          SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END) as expenses
+          SUM(CASE WHEN flow_type = 'income' THEN amount ELSE 0 END) as income,
+          SUM(CASE WHEN flow_type IN ('expense', 'interest_fee') THEN ABS(amount) ELSE 0 END) as expenses
         FROM transactions
         WHERE user_id = ? AND date LIKE ?
       `, userId, currentMonth + '%') as any;

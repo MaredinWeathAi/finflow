@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import crypto from 'crypto';
 import { db } from '../db/database.js';
+import { ensureFlowClassification } from '../engine/flow.js';
 
 const router = Router();
 
@@ -8,6 +9,7 @@ const router = Router();
 router.get('/', async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
+    await ensureFlowClassification(userId);
     const month = (req.query.month as string) || new Date().toISOString().substring(0, 10);
 
     // Normalize month - support both YYYY-MM and YYYY-MM-DD
@@ -33,10 +35,11 @@ router.get('/', async (req: Request, res: Response) => {
     // Calculate spent for each budget category
     const budgetsWithSpent: any[] = [];
     for (const budget of budgets) {
-      // Sum negative transaction amounts (expenses) for this category in the given month
-      const spentResult = await db.get(`SELECT COALESCE(SUM(ABS(amount)), 0) as spent
+      // Real spending only (flow-classified, net of refunds) — transfers and
+      // card payments never count as spent
+      const spentResult = await db.get(`SELECT COALESCE(SUM(CASE WHEN flow_type IN ('expense', 'interest_fee') THEN ABS(amount) ELSE -amount END), 0) as spent
            FROM transactions
-           WHERE user_id = ? AND category_id = ? AND amount < 0
+           WHERE user_id = ? AND category_id = ? AND flow_type IN ('expense', 'interest_fee', 'refund')
              AND date >= ? AND date <= ?`, userId, budget.category_id, monthStr, endDate) as any;
 
       budgetsWithSpent.push({
@@ -125,6 +128,7 @@ router.put('/:id', async (req: Request, res: Response) => {
 router.post('/rollover/:month', async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
+    await ensureFlowClassification(userId);
     const monthParam = req.params.month as string;
     const targetMonth = monthParam.substring(0, 7) + '-01';
 
@@ -142,10 +146,10 @@ router.post('/rollover/:month', async (req: Request, res: Response) => {
 
     await db.tx(async (t) => {
       for (const prevBudget of prevBudgets) {
-        // Calculate spent in previous month
-        const spentResult = await t.get(`SELECT COALESCE(SUM(ABS(amount)), 0) as spent
+        // Calculate spent in previous month (flow-classified, net of refunds)
+        const spentResult = await t.get(`SELECT COALESCE(SUM(CASE WHEN flow_type IN ('expense', 'interest_fee') THEN ABS(amount) ELSE -amount END), 0) as spent
              FROM transactions
-             WHERE user_id = ? AND category_id = ? AND amount < 0
+             WHERE user_id = ? AND category_id = ? AND flow_type IN ('expense', 'interest_fee', 'refund')
                AND date >= ? AND date <= ?`, userId, prevBudget.category_id, prevMonth, prevEndDate) as any;
 
         const remaining =
