@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import { db } from '../db/database.js';
 import { ensureFlowClassification, liabilityOwed } from './flow.js';
+import { getCoverage, completeMonthsFromCoverage } from './coverage.js';
 
 // All income/expense aggregates in this file use the persisted flow_type
 // (see engine/flow.ts) — never the sign of the amount. Transfers, credit-card
@@ -159,17 +160,44 @@ function fmtPercent(ratio: number): string {
 // 1. Compute Health Score
 // ---------------------------------------------------------------------------
 
-async function computeHealthScore(userId: string): Promise<HealthScore> {
+/**
+ * Sum flow-classified income and expenses over an explicit list of complete
+ * months ('YYYY-MM', from engine/coverage.ts). Filtering by month key — not a
+ * date range — keeps a partially-covered month between complete ones out of
+ * the numerator. When the user has no complete months yet (e.g. a single
+ * partial month of history) this falls back to all-time totals over 1 month,
+ * a labelled best-effort rather than a division by a fixed window size.
+ */
+async function sumFlowsOverMonths(
+  userId: string,
+  months: string[],
+): Promise<{ income: number; expenses: number; monthCount: number }> {
+  if (months.length === 0) {
+    const income = (await db.get(`SELECT COALESCE(SUM(amount), 0) as total FROM transactions
+       WHERE user_id = ? AND flow_type = 'income'`, userId) as any).total;
+    const expenses = (await db.get(`SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
+       WHERE user_id = ? AND flow_type IN ('expense', 'interest_fee')`, userId) as any).total;
+    return { income, expenses, monthCount: 1 };
+  }
+  const ph = months.map(() => '?').join(', ');
+  const income = (await db.get(`SELECT COALESCE(SUM(amount), 0) as total FROM transactions
+     WHERE user_id = ? AND flow_type = 'income' AND substr(date, 1, 7) IN (${ph})`, userId, ...months) as any).total;
+  const expenses = (await db.get(`SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
+     WHERE user_id = ? AND flow_type IN ('expense', 'interest_fee') AND substr(date, 1, 7) IN (${ph})`, userId, ...months) as any).total;
+  return { income, expenses, monthCount: months.length };
+}
+
+async function computeHealthScore(userId: string, months3: string[], months6: string[]): Promise<HealthScore> {
   const factors: HealthFactor[] = [];
 
   // --- Savings rate factor (25% weight) ---
+  // Complete months only (engine/coverage.ts): the current partial month never
+  // contaminates the window, and a stale dataset uses its own last complete
+  // months instead of an empty calendar window.
   const curStart = getCurrentMonthStart();
-  const threeMonthsAgo = getMonthStartNBack(3);
-  const income3m = (await db.get(`SELECT COALESCE(SUM(amount), 0) as total FROM transactions
-     WHERE user_id = ? AND flow_type = 'income' AND date >= ? AND date <= ?`, userId, threeMonthsAgo, getCurrentMonthEnd()) as any).total;
-
-  const expenses3m = (await db.get(`SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
-     WHERE user_id = ? AND flow_type IN ('expense', 'interest_fee') AND date >= ? AND date <= ?`, userId, threeMonthsAgo, getCurrentMonthEnd()) as any).total;
+  const flows3m = await sumFlowsOverMonths(userId, months3);
+  const income3m = flows3m.income;
+  const expenses3m = flows3m.expenses;
 
   const savingsRate3m = income3m > 0 ? (income3m - expenses3m) / income3m : 0;
   let savingsScore = 0;
@@ -220,27 +248,36 @@ async function computeHealthScore(userId: string): Promise<HealthScore> {
   factors.push({ name: 'Debt Ratio', score: debtScore, weight: 0.15 });
 
   // --- Emergency fund factor (15% weight) ---
-  const avgMonthlyExpenses = expenses3m / 3;
+  const avgMonthlyExpenses = expenses3m / flows3m.monthCount;
   const targetEmergencyFund = avgMonthlyExpenses * 4.5; // midpoint of 3-6 months
+  // Liquid cash is every non-hidden cash-like account — savings, checking,
+  // money-market/cash/other (audit D10: counting only `type='savings'` told a
+  // user with $30k in checking they had no emergency fund). Liability and
+  // investment-linked accounts are excluded.
   const savingsBalance = (await db.get(`SELECT COALESCE(SUM(balance), 0) as total FROM accounts
-     WHERE user_id = ? AND type = 'savings'`, userId) as any).total;
+     WHERE user_id = ? AND COALESCE(is_hidden, 0) = 0
+       AND type NOT IN ('credit', 'loan', 'mortgage', 'investment')
+       AND id NOT IN (SELECT account_id FROM investments WHERE user_id = ? AND account_id IS NOT NULL)`, userId, userId) as any).total;
 
   const emergencyProgress = targetEmergencyFund > 0 ? savingsBalance / targetEmergencyFund : 0;
   const emergencyScore = Math.min(100, Math.round(emergencyProgress * 100));
   factors.push({ name: 'Emergency Fund', score: emergencyScore, weight: 0.15 });
 
   // --- Income stability factor (10% weight) ---
+  // Complete months only (audit D11): the partial current month is excluded,
+  // and a complete month with zero income is a REAL zero — dropping zeros
+  // censored the sample and overstated stability for irregular earners.
   const monthlyIncomes: number[] = [];
-  for (let i = 0; i < 6; i++) {
-    const mStart = getMonthStartNBack(i);
-    const mEnd = (() => {
-      const parts = mStart.split('-').map(Number);
-      const last = new Date(parts[0], parts[1], 0).getDate();
-      return `${parts[0]}-${String(parts[1]).padStart(2, '0')}-${String(last).padStart(2, '0')}`;
-    })();
-    const mIncome = (await db.get(`SELECT COALESCE(SUM(amount), 0) as total FROM transactions
-       WHERE user_id = ? AND flow_type = 'income' AND date >= ? AND date <= ?`, userId, mStart, mEnd) as any).total;
-    if (mIncome > 0) monthlyIncomes.push(mIncome);
+  if (months6.length > 0) {
+    const ph6 = months6.map(() => '?').join(', ');
+    const incomeRows = await db.all(`SELECT substr(date, 1, 7) as ym, COALESCE(SUM(amount), 0) as total
+       FROM transactions
+       WHERE user_id = ? AND flow_type = 'income' AND substr(date, 1, 7) IN (${ph6})
+       GROUP BY substr(date, 1, 7)`, userId, ...months6) as Array<{ ym: string; total: number }>;
+    const incomeByMonth = new Map(incomeRows.map((r) => [r.ym, r.total]));
+    for (const ym of months6) {
+      monthlyIncomes.push(incomeByMonth.get(ym) || 0);
+    }
   }
 
   let stabilityScore = 50;
@@ -491,27 +528,28 @@ async function analyzeRecurringCosts(userId: string): Promise<Insight[]> {
 // 5. Analyze Savings Rate
 // ---------------------------------------------------------------------------
 
-async function analyzeSavingsRate(userId: string): Promise<Insight[]> {
+async function analyzeSavingsRate(userId: string, months3: string[]): Promise<Insight[]> {
   const insights: Insight[] = [];
-  const threeMonthsAgo = getMonthStartNBack(3);
-  const curEnd = getCurrentMonthEnd();
 
-  const income = (await db.get(`SELECT COALESCE(SUM(amount), 0) as total FROM transactions
-     WHERE user_id = ? AND flow_type = 'income' AND date >= ? AND date <= ?`, userId, threeMonthsAgo, curEnd) as any).total;
-
-  const expenses = (await db.get(`SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
-     WHERE user_id = ? AND flow_type IN ('expense', 'interest_fee') AND date >= ? AND date <= ?`, userId, threeMonthsAgo, curEnd) as any).total;
+  // Complete months only (engine/coverage.ts) — the partial current month is
+  // excluded from the window and from the denominator (audit D4).
+  const flows = await sumFlowsOverMonths(userId, months3);
+  const income = flows.income;
+  const expenses = flows.expenses;
+  const windowLabel = months3.length > 0
+    ? `${months3.length} complete month${months3.length === 1 ? '' : 's'}`
+    : 'your available history';
 
   const netSavings = income - expenses;
   const savingsRate = income > 0 ? netSavings / income : 0;
-  const monthlyNetSavings = netSavings / 3;
+  const monthlyNetSavings = netSavings / flows.monthCount;
 
   if (savingsRate < 0) {
     insights.push({
       id: crypto.randomUUID(),
       severity: 'critical',
-      title: 'Negative savings rate over the last 3 months',
-      description: `You are spending more than you earn. Over the past 3 months, expenses (${fmtCurrency(expenses)}) exceeded income (${fmtCurrency(income)}) by ${fmtCurrency(Math.abs(netSavings))}. This trajectory depletes your reserves at ${fmtCurrency(Math.abs(monthlyNetSavings))} per month.`,
+      title: 'Negative savings rate over your recent complete months',
+      description: `You are spending more than you earn. Over the last ${windowLabel}, expenses (${fmtCurrency(expenses)}) exceeded income (${fmtCurrency(income)}) by ${fmtCurrency(Math.abs(netSavings))}. This trajectory depletes your reserves at ${fmtCurrency(Math.abs(monthlyNetSavings))} per month.`,
       metric: fmtPercent(savingsRate),
       trend: 'down',
       category: 'savings',
@@ -522,7 +560,7 @@ async function analyzeSavingsRate(userId: string): Promise<Insight[]> {
       id: crypto.randomUUID(),
       severity: 'warning',
       title: `Savings rate at ${fmtPercent(savingsRate)} -- below the recommended 10%`,
-      description: `Over the last 3 months, you saved ${fmtCurrency(netSavings)} on ${fmtCurrency(income)} in income (${fmtPercent(savingsRate)} rate). Financial planners recommend saving at least 10-20% of gross income. Increasing by just ${fmtCurrency((0.10 * income - netSavings) / 3)} per month would reach the 10% target.`,
+      description: `Over the last ${windowLabel}, you saved ${fmtCurrency(netSavings)} on ${fmtCurrency(income)} in income (${fmtPercent(savingsRate)} rate). Financial planners recommend saving at least 10-20% of gross income. Increasing by just ${fmtCurrency((0.10 * income - netSavings) / flows.monthCount)} per month would reach the 10% target.`,
       metric: fmtPercent(savingsRate),
       trend: 'stable',
       category: 'savings',
@@ -533,7 +571,7 @@ async function analyzeSavingsRate(userId: string): Promise<Insight[]> {
       id: crypto.randomUUID(),
       severity: 'positive',
       title: `Strong savings rate of ${fmtPercent(savingsRate)}`,
-      description: `Outstanding financial discipline. You saved ${fmtCurrency(netSavings)} over the past 3 months, averaging ${fmtCurrency(monthlyNetSavings)} per month. At this pace, you are building a meaningful financial cushion. Consider allocating surplus savings toward investment accounts for long-term growth.`,
+      description: `Outstanding financial discipline. You saved ${fmtCurrency(netSavings)} over the last ${windowLabel}, averaging ${fmtCurrency(monthlyNetSavings)} per month. At this pace, you are building a meaningful financial cushion. Consider allocating surplus savings toward investment accounts for long-term growth.`,
       metric: fmtPercent(savingsRate),
       trend: 'up',
       category: 'savings',
@@ -557,11 +595,18 @@ async function analyzeSavingsRate(userId: string): Promise<Insight[]> {
 // 6. Analyze Goal Progress
 // ---------------------------------------------------------------------------
 
-async function analyzeGoalProgress(userId: string): Promise<Insight[]> {
+async function analyzeGoalProgress(userId: string, months3: string[]): Promise<Insight[]> {
   const insights: Insight[] = [];
 
   const goals = await db.all(`SELECT name, target_amount, current_amount, target_date, icon
      FROM goals WHERE user_id = ? AND is_completed = 0`, userId) as any[];
+
+  // Recent monthly surplus over complete months only (audit D4: the partial
+  // current month used to contaminate this window and skew feasibility).
+  const recentFlows = goals.length > 0 ? await sumFlowsOverMonths(userId, months3) : null;
+  const avgMonthlySurplus = recentFlows
+    ? (recentFlows.income - recentFlows.expenses) / recentFlows.monthCount
+    : 0;
 
   for (const g of goals) {
     const remaining = g.target_amount - g.current_amount;
@@ -582,15 +627,7 @@ async function analyzeGoalProgress(userId: string): Promise<Insight[]> {
     } else if (months > 0 && remaining > 0) {
       const requiredMonthly = remaining / months;
 
-      // Check if the user's recent monthly savings can support this
-      const threeMonthsAgo = getMonthStartNBack(3);
-      const curEnd = getCurrentMonthEnd();
-      const recentIncome = (await db.get(`SELECT COALESCE(SUM(amount), 0) as total FROM transactions
-         WHERE user_id = ? AND flow_type = 'income' AND date >= ? AND date <= ?`, userId, threeMonthsAgo, curEnd) as any).total;
-      const recentExpenses = (await db.get(`SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
-         WHERE user_id = ? AND flow_type IN ('expense', 'interest_fee') AND date >= ? AND date <= ?`, userId, threeMonthsAgo, curEnd) as any).total;
-      const avgMonthlySurplus = (recentIncome - recentExpenses) / 3;
-
+      // Check against the complete-month surplus computed above
       if (requiredMonthly > avgMonthlySurplus * 0.8) {
         insights.push({
           id: crypto.randomUUID(),
@@ -756,10 +793,27 @@ async function detectUncategorized(userId: string): Promise<Insight[]> {
 // 9. Generate Recommendations
 // ---------------------------------------------------------------------------
 
-function generateRecommendations(
+/** Normalize a recurring amount to a monthly figure. */
+function toMonthlyAmount(amount: number, frequency: string): number {
+  if (frequency === 'weekly') return amount * 4.33;
+  if (frequency === 'biweekly') return amount * 2.17;
+  if (frequency === 'quarterly') return amount / 3;
+  if (frequency === 'yearly' || frequency === 'annual') return amount / 12;
+  return amount;
+}
+
+/**
+ * Recommendations. Every `estimatedSavings` figure is computed from the user's
+ * own data (actual budget overages, the user's real gap to a 10% savings rate,
+ * the actual price increases on their recurring services). When no real figure
+ * can be computed the field is omitted — an invented number is never presented
+ * as an estimate (audit: the old code shipped hardcoded count × $75/$120/$150).
+ */
+async function generateRecommendations(
   userId: string,
-  allInsights: Insight[]
-): Recommendation[] {
+  allInsights: Insight[],
+  months3: string[]
+): Promise<Recommendation[]> {
   const recommendations: Recommendation[] = [];
 
   // Analyze critical and warning insights to derive recommendations
@@ -769,12 +823,28 @@ function generateRecommendations(
   // Recommendation: If budget overruns exist
   const budgetOverruns = criticals.filter((i) => i.category === 'budgets');
   if (budgetOverruns.length > 0) {
-    const estimatedSavings = budgetOverruns.length * 75; // conservative estimate
+    // Real figure: the user's actual overage this month across categories that
+    // are significantly (>20%) over budget — the same set that produced the
+    // critical insights above.
+    const curStart = getCurrentMonthStart();
+    const curEnd = getCurrentMonthEnd();
+    const budgets = await db.all(`SELECT b.amount, b.category_id, b.rollover_amount
+       FROM budgets b
+       WHERE b.user_id = ? AND (b.month = ? OR b.month = ?)`, userId, curStart, getMonthPrefix(curStart)) as any[];
+    let totalOverage = 0;
+    for (const b of budgets) {
+      const spent = (await db.get(`SELECT COALESCE(SUM(CASE WHEN flow_type IN ('expense', 'interest_fee') THEN ABS(amount) ELSE -amount END), 0) as spent FROM transactions
+         WHERE user_id = ? AND category_id = ? AND flow_type IN ('expense', 'interest_fee', 'refund')
+           AND date >= ? AND date <= ?`, userId, b.category_id, curStart, curEnd) as any).spent;
+      const limit = b.amount + (b.rollover_amount || 0);
+      if (limit > 0 && spent > limit * 1.2) totalOverage += spent - limit;
+    }
+    const estimatedSavings = Math.round(totalOverage);
     recommendations.push({
       id: crypto.randomUUID(),
       title: 'Tighten overspent budget categories',
-      description: `You have ${budgetOverruns.length} budget categor${budgetOverruns.length === 1 ? 'y' : 'ies'} significantly over limit. Review the largest transactions in each overspent category and identify recurring discretionary purchases that can be reduced or eliminated. Start with the category showing the highest overage.`,
-      estimatedSavings,
+      description: `You have ${budgetOverruns.length} budget categor${budgetOverruns.length === 1 ? 'y' : 'ies'} significantly over limit${estimatedSavings > 0 ? `, a combined ${fmtCurrency(estimatedSavings)} over budget this month` : ''}. Review the largest transactions in each overspent category and identify recurring discretionary purchases that can be reduced or eliminated. Start with the category showing the highest overage.`,
+      ...(estimatedSavings > 0 ? { estimatedSavings } : {}),
       priority: 'high',
     });
   }
@@ -784,11 +854,16 @@ function generateRecommendations(
     (i) => i.category === 'savings' && (i.severity === 'critical' || i.severity === 'warning')
   );
   if (savingsIssues.length > 0) {
+    // Real figure: the user's own monthly gap to a 10% savings rate, measured
+    // over their recent complete months.
+    const flows = await sumFlowsOverMonths(userId, months3);
+    const monthlyGap = (0.10 * flows.income - (flows.income - flows.expenses)) / flows.monthCount;
+    const estimatedSavings = monthlyGap > 0 && flows.income > 0 ? Math.round(monthlyGap) : 0;
     recommendations.push({
       id: crypto.randomUUID(),
       title: 'Boost your savings rate with automated transfers',
-      description: 'Set up an automatic transfer of at least 10% of each paycheck directly into a high-yield savings account. By paying yourself first, you remove the temptation to spend before saving. Even a 5% increase in your savings rate compounds dramatically over a decade.',
-      estimatedSavings: 200,
+      description: `Set up an automatic transfer of at least 10% of each paycheck directly into a high-yield savings account.${estimatedSavings > 0 ? ` Based on your recent complete months, redirecting about ${fmtCurrency(estimatedSavings)} per month would bring you to a 10% savings rate.` : ''} By paying yourself first, you remove the temptation to spend before saving.`,
+      ...(estimatedSavings > 0 ? { estimatedSavings } : {}),
       priority: 'high',
     });
   }
@@ -796,24 +871,45 @@ function generateRecommendations(
   // Recommendation: Recurring cost optimization
   const recurringWarnings = warnings.filter((i) => i.category === 'recurring');
   if (recurringWarnings.length > 0) {
-    const annualSavings = recurringWarnings.length * 120;
+    // Real figure: the annualized cost of the actual price increases detected
+    // on the user's recurring services (the same price_history comparison that
+    // produced the warnings above).
+    const recurring = await db.all(`SELECT amount, frequency, price_history FROM recurring_expenses
+       WHERE user_id = ? AND is_active = 1`, userId) as any[];
+    let annualDelta = 0;
+    for (const r of recurring) {
+      try {
+        const history = JSON.parse(r.price_history || '[]');
+        if (history.length >= 2) {
+          const latest = history[history.length - 1];
+          const previous = history[history.length - 2];
+          if (latest.amount > previous.amount) {
+            annualDelta += toMonthlyAmount(latest.amount - previous.amount, r.frequency) * 12;
+          }
+        }
+      } catch {
+        // Ignore malformed JSON
+      }
+    }
+    const estimatedSavings = Math.round(annualDelta);
     recommendations.push({
       id: crypto.randomUUID(),
       title: 'Negotiate or replace services with price increases',
-      description: `${recurringWarnings.length} of your recurring services have recently increased in price. Contact each provider to negotiate a retention discount, or research competitive alternatives. Many providers offer loyalty discounts when you call to cancel. Bundle services where possible for additional savings.`,
-      estimatedSavings: annualSavings,
+      description: `${recurringWarnings.length} of your recurring services have recently increased in price${estimatedSavings > 0 ? `, adding about ${fmtCurrency(estimatedSavings)} per year` : ''}. Contact each provider to negotiate a retention discount, or research competitive alternatives. Many providers offer loyalty discounts when you call to cancel. Bundle services where possible for additional savings.`,
+      ...(estimatedSavings > 0 ? { estimatedSavings } : {}),
       priority: 'medium',
     });
   }
 
-  // Recommendation: Spending trends
+  // Recommendation: Spending trends. No dollar estimate is attached: the
+  // month-over-month movement of a category is not a measure of what a
+  // cooling-off rule would save, and a fabricated figure is worse than none.
   const spendingUp = warnings.filter((i) => i.category === 'spending');
   if (spendingUp.length > 0) {
     recommendations.push({
       id: crypto.randomUUID(),
       title: 'Address rising spending categories',
       description: `${spendingUp.length} spending categor${spendingUp.length === 1 ? 'y has' : 'ies have'} increased significantly month-over-month. Implement a 24-hour cooling-off rule for purchases over $50 in these categories. Track each purchase in the moment to build awareness around impulse spending.`,
-      estimatedSavings: 150,
       priority: 'medium',
     });
   }
@@ -936,15 +1032,21 @@ export async function generateInsights(userId: string): Promise<InsightsResult> 
   // Every aggregate below reads flow_type; make sure all rows are classified.
   await ensureFlowClassification(userId);
 
+  // Load coverage once: engine/coverage.ts is the only authority on which
+  // months are complete. Incomplete months never enter a mean or denominator.
+  const coverage = await getCoverage(userId);
+  const months3 = completeMonthsFromCoverage(coverage, 3);
+  const months6 = completeMonthsFromCoverage(coverage, 6);
+
   // Compute health score
-  const healthScore = await computeHealthScore(userId);
+  const healthScore = await computeHealthScore(userId, months3, months6);
 
   // Gather all insights from analysis functions
   const budgetInsights = await analyzeBudgetAdherence(userId);
   const spendingInsights = await analyzeSpendingTrends(userId);
   const recurringInsights = await analyzeRecurringCosts(userId);
-  const savingsInsights = await analyzeSavingsRate(userId);
-  const goalInsights = await analyzeGoalProgress(userId);
+  const savingsInsights = await analyzeSavingsRate(userId, months3);
+  const goalInsights = await analyzeGoalProgress(userId, months3);
   const investmentInsights = await analyzeInvestments(userId);
   const uncategorizedInsights = await detectUncategorized(userId);
 
@@ -968,7 +1070,7 @@ export async function generateInsights(userId: string): Promise<InsightsResult> 
   allInsights.sort((a, b) => severityOrder[a.severity] - severityOrder[b.severity]);
 
   // Generate recommendations based on all insights
-  const recommendations = generateRecommendations(userId, allInsights);
+  const recommendations = await generateRecommendations(userId, allInsights, months3);
 
   // Compute views
   const { monthlyView, annualView } = await computeMonthlyVsAnnualView(userId);

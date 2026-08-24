@@ -997,6 +997,10 @@ function calculateSummary(transactions: ParsedTransaction[]) {
     if (txn.isTransfer) {
       totalTransfers += Math.abs(txn.amount);
       transferCount++;
+    } else if (txn.section === 'interest' || (txn.amount < 0 && /\binterest\s+charge/i.test(txn.description))) {
+      // Interest charged (CC "Interest Charged" section or an interest-charge
+      // line) — previously totalInterest was never populated at all.
+      totalInterest += Math.abs(txn.amount);
     } else if (txn.category === 'Bank Fees' || txn.category === 'Finance Charges') {
       if (txn.amount > 0) {
         totalFees += txn.amount;

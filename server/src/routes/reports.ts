@@ -1,6 +1,13 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../db/database.js';
 import { ensureFlowClassification, getFlowDataNotes, liabilityOwed } from '../engine/flow.js';
+import {
+  getCoverage,
+  completeMonthsFromCoverage,
+  monthsWithDataFromCoverage,
+  monthStartIso,
+  monthEndIso,
+} from '../engine/coverage.js';
 
 const router = Router();
 
@@ -113,8 +120,29 @@ router.get('/annual', async (req: Request, res: Response) => {
     const totalIncome = Math.round((totalsResult.total_income || 0) * 100) / 100;
     const totalExpenses = Math.round((totalsResult.total_expenses || 0) * 100) / 100;
     const totalNet = Math.round((totalIncome - totalExpenses) * 100) / 100;
-    const avgMonthlyIncome = Math.round((totalIncome / 12) * 100) / 100;
-    const avgMonthlyExpenses = Math.round((totalExpenses / 12) * 100) / 100;
+
+    // Monthly averages over COMPLETE months only (engine/coverage.ts): a
+    // partial month is excluded from both numerator and denominator, a
+    // zero-activity month inside the covered range counts as a real zero, and
+    // a month outside coverage does not count. The old code divided the
+    // year-to-date total by a flat 12, understating every average mid-year.
+    const coverage = await getCoverage(userId);
+    const completeYearMonths = new Set(
+      monthsWithDataFromCoverage(coverage, `${year}-01`, `${year}-12`)
+        .filter((m) => m.status === 'complete')
+        .map((m) => m.month),
+    );
+    let completeIncome = 0;
+    let completeExpenses = 0;
+    for (const row of monthlyData) {
+      if (completeYearMonths.has(row.month)) {
+        completeIncome += row.income;
+        completeExpenses += row.expenses;
+      }
+    }
+    const completeMonthCount = Math.max(completeYearMonths.size, 1);
+    const avgMonthlyIncome = Math.round((completeIncome / completeMonthCount) * 100) / 100;
+    const avgMonthlyExpenses = Math.round((completeExpenses / completeMonthCount) * 100) / 100;
 
     // Top categories for the year (refunds net against their category)
     const topCategories = await db.all(`SELECT c.id, c.name, c.icon, c.color,
@@ -148,61 +176,43 @@ router.get('/annual', async (req: Request, res: Response) => {
   }
 });
 
-// GET /cashflow?period=6m - cash flow data (income vs expenses by month)
-// Returns the last N COMPLETE calendar months (excludes current partial month).
-// Always returns exactly N months, filling months with no data as $0.
+// GET /cashflow?period=6m|ytd - cash flow data (income vs expenses by month)
+// Returns COMPLETE calendar months only, as decided by engine/coverage.ts:
+// the current partial month is excluded, a zero-activity month inside the
+// covered range appears as a real $0 row, and a month outside coverage (or
+// only partially covered) is omitted rather than shown as a fake $0.
+// `period=ytd` returns the complete months of the current calendar year.
 router.get('/cashflow', async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
     await ensureFlowClassification(userId);
     const period = (req.query.period as string) || '6m';
 
-    // Parse period
-    let months = 6;
-    const match = period.match(/^(\d+)m$/);
-    if (match) {
-      months = parseInt(match[1]);
-    }
+    const coverage = await getCoverage(userId);
 
-    // Find the N most recent COMPLETE months with data (exclude current partial month)
-    // Fetch N+1 so we can drop a partial first month and still have up to N
-    const now = new Date();
-    const currentMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-
-    let recentDataMonths = await db.all(`SELECT DISTINCT substr(date, 1, 7) as ym FROM transactions
-       WHERE user_id = ? AND substr(date, 1, 7) < ?
-       ORDER BY ym DESC
-       LIMIT ?`, userId, currentMonthKey, months + 1) as { ym: string }[];
-
-    // Drop the oldest month if it's partial (first transaction after day 10)
-    if (recentDataMonths.length > 0) {
-      const oldestCandidate = recentDataMonths[recentDataMonths.length - 1].ym;
-      const minDateResult = await db.get(`SELECT MIN(date) as "minDate" FROM transactions WHERE user_id = ? AND substr(date, 1, 7) = ?`, userId, oldestCandidate) as any;
-      if (minDateResult?.minDate) {
-        const day = parseInt(minDateResult.minDate.substring(8, 10));
-        if (day > 10) {
-          // Partial month — drop it
-          recentDataMonths = recentDataMonths.slice(0, -1);
-        }
+    // Which complete months does this request want? (oldest first)
+    let wantedMonths: string[];
+    if (period === 'ytd') {
+      const year = new Date().getFullYear();
+      wantedMonths = monthsWithDataFromCoverage(coverage, `${year}-01`, `${year}-12`)
+        .filter((m) => m.status === 'complete')
+        .map((m) => m.month);
+    } else {
+      let months = 6;
+      const match = period.match(/^(\d+)m$/);
+      if (match) {
+        months = parseInt(match[1]);
       }
+      wantedMonths = completeMonthsFromCoverage(coverage, months).reverse();
     }
 
-    // Cap at requested month count
-    if (recentDataMonths.length > months) {
-      recentDataMonths = recentDataMonths.slice(0, months);
-    }
-
-    if (recentDataMonths.length === 0) {
+    if (wantedMonths.length === 0) {
       res.json([]);
       return;
     }
 
-    const oldestYM = recentDataMonths[recentDataMonths.length - 1].ym;
-    const newestYM = recentDataMonths[0].ym;
-    const startStr = oldestYM + '-01';
-    const [ny, nm] = newestYM.split('-').map(Number);
-    const newestLastDay = new Date(ny, nm, 0).getDate();
-    const endStr = `${newestYM}-${String(newestLastDay).padStart(2, '0')}`;
+    const startStr = monthStartIso(wantedMonths[0]);
+    const endStr = monthEndIso(wantedMonths[wantedMonths.length - 1]);
 
     // Income and expenses come from flow_type: transfers, debt payments and
     // refunds are excluded from both sides (no more keyword/category guessing).
@@ -218,22 +228,16 @@ router.get('/cashflow', async (req: Request, res: Response) => {
       monthMap.set(row.month, { income: row.income || 0, expenses: row.expenses || 0 });
     }
 
-    // Build result from the oldest to newest month with data, filling gaps between with $0
-    const allMonths: any[] = [];
-    const [oy, om] = oldestYM.split('-').map(Number);
-    const cursor = new Date(oy, om - 1, 1);
-    const endDate = new Date(ny, nm - 1, 1);
-    while (cursor <= endDate) {
-      const monthKey = `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}`;
+    // One row per complete month; a covered month with no activity is $0.
+    const allMonths = wantedMonths.map((monthKey) => {
       const existing = monthMap.get(monthKey);
-      allMonths.push({
+      return {
         month: monthKey,
         income: existing ? Math.round(existing.income * 100) / 100 : 0,
         expenses: existing ? Math.round(existing.expenses * 100) / 100 : 0,
         net: existing ? Math.round((existing.income - existing.expenses) * 100) / 100 : 0,
-      });
-      cursor.setMonth(cursor.getMonth() + 1);
-    }
+      };
+    });
 
     res.json(allMonths);
   } catch (error) {
@@ -499,60 +503,43 @@ router.get('/dashboard-summary', async (req: Request, res: Response) => {
     const dayOfMonth = month === currentMonth ? today.getDate() : daysInMonth;
 
     // -----------------------------------------------------------------------
-    // 6-Month Averages — find the 6 most recent COMPLETE months that have data.
-    // Excludes current partial month. If fewer than 6 months have data, use
-    // however many exist. Divide by the actual month count.
+    // 6-Month Averages — the 6 most recent COMPLETE months, decided solely by
+    // engine/coverage.ts. The current partial month is excluded, a zero-
+    // activity month inside the covered range counts as a real $0, a month
+    // outside (or only partially inside) coverage is excluded from both the
+    // numerator and the denominator. If fewer than 6 complete months exist,
+    // divide by however many do.
     // -----------------------------------------------------------------------
-    const currentYM = `${year}-${String(mon).padStart(2, '0')}`;
-
-    // Find distinct months with data, excluding the current (partial) month, most recent first
-    // Fetch 7 so we can drop a partial first month and still have up to 6
-    let recentMonths = await db.all(`SELECT DISTINCT substr(date, 1, 7) as ym FROM transactions
-       WHERE user_id = ? AND substr(date, 1, 7) < ?
-       ORDER BY ym DESC
-       LIMIT 7`, userId, currentYM) as { ym: string }[];
-
-    // Drop the oldest month if it's partial (first transaction after day 10)
-    if (recentMonths.length > 0) {
-      const oldestCandidate = recentMonths[recentMonths.length - 1].ym;
-      const minDateResult = await db.get(`SELECT MIN(date) as "minDate" FROM transactions WHERE user_id = ? AND substr(date, 1, 7) = ?`, userId, oldestCandidate) as any;
-      if (minDateResult?.minDate) {
-        const day = parseInt(minDateResult.minDate.substring(8, 10));
-        if (day > 10) {
-          // Partial month — drop it
-          recentMonths = recentMonths.slice(0, -1);
-        }
-      }
-    }
-
-    // Cap at 6 months
-    if (recentMonths.length > 6) {
-      recentMonths = recentMonths.slice(0, 6);
-    }
-
+    const coverage = await getCoverage(userId);
+    const recentMonths = completeMonthsFromCoverage(coverage, 6); // newest first
     const monthCount = Math.max(recentMonths.length, 1);
+    const monthPlaceholders = recentMonths.map(() => '?').join(', ');
 
-    // Build date range from oldest to newest of those months
+    // Displayed window bounds (oldest complete month .. newest complete month)
     let sixMonthStart = monthStart; // fallback
     let sixMonthEnd = monthEnd;     // fallback
     if (recentMonths.length > 0) {
-      const oldestYM = recentMonths[recentMonths.length - 1].ym;
-      sixMonthStart = oldestYM + '-01';
-      const newestYM = recentMonths[0].ym;
-      const [ny, nm] = newestYM.split('-').map(Number);
-      const newestLastDay = new Date(ny, nm, 0).getDate();
-      sixMonthEnd = `${newestYM}-${String(newestLastDay).padStart(2, '0')}`;
+      sixMonthStart = monthStartIso(recentMonths[recentMonths.length - 1]);
+      sixMonthEnd = monthEndIso(recentMonths[0]);
     }
 
-    // 6-month income and expenses (flow-classified)
-    const avgIncomeResult = await db.get(`SELECT COALESCE(SUM(amount), 0) as total FROM transactions
-       WHERE user_id = ? AND flow_type = 'income' AND date >= ? AND date <= ?`, userId, sixMonthStart, sixMonthEnd) as any;
+    // 6-month income and expenses (flow-classified, complete months only —
+    // a partially covered month between complete ones must not leak in, so
+    // filter by month key rather than a plain date range)
+    let avgIncomeTotal = 0;
+    let avgExpenseTotal = 0;
+    if (recentMonths.length > 0) {
+      const avgIncomeResult = await db.get(`SELECT COALESCE(SUM(amount), 0) as total FROM transactions
+         WHERE user_id = ? AND flow_type = 'income' AND substr(date, 1, 7) IN (${monthPlaceholders})`, userId, ...recentMonths) as any;
 
-    const avgExpenseResult = await db.get(`SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
-       WHERE user_id = ? AND flow_type IN ('expense', 'interest_fee') AND date >= ? AND date <= ?`, userId, sixMonthStart, sixMonthEnd) as any;
+      const avgExpenseResult = await db.get(`SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
+         WHERE user_id = ? AND flow_type IN ('expense', 'interest_fee') AND substr(date, 1, 7) IN (${monthPlaceholders})`, userId, ...recentMonths) as any;
+      avgIncomeTotal = avgIncomeResult.total;
+      avgExpenseTotal = avgExpenseResult.total;
+    }
 
-    const avgMonthlyIncome = Math.round((avgIncomeResult.total / monthCount) * 100) / 100;
-    const avgMonthlyExpenses = Math.round((avgExpenseResult.total / monthCount) * 100) / 100;
+    const avgMonthlyIncome = Math.round((avgIncomeTotal / monthCount) * 100) / 100;
+    const avgMonthlyExpenses = Math.round((avgExpenseTotal / monthCount) * 100) / 100;
     const avgMonthlySavings = Math.round((avgMonthlyIncome - avgMonthlyExpenses) * 100) / 100;
 
     // -----------------------------------------------------------------------
@@ -562,12 +549,10 @@ router.get('/dashboard-summary', async (req: Request, res: Response) => {
     let lastMonthExpenses = 0;
     let lastMonthLabel = '';
     if (recentMonths.length > 0) {
-      const lastYM = recentMonths[0].ym;
+      const lastYM = recentMonths[0];
       lastMonthLabel = lastYM;
-      const [ly, lm] = lastYM.split('-').map(Number);
-      const lmStart = lastYM + '-01';
-      const lmLastDay = new Date(ly, lm, 0).getDate();
-      const lmEnd = `${lastYM}-${String(lmLastDay).padStart(2, '0')}`;
+      const lmStart = monthStartIso(lastYM);
+      const lmEnd = monthEndIso(lastYM);
       const lmIncomeResult = await db.get(`SELECT COALESCE(SUM(amount), 0) as total FROM transactions
          WHERE user_id = ? AND flow_type = 'income' AND date >= ? AND date <= ?`, userId, lmStart, lmEnd) as any;
 
@@ -579,30 +564,46 @@ router.get('/dashboard-summary', async (req: Request, res: Response) => {
     }
     const lastMonthSavings = Math.round((lastMonthIncome - lastMonthExpenses) * 100) / 100;
 
-    // Top 10 expense categories (6-month, refunds net against their category)
-    const topExpenses6Mo = await db.all(`SELECT c.id, c.name, c.icon, c.color,
+    // Top 10 expense categories (complete months only; refunds net against their category)
+    const topExpenses6Mo = recentMonths.length === 0 ? [] : await db.all(`SELECT c.id, c.name, c.icon, c.color,
               COALESCE(SUM(CASE WHEN t.flow_type IN ('expense', 'interest_fee') THEN ABS(t.amount) ELSE -t.amount END), 0) as total,
-              COUNT(t.id) as transaction_count,
-              COUNT(DISTINCT substr(t.date, 1, 7)) as months_with_data
+              COUNT(t.id) as transaction_count
        FROM transactions t
        JOIN categories c ON t.category_id = c.id
-       WHERE t.user_id = ? AND t.flow_type IN ('expense', 'interest_fee', 'refund') AND t.date >= ? AND t.date <= ?
+       WHERE t.user_id = ? AND t.flow_type IN ('expense', 'interest_fee', 'refund') AND substr(t.date, 1, 7) IN (${monthPlaceholders})
              AND c.is_income = 0
        GROUP BY c.id
        ORDER BY CASE WHEN LOWER(c.name) = 'uncategorized' THEN 1 ELSE 0 END ASC, total DESC
-       LIMIT 10`, userId, sixMonthStart, sixMonthEnd) as any[];
+       LIMIT 10`, userId, ...recentMonths) as any[];
 
-    // Top income categories (6-month average)
-    const topIncome6Mo = await db.all(`SELECT c.id, c.name, c.icon, c.color,
+    // Top income categories (complete months only)
+    const topIncome6Mo = recentMonths.length === 0 ? [] : await db.all(`SELECT c.id, c.name, c.icon, c.color,
               COALESCE(SUM(t.amount), 0) as total,
-              COUNT(t.id) as transaction_count,
-              COUNT(DISTINCT substr(t.date, 1, 7)) as months_with_data
+              COUNT(t.id) as transaction_count
        FROM transactions t
        JOIN categories c ON t.category_id = c.id
-       WHERE t.user_id = ? AND t.flow_type = 'income' AND t.date >= ? AND t.date <= ?
+       WHERE t.user_id = ? AND t.flow_type = 'income' AND substr(t.date, 1, 7) IN (${monthPlaceholders})
        GROUP BY c.id
        ORDER BY total DESC
-       LIMIT 10`, userId, sixMonthStart, sixMonthEnd) as any[];
+       LIMIT 10`, userId, ...recentMonths) as any[];
+
+    // Per-category denominators: a category's average divides by the number of
+    // complete window months in which that category has coverage — i.e. the
+    // complete months on/after the category's first-ever transaction — not by
+    // "months in which it happened to have a transaction" (which turned an
+    // annual bill into a fake monthly cost) and not by the global month count
+    // (which diluted categories that only came into existence mid-window).
+    const categoryFirstMonths = await db.all(`SELECT category_id, MIN(substr(date, 1, 7)) as first_ym
+       FROM transactions
+       WHERE user_id = ? AND category_id IS NOT NULL
+       GROUP BY category_id`, userId) as Array<{ category_id: string; first_ym: string }>;
+    const firstYmByCategory = new Map(categoryFirstMonths.map((r) => [r.category_id, r.first_ym]));
+    const categoryMonthCount = (categoryId: string): number => {
+      const firstYm = firstYmByCategory.get(categoryId);
+      if (!firstYm) return monthCount;
+      const covered = recentMonths.filter((ym) => ym >= firstYm).length;
+      return Math.max(covered, 1);
+    };
 
     // Reclassification transparency for the UI ("reclassified N rows")
     const dataNotes = await getFlowDataNotes(db, userId);
@@ -670,7 +671,7 @@ router.get('/dashboard-summary', async (req: Request, res: Response) => {
         icon: c.icon,
         color: c.color,
         totalAmount: Math.round(c.total * 100) / 100,
-        avgAmount: Math.round((c.total / Math.max(c.months_with_data, 1)) * 100) / 100,
+        avgAmount: Math.round((c.total / categoryMonthCount(c.id)) * 100) / 100,
         count: c.transaction_count,
       })),
       topIncome6Mo: topIncome6Mo.map((c: any) => ({
@@ -679,7 +680,7 @@ router.get('/dashboard-summary', async (req: Request, res: Response) => {
         icon: c.icon,
         color: c.color,
         totalAmount: Math.round(c.total * 100) / 100,
-        avgAmount: Math.round((c.total / Math.max(c.months_with_data, 1)) * 100) / 100,
+        avgAmount: Math.round((c.total / categoryMonthCount(c.id)) * 100) / 100,
         count: c.transaction_count,
       })),
       data_notes: dataNotes,

@@ -29,6 +29,7 @@ import adminRoutes from './routes/admin.js';
 import financialPlanningRoutes from './routes/financial-planning.js';
 import rulesRoutes from './routes/rules.js';
 import connectionsRoutes, { webhookRouter } from './routes/connections.js';
+import safeToSpendRoutes from './routes/safe-to-spend.js';
 
 import {
   ALLOWED_ORIGINS,
@@ -40,6 +41,9 @@ import {
 import { trimAuditLog } from './security/audit.js';
 import { applyProviderSchema } from './providers/schema.js';
 import { applyFlowSchema, backfillFlowTypes } from './engine/flow.js';
+import { applyCoverageSchema } from './engine/coverage.js';
+import { applySeriesSchema } from './engine/series.js';
+import { applyStatementSchema } from './db/statement-metadata.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -203,6 +207,9 @@ if (getDriver() === 'postgres') {
       // boot), so copying into a Postgres table that lacks them fails.
       await applyProviderSchema(db);
       await applyFlowSchema(db);
+      await applyCoverageSchema(db);
+      await applySeriesSchema(db);
+      await applyStatementSchema(db);
       const migration = await migrateSqliteToPostgres();
       if (migration.migrated) {
         console.log('[db] SQLite → Postgres migration completed and verified.');
@@ -231,6 +238,9 @@ if (getDriver() === 'postgres') {
 // idempotent; under Postgres they have already run above, before the data copy.
 await applyProviderSchema(db);   // provider connections, token vault, sync state
 await applyFlowSchema(db);       // transactions.flow_type + transfer_pair_id
+await applyCoverageSchema(db);   // coverage_periods — which months are actually complete
+await applySeriesSchema(db);     // recurring_series + series_occurrences
+await applyStatementSchema(db);  // statement_periods + reconciliation
 
 // Resolve and cache signing secrets. Must run after initDb() (it reads
 // app_config) and before any token is issued or verified.
@@ -309,6 +319,7 @@ app.use('/api/admin', authMiddleware, adminMiddleware, adminRoutes);
 app.use('/api/financial-planning', authMiddleware, financialPlanningRoutes);
 app.use('/api/rules', authMiddleware, rulesRoutes);
 app.use('/api/connections', authMiddleware, connectionsRoutes);
+app.use('/api/safe-to-spend', authMiddleware, safeToSpendRoutes);
 
 // ============================================================
 // ERROR HANDLING

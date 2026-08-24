@@ -6,6 +6,14 @@ import { parseFile } from '../engine/parser.js';
 import { categorizeItem, learnRule as learnRuleFromCategorizer } from '../engine/categorizer.js';
 import { findDuplicates, findCrossFileOverlaps } from '../engine/duplicates.js';
 import type { PendingItemData } from '../engine/duplicates.js';
+import {
+  recordStatementPeriod,
+  getStatementPeriodForFile,
+  listStatementPeriods,
+  deleteStatementPeriodsForSession,
+  describeReconciliation,
+} from '../db/statement-metadata.js';
+import type { StatementPeriodRow } from '../db/statement-metadata.js';
 
 const router = Router();
 
@@ -379,6 +387,82 @@ router.post('/', upload.array('files', MAX_FILES), enforceTotalSize, async (req:
 
         allPendingItems = [...allPendingItems, ...filePendingItems];
 
+        // ── Persist statement metadata (audit item 19) ─────────────────
+        // The parser extracts the statement period, opening/closing balances
+        // and fee/interest totals; until now they were discarded after this
+        // request. Persisting them (a) gives the date guard a durable anchor
+        // — the real statement period, not the import timestamp — and (b)
+        // enables the reconciliation check: do the parsed rows sum from the
+        // opening balance to the closing balance? A discrepancy is the most
+        // reliable signal that parsing missed rows.
+        let statementPeriod: StatementPeriodRow | null = null;
+        let reconciliation: string | null = null;
+        try {
+          let totalInterest = 0;
+          let totalFees = 0;
+          let parsedNet = 0;
+          let derivedStart: string | null = null;
+          let derivedEnd: string | null = null;
+          for (const row of result.rows) {
+            parsedNet += row.amount;
+            if (/^\d{4}-\d{2}-\d{2}$/.test(row.date)) {
+              if (!derivedStart || row.date < derivedStart) derivedStart = row.date;
+              if (!derivedEnd || row.date > derivedEnd) derivedEnd = row.date;
+            }
+            if (row.amount < 0) {
+              if (/\binterest\b/i.test(row.name)) {
+                totalInterest += Math.abs(row.amount);
+              } else if ((row.flags ?? []).includes('fee') || /\bfee\b|finance charge|overdraft|\bnsf\b/i.test(row.name)) {
+                totalFees += Math.abs(row.amount);
+              }
+            }
+          }
+          statementPeriod = await recordStatementPeriod(db, {
+            userId,
+            accountId: autoAccountId,
+            sessionId,
+            fileId,
+            sourceFile: file.originalname,
+            institution: result.statementMeta?.institution || null,
+            accountType: result.statementMeta?.accountType || null,
+            periodStart: result.statementMeta?.period?.start || '',
+            periodEnd: result.statementMeta?.period?.end || '',
+            derivedStart,
+            derivedEnd,
+            openingBalance: result.statementMeta?.beginningBalance ?? 0,
+            closingBalance: result.statementMeta?.endingBalance ?? 0,
+            totalFees,
+            totalInterest,
+            transactionCount: result.rows.length,
+            parsedNet,
+          });
+          reconciliation = describeReconciliation(statementPeriod);
+          if (statementPeriod.reconciled === 0) {
+            // Surface the strongest missing-rows signal we have as a
+            // clarification the user will actually see.
+            await db.run(`INSERT INTO clarifications (id, user_id, source, item_type, title, description, context, status, created_at)
+               VALUES (?, ?, 'upload', 'reconciliation', ?, ?, ?, 'pending', ?)`,
+              crypto.randomUUID(), userId,
+              `Statement doesn't reconcile: ${file.originalname}`,
+              reconciliation,
+              JSON.stringify({
+                fileId,
+                sessionId,
+                periodStart: statementPeriod.period_start,
+                periodEnd: statementPeriod.period_end,
+                openingBalance: statementPeriod.opening_balance,
+                closingBalance: statementPeriod.closing_balance,
+                parsedNet: statementPeriod.parsed_net,
+                expectedNet: statementPeriod.expected_net,
+                discrepancy: statementPeriod.discrepancy,
+              }),
+              now
+            );
+          }
+        } catch (metaErr: any) {
+          console.error(`Failed to persist statement metadata for ${file.originalname}:`, metaErr);
+        }
+
         // Count transaction types
         const depositCount = filePendingItems.filter((item) => item.parsed_amount > 0).length;
         const withdrawalCount = filePendingItems.filter((item) => item.parsed_amount < 0).length;
@@ -396,6 +480,8 @@ router.post('/', upload.array('files', MAX_FILES), enforceTotalSize, async (req:
           transferCount,
           flaggedDateCount,
           statementMeta: result.statementMeta,
+          statementPeriod,
+          reconciliation,
           autoAccountId,
         });
       } catch (parseError: any) {
@@ -483,6 +569,30 @@ router.get('/sessions', async (req: Request, res: Response) => {
     res.json(enriched);
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch sessions' });
+  }
+});
+
+// GET /statements - persisted statement metadata + reconciliation report.
+// One row per uploaded statement file: period, opening/closing balances,
+// fee/interest totals, and whether the parsed transactions sum from the
+// opening balance to the closing balance (the missing-rows detector).
+router.get('/statements', async (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.id;
+    const periods = await listStatementPeriods(db, userId);
+    const withVerdicts = periods.map((p) => ({
+      ...p,
+      reconciliation: describeReconciliation(p),
+    }));
+    const unreconciled = withVerdicts.filter((p) => p.reconciled === 0).length;
+    res.json({
+      statements: withVerdicts,
+      count: withVerdicts.length,
+      unreconciledCount: unreconciled,
+    });
+  } catch (error) {
+    console.error('List statements error:', error);
+    res.status(500).json({ error: 'Failed to list statement periods' });
   }
 });
 
@@ -691,6 +801,49 @@ router.post('/sessions/:id/import', async (req: Request, res: Response) => {
       return res.json({ message: 'No items to import', imported: 0 });
     }
 
+    // ── Date guard, anchored on the persisted statement period ────────────
+    // A statement cannot contain activity that post-dates its own closing
+    // date, so an item whose date lands after its file's REAL statement
+    // period (period_source = 'statement'; 'derived' ranges came from the
+    // rows themselves and prove nothing) is never imported — regardless of
+    // status, because review edits (PUT /items/:id) can change parsed_date
+    // without re-running the upload-time guard. Violations flip back to
+    // 'flagged' with a clarification instead of quietly entering history.
+    const guardNow = new Date().toISOString();
+    const periodByFile = new Map<string, StatementPeriodRow | undefined>();
+    const importable: any[] = [];
+    let skippedDateGuard = 0;
+    for (const item of items) {
+      if (!periodByFile.has(item.file_id)) {
+        periodByFile.set(item.file_id, await getStatementPeriodForFile(db, userId, item.file_id));
+      }
+      const period = periodByFile.get(item.file_id);
+      const hardEnd =
+        period && period.period_source === 'statement' && period.period_end ? period.period_end : null;
+      if (hardEnd && item.parsed_date && item.parsed_date > hardEnd) {
+        skippedDateGuard++;
+        await db.run(`UPDATE pending_items SET status = 'flagged' WHERE id = ? AND user_id = ?`, item.id, userId);
+        await db.run(`INSERT INTO clarifications (id, user_id, source, item_type, title, description, context, status, created_at)
+           VALUES (?, ?, 'upload', 'date', ?, ?, ?, 'pending', ?)`,
+          crypto.randomUUID(), userId,
+          `Blocked at import: ${item.parsed_name}`,
+          `Date ${item.parsed_date} is after the statement period end (${hardEnd}) recorded for its source file — a statement cannot contain activity after its closing date. Correct the date, then approve.`,
+          JSON.stringify({ itemId: item.id, name: item.parsed_name, amount: item.parsed_amount, date: item.parsed_date, statementPeriodEnd: hardEnd }),
+          guardNow
+        );
+      } else {
+        importable.push(item);
+      }
+    }
+    items = importable;
+    if (items.length === 0) {
+      return res.json({
+        message: 'No items imported: all candidates violate their statement period (see clarifications)',
+        imported: 0,
+        skippedDateGuard,
+      });
+    }
+
     // Get or create default account
     let defaultAccount = await db.get("SELECT id FROM accounts WHERE user_id = ? ORDER BY CASE WHEN type = 'checking' THEN 0 ELSE 1 END, created_at ASC LIMIT 1", userId) as any;
 
@@ -741,8 +894,9 @@ router.post('/sessions/:id/import', async (req: Request, res: Response) => {
     await db.run(`UPDATE upload_sessions SET status = 'completed', imported_items = ?, completed_at = ? WHERE id = ?`, importedCount, now, id);
 
     res.json({
-      message: `Successfully imported ${importedCount} transactions`,
+      message: `Successfully imported ${importedCount} transactions${skippedDateGuard > 0 ? ` (${skippedDateGuard} blocked by the statement-period date guard)` : ''}`,
       imported: importedCount,
+      skippedDateGuard,
     });
   } catch (error) {
     console.error('Import error:', error);
@@ -759,6 +913,7 @@ router.delete('/sessions/:id', async (req: Request, res: Response) => {
     await db.run('DELETE FROM pending_items WHERE session_id = ? AND user_id = ?', id, userId);
     await db.run('DELETE FROM uploaded_files WHERE session_id = ? AND user_id = ?', id, userId);
     await db.run('DELETE FROM upload_sessions WHERE id = ? AND user_id = ?', id, userId);
+    await deleteStatementPeriodsForSession(db, userId, String(id));
 
     res.json({ message: 'Session deleted' });
   } catch (error) {

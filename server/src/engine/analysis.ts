@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import { db } from '../db/database.js';
 import { ensureFlowClassification, liabilityOwed } from './flow.js';
+import { getCoverage, completeMonthsFromCoverage } from './coverage.js';
 
 // All income/expense/transfer aggregates in this file read the persisted
 // flow_type (see engine/flow.ts) — the sign of the amount is never used to
@@ -207,7 +208,7 @@ async function analyzeAccounts(userId: string): Promise<{ summaries: AccountSumm
 // Income Analysis
 // ---------------------------------------------------------------------------
 
-async function analyzeIncome(userId: string): Promise<{ sources: IncomeSource[]; total: number; avgMonthly: number }> {
+async function analyzeIncome(userId: string, completeMonthList: string[]): Promise<{ sources: IncomeSource[]; total: number; avgMonthly: number }> {
   // Real income only — transfers in, card payments and refunds are excluded
   const incomeTransactions = await db.all(`SELECT name, amount, date FROM transactions
      WHERE user_id = ? AND flow_type = 'income'
@@ -247,24 +248,41 @@ async function analyzeIncome(userId: string): Promise<{ sources: IncomeSource[];
 
   sources.sort((a, b) => b.totalAmount - a.totalAmount);
 
-  // Calculate avg monthly based on date range
-  const dateRange = await db.get(`SELECT MIN(date) as "minDate", MAX(date) as "maxDate" FROM transactions WHERE user_id = ? AND flow_type = 'income'`, userId) as any;
+  // Average over COMPLETE months only (engine/coverage.ts). The old
+  // ceil(span_days / 30.44) denominator turned a 32-day span into "2 months"
+  // and halved the average (audit D6); it also silently averaged the partial
+  // current month in. A complete month with zero income counts as a real zero;
+  // months outside coverage do not count at all.
+  const avgMonthly = await avgMonthlyOverCompleteMonths(userId, `flow_type = 'income'`, false, completeMonthList, total);
 
-  let months = 1;
-  if (dateRange.minDate && dateRange.maxDate) {
-    const d1 = new Date(dateRange.minDate);
-    const d2 = new Date(dateRange.maxDate);
-    months = Math.max(1, Math.ceil((d2.getTime() - d1.getTime()) / (1000 * 60 * 60 * 24 * 30.44)));
-  }
+  return { sources: sources.slice(0, 20), total, avgMonthly };
+}
 
-  return { sources: sources.slice(0, 20), total, avgMonthly: total / months };
+/**
+ * Mean of per-month totals over the given complete months. Falls back to the
+ * all-time total over one month when no complete month exists yet (a brand-new
+ * single-partial-month history) — never a span-derived denominator.
+ */
+async function avgMonthlyOverCompleteMonths(
+  userId: string,
+  flowPredicate: string,
+  absolute: boolean,
+  completeMonthList: string[],
+  allTimeTotal: number,
+): Promise<number> {
+  if (completeMonthList.length === 0) return allTimeTotal;
+  const sumExpr = absolute ? 'SUM(ABS(amount))' : 'SUM(amount)';
+  const ph = completeMonthList.map(() => '?').join(', ');
+  const row = await db.get(`SELECT COALESCE(${sumExpr}, 0) as total FROM transactions
+     WHERE user_id = ? AND ${flowPredicate} AND substr(date, 1, 7) IN (${ph})`, userId, ...completeMonthList) as any;
+  return (row.total || 0) / completeMonthList.length;
 }
 
 // ---------------------------------------------------------------------------
 // Merchant / Expense Analysis
 // ---------------------------------------------------------------------------
 
-async function analyzeExpenses(userId: string): Promise<{ merchants: MerchantSummary[]; total: number; avgMonthly: number }> {
+async function analyzeExpenses(userId: string, completeMonthList: string[]): Promise<{ merchants: MerchantSummary[]; total: number; avgMonthly: number }> {
   const expenses = await db.all(`SELECT t.name, t.amount, t.date, c.name as category_name
      FROM transactions t
      LEFT JOIN categories c ON t.category_id = c.id
@@ -305,16 +323,10 @@ async function analyzeExpenses(userId: string): Promise<{ merchants: MerchantSum
 
   merchants.sort((a, b) => b.totalSpent - a.totalSpent);
 
-  const dateRange = await db.get(`SELECT MIN(date) as "minDate", MAX(date) as "maxDate" FROM transactions WHERE user_id = ? AND flow_type IN ('expense', 'interest_fee')`, userId) as any;
+  // Complete months only — see avgMonthlyOverCompleteMonths (audit D6).
+  const avgMonthly = await avgMonthlyOverCompleteMonths(userId, `flow_type IN ('expense', 'interest_fee')`, true, completeMonthList, total);
 
-  let months = 1;
-  if (dateRange.minDate && dateRange.maxDate) {
-    const d1 = new Date(dateRange.minDate);
-    const d2 = new Date(dateRange.maxDate);
-    months = Math.max(1, Math.ceil((d2.getTime() - d1.getTime()) / (1000 * 60 * 60 * 24 * 30.44)));
-  }
-
-  return { merchants: merchants.slice(0, 30), total, avgMonthly: total / months };
+  return { merchants: merchants.slice(0, 30), total, avgMonthly };
 }
 
 // ---------------------------------------------------------------------------
@@ -404,7 +416,10 @@ async function detectPatterns(
   userId: string,
   merchants: MerchantSummary[],
   incomeSources: IncomeSource[],
+  // Complete months only (engine/coverage.ts): trend, spike and savings-rate
+  // math must never see the partial current month or a partially covered month.
   monthlyCashFlow: CashFlowMonth[],
+  completeMonthSet: Set<string>,
 ): Promise<SpendingPattern[]> {
   const patterns: SpendingPattern[] = [];
 
@@ -515,9 +530,15 @@ async function detectPatterns(
        GROUP BY c.id, substr(t.date, 1, 7)
        ORDER BY c.name, month`, userId, currentMonthKey) as any[];
 
+    // Keep only COMPLETE months: a partially covered month would read as a
+    // fake spending drop and corrupt the consistency/trend math.
+    const completeCatMonthly = completeMonthSet.size > 0
+      ? catMonthly.filter((row: any) => completeMonthSet.has(row.month))
+      : catMonthly;
+
     // Build per-category arrays
     const catData = new Map<string, { months: string[]; totals: number[] }>();
-    for (const row of catMonthly) {
+    for (const row of completeCatMonthly) {
       if (!catData.has(row.category)) catData.set(row.category, { months: [], totals: [] });
       catData.get(row.category)!.months.push(row.month);
       catData.get(row.category)!.totals.push(row.total);
@@ -784,23 +805,33 @@ export async function generateFinancialAnalysis(userId: string): Promise<Financi
   // Every aggregate below reads flow_type; make sure all rows are classified.
   await ensureFlowClassification(userId);
 
+  // Which months are complete? engine/coverage.ts is the single authority —
+  // every average and month-based pattern below is restricted to these.
+  const coverage = await getCoverage(userId);
+  const completeMonthList = completeMonthsFromCoverage(coverage, 1200).reverse(); // oldest first
+  const completeMonthSet = new Set(completeMonthList);
+
   // Account analysis
   const { summaries: accountSummaries, totalAssets, totalLiabilities } = await analyzeAccounts(userId);
 
   // Income analysis
-  const { sources: incomeSources, total: totalIncome, avgMonthly: avgMonthlyIncome } = await analyzeIncome(userId);
+  const { sources: incomeSources, total: totalIncome, avgMonthly: avgMonthlyIncome } = await analyzeIncome(userId, completeMonthList);
 
   // Expense analysis
-  const { merchants: topMerchants, total: totalExpenses, avgMonthly: avgMonthlyExpenses } = await analyzeExpenses(userId);
+  const { merchants: topMerchants, total: totalExpenses, avgMonthly: avgMonthlyExpenses } = await analyzeExpenses(userId, completeMonthList);
 
   // Transfer analysis
   const { transfers, total: totalInternalTransfers, count: transferCount } = await analyzeTransfers(userId);
 
-  // Monthly cash flow
+  // Monthly cash flow (all months, for display — charts may show the partial
+  // current month, but no average/pattern below is computed from it)
   const monthlyCashFlow = await computeMonthlyCashFlow(userId);
+  const completedCashFlow = monthlyCashFlow.filter((m) => completeMonthSet.has(m.month));
+  // Best-effort fallback for a brand-new user with no complete month yet.
+  const cashFlowForMath = completedCashFlow.length > 0 ? completedCashFlow : monthlyCashFlow;
 
   // Patterns
-  const patterns = await detectPatterns(userId, topMerchants, incomeSources, monthlyCashFlow);
+  const patterns = await detectPatterns(userId, topMerchants, incomeSources, cashFlowForMath, completeMonthSet);
 
   // Narrative
   const narrative = generateNarrative(
@@ -808,7 +839,7 @@ export async function generateFinancialAnalysis(userId: string): Promise<Financi
     incomeSources,
     topMerchants,
     transfers,
-    monthlyCashFlow,
+    cashFlowForMath,
     patterns,
     totalAssets,
     totalLiabilities,

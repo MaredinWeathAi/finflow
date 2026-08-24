@@ -1,4 +1,6 @@
 import { db } from '../db/database.js';
+import { addDays, daysApart } from '../lib/dates.js';
+import { median } from '../lib/stats.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -52,11 +54,14 @@ export async function findDuplicates(
   userId: string,
 ): Promise<DuplicateMatch[]> {
   const matches: DuplicateMatch[] = [];
+  const habitualCores = await getHabitualMerchantCores(items, userId);
 
   for (const item of items) {
-    const dateObj = new Date(item.parsed_date);
-    const minDate = offsetDate(dateObj, -DATE_WINDOW_DAYS);
-    const maxDate = offsetDate(dateObj, DATE_WINDOW_DAYS);
+    // Date window edges via pure calendar math — the old `new Date(str)` +
+    // setDate mix parsed as UTC but shifted in local time, moving the window
+    // by a day near midnight on any server west of UTC.
+    const minDate = addDays(item.parsed_date, -DATE_WINDOW_DAYS);
+    const maxDate = addDays(item.parsed_date, DATE_WINDOW_DAYS);
 
     const rows = await db.all(`SELECT id, name, amount, date, category_id
          FROM transactions
@@ -67,6 +72,8 @@ export async function findDuplicates(
       date: string;
       category_id: string | null;
     }[];
+
+    const itemCore = coreOf(item.parsed_name);
 
     for (const row of rows) {
       const result = scorePair(
@@ -80,6 +87,7 @@ export async function findDuplicates(
           amount: row.amount,
           date: row.date,
         },
+        { habitualMerchant: habitualCores.has(itemCore) && habitualCores.has(coreOf(row.name)) },
       );
 
       if (result.score >= MATCH_THRESHOLD) {
@@ -106,6 +114,24 @@ export function findCrossFileOverlaps(
 ): DuplicateMatch[] {
   const matches: DuplicateMatch[] = [];
 
+  // Habitual-cadence merchants inferred from the upload batch itself (per
+  // file, so an overlapping statement pair doesn't double-count the same
+  // visits): frequent, spread-out visits mean different-day matches are the
+  // user's routine, not statement overlap.
+  const datesByCore = new Map<string, Set<string>>();
+  for (const it of items) {
+    const core = coreOf(it.parsed_name);
+    if (core.length < 3) continue;
+    const key = `${it.file_id}\u0000${core}`;
+    const set = datesByCore.get(key) || new Set<string>();
+    set.add(String(it.parsed_date).slice(0, 10));
+    datesByCore.set(key, set);
+  }
+  const habitualCores = new Set<string>();
+  for (const [key, dates] of datesByCore) {
+    if (isHabitualCadence([...dates])) habitualCores.add(key.split('\u0000')[1]);
+  }
+
   for (let i = 0; i < items.length; i++) {
     for (let j = i + 1; j < items.length; j++) {
       const a = items[i];
@@ -125,6 +151,7 @@ export function findCrossFileOverlaps(
           amount: b.parsed_amount,
           date: b.parsed_date,
         },
+        { habitualMerchant: habitualCores.has(coreOf(a.parsed_name)) && habitualCores.has(coreOf(b.parsed_name)) },
       );
 
       if (result.score >= MATCH_THRESHOLD) {
@@ -168,9 +195,21 @@ interface Scorable {
   date: string;
 }
 
+export interface ScorePairOptions {
+  /**
+   * Both sides belong to a merchant the user visits on an established repeat
+   * cadence (see isHabitualCadence). Different-day matches at such merchants
+   * are the user's routine — two identical coffees three days apart — not
+   * statement overlap, so they are heavily discounted. Same-day matches are
+   * NOT discounted: a genuine double charge is same-day.
+   */
+  habitualMerchant?: boolean;
+}
+
 export function scorePair(
   item: Scorable,
   existing: Scorable,
+  opts?: ScorePairOptions,
 ): { score: number; reasons: string[] } {
   let score = 0;
   const reasons: string[] = [];
@@ -242,6 +281,9 @@ export function scorePair(
   }
 
   // --- Date proximity (25 pts max) ---
+  // Same-day is weighted FAR above same-week: an actual duplicate posting is
+  // overwhelmingly same-day; each day of gap makes "two separate purchases"
+  // more likely than "one transaction posted twice".
   const gap = daysBetween(item.date, existing.date);
 
   if (gap === 0) {
@@ -249,17 +291,91 @@ export function scorePair(
     reasons.push('Same date');
   } else if (gap === 1) {
     // Common: transaction posts next business day
-    score += 22;
+    score += 18;
     reasons.push('Dates 1 day apart (posting lag)');
   } else if (gap <= 3) {
     // Weekend/holiday posting delay
-    score += 15;
+    score += 8;
     reasons.push(`Dates ${gap} days apart`);
   }
   // Beyond 3 days: 0 date points (already filtered by DATE_WINDOW_DAYS but
   // cross-file overlaps don't use the SQL filter)
 
+  // --- Habitual-merchant exemption ---
+  // At a merchant with an established repeat cadence, a different-day match
+  // is almost certainly two routine purchases (daily parking, twice-weekly
+  // coffee), so it is pushed below the 70-point threshold. A same-day match
+  // keeps its full score — that is what a real double charge looks like.
+  if (opts?.habitualMerchant && gap >= 1) {
+    score -= 30;
+    if (score < 0) score = 0;
+    reasons.push('Habitual purchase cadence at this merchant — different-day match discounted');
+  }
+
   return { score, reasons };
+}
+
+// ---------------------------------------------------------------------------
+// Habitual-cadence detection
+// ---------------------------------------------------------------------------
+
+/**
+ * Does this list of transaction dates show an established repeat cadence?
+ * True when the merchant has been visited at least 4 distinct days with a
+ * median gap of ≤ 10 days across a span of at least 2 weeks — daily parking,
+ * a twice-weekly coffee, a lunch spot. Such merchants produce identical
+ * amounts a few days apart as a matter of ROUTINE, which is exactly the
+ * false-positive class the old scorer flagged as duplicates.
+ */
+export function isHabitualCadence(dates: string[]): boolean {
+  const distinct = [...new Set(dates.map((d) => String(d).slice(0, 10)))].sort();
+  if (distinct.length < 4) return false;
+  const gaps: number[] = [];
+  for (let i = 1; i < distinct.length; i++) {
+    gaps.push(daysApart(distinct[i - 1], distinct[i]));
+  }
+  const span = daysApart(distinct[0], distinct[distinct.length - 1]);
+  return span >= 14 && median(gaps) <= 10;
+}
+
+/**
+ * Core names of merchants where the user's EXISTING history shows a habitual
+ * cadence, looking back 180 days before the earliest uploaded item.
+ */
+async function getHabitualMerchantCores(
+  items: PendingItemData[],
+  userId: string,
+): Promise<Set<string>> {
+  const habitual = new Set<string>();
+  if (items.length === 0) return habitual;
+
+  let minDate = String(items[0].parsed_date).slice(0, 10);
+  for (const it of items) {
+    const d = String(it.parsed_date).slice(0, 10);
+    if (d < minDate) minDate = d;
+  }
+  const cutoff = addDays(minDate, -180);
+
+  const rows = await db.all(`SELECT name, date FROM transactions
+       WHERE user_id = ? AND date >= ?`, userId, cutoff) as { name: string; date: string }[];
+
+  const datesByCore = new Map<string, string[]>();
+  for (const r of rows) {
+    const core = coreOf(r.name);
+    if (core.length < 3) continue;
+    const list = datesByCore.get(core) || [];
+    list.push(r.date);
+    datesByCore.set(core, list);
+  }
+  for (const [core, dates] of datesByCore) {
+    if (isHabitualCadence(dates)) habitual.add(core);
+  }
+  return habitual;
+}
+
+/** normalize + strip refs — the comparable "merchant identity" of a raw name. */
+function coreOf(name: string): string {
+  return extractCoreName(normalizeForComparison(name));
 }
 
 // ---------------------------------------------------------------------------
@@ -340,16 +456,13 @@ export function getSharedWordRatio(a: string, b: string): number {
   return shared / all.size;
 }
 
+/**
+ * Absolute whole days between two date-only strings, via pure calendar math
+ * (lib/dates). The previous Date-object implementation mixed UTC parsing with
+ * local-time arithmetic and could be off by one near midnight.
+ */
 export function daysBetween(date1: string, date2: string): number {
-  const ms1 = new Date(date1).getTime();
-  const ms2 = new Date(date2).getTime();
-  return Math.round(Math.abs(ms1 - ms2) / 86_400_000);
-}
-
-function offsetDate(base: Date, days: number): string {
-  const d = new Date(base);
-  d.setDate(d.getDate() + days);
-  return d.toISOString().slice(0, 10);
+  return daysApart(date1, date2);
 }
 
 function significantWords(text: string): Set<string> {

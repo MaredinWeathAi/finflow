@@ -9,7 +9,7 @@
     "start": "node dist/index.js",
     "seed": "tsx src/db/seed.ts",
     "check:await": "node scripts/check-await.mjs",
-    "test": "npx tsc && node test/sql-translate.test.mjs && node test/sql-corpus.test.mjs && node --test test/vault.test.mjs && node --test test/sync.test.mjs && node --test test/statement-dates.test.mjs && node --test test/flow.test.mjs && node scripts/check-await.mjs"
+    "test": "npx tsc && node test/sql-translate.test.mjs && node test/sql-corpus.test.mjs && node --test test/vault.test.mjs && node --test test/sync.test.mjs && node --test test/statement-dates.test.mjs && node --test test/flow.test.mjs && node --test test/coverage.test.mjs && node --test test/recurring.test.mjs && node --test test/duplicates.test.mjs && node scripts/check-await.mjs"
   },
   "dependencies": {
     "@types/pg": "^8.23.1",

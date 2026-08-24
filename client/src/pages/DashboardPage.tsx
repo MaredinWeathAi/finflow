@@ -14,6 +14,7 @@ import { useBudgets } from '@/hooks/useBudgets'
 import { useAccounts } from '@/hooks/useAccounts'
 // useRecurring removed — Upcoming Recurring section removed from dashboard
 import type { Transaction, NetWorthSnapshot } from '@/types'
+import { SafeToSpendCard } from '@/components/dashboard/SafeToSpendCard'
 import { NetWorthCard } from '@/components/dashboard/NetWorthCard'
 import { SpendingTrendChart } from '@/components/dashboard/SpendingTrendChart'
 import { RecentTransactions } from '@/components/dashboard/RecentTransactions'
@@ -260,8 +261,14 @@ export function DashboardPage() {
         </div>
       </div>
 
-      {/* Row 2: 6-Month Spending Trend Chart */}
+      {/* Row 1b: Safe to Spend — server-computed from live balances, committed
+          bills before the next paycheck, and a volatility buffer. */}
       <div className="opacity-0 animate-fade-in stagger-4">
+        <SafeToSpendCard />
+      </div>
+
+      {/* Row 2: 6-Month Spending Trend Chart */}
+      <div className="opacity-0 animate-fade-in stagger-5">
         <SpendingTrendChart />
       </div>
 
