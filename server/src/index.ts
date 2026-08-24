@@ -39,7 +39,7 @@ import {
 } from './config/security.js';
 import { trimAuditLog } from './security/audit.js';
 import { applyProviderSchema } from './providers/schema.js';
-import { applyFlowSchema } from './engine/flow.js';
+import { applyFlowSchema, backfillFlowTypes } from './engine/flow.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -359,6 +359,26 @@ process.on('unhandledRejection', (reason) => {
 app.listen(PORT, () => {
   console.log(`FinFlow server running on port ${PORT}`);
   console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+
+  // Classify any transaction that has no flow_type yet.
+  //
+  // Deliberately AFTER listen: the health check must not wait on it, and on a
+  // large history this is the slowest thing at boot. It is idempotent, so a
+  // restart mid-run simply resumes. Without this the backfill only happened
+  // lazily on a user's first request, which meant a freshly deployed instance
+  // reported an un-reclassified — and therefore wrong — income figure to
+  // whoever logged in first.
+  backfillFlowTypes(db)
+    .then((summary) => {
+      const inflow = Object.values(summary.inflowsReclassified)
+        .reduce((n, x) => n + x.count, 0);
+      console.log(
+        `[flow] startup backfill complete — ${summary.rowsClassified} row(s) classified ` +
+        `across ${summary.usersProcessed} user(s); ${inflow} inflow row(s) moved out of income ` +
+        `($${Math.abs(summary.incomeDelta).toFixed(2)} removed from the naive total)`,
+      );
+    })
+    .catch((err) => console.error('[flow] startup backfill failed:', err));
 });
 
 export default app;

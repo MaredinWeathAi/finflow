@@ -75,7 +75,14 @@ for (const file of files) {
     const voided  = /\bvoid\s*$/.test(before);
     const line    = src.slice(0, idx).split('\n').length;
     const text    = lines[line - 1] ?? '';
-    const chained = /\)\s*\.(then|catch|finally)\s*\(/.test(text);
+    // A chain may continue on the next lines:
+    //   doThing(db)
+    //     .then(...)
+    //     .catch(...)
+    // Look ahead past the call's own arguments for a .then/.catch/.finally.
+    const ahead = src.slice(idx, idx + 400);
+    const chained = /\)\s*\.(then|catch|finally)\s*\(/.test(text) ||
+                    /\)[\s\n]*\.(then|catch|finally)\s*\(/.test(ahead);
 
     if (awaited || voided || chained) { ok++; continue; }
     problems.push(`${file}:${line}  ${text.trim().slice(0, 96)}`);
@@ -99,7 +106,9 @@ for (const file of files) {
       // definition sites and import statements are not calls
       if (/^(export\s+)?(async\s+)?function\b/.test(text)) continue;
       if (/^import\b/.test(text) || /\bfrom\s+['"]/.test(text)) continue;
-      if (/\)\s*\.(then|catch|finally)\s*\(/.test(text)) { ok++; continue; }
+      const ahead = src.slice(idx, idx + 400);
+      if (/\)\s*\.(then|catch|finally)\s*\(/.test(text) ||
+          /\)[\s\n]*\.(then|catch|finally)\s*\(/.test(ahead)) { ok++; continue; }
       problems.push(`${file}:${line}  un-awaited async call ${fn}()  ${text.slice(0, 80)}`);
     }
   }
