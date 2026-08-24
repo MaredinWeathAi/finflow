@@ -115,8 +115,32 @@ export async function migrateSqliteToPostgres(): Promise<MigrationResult> {
         await t.exec(translateDdl(createSql));
       }
 
-      const columns = (rawSqlite.pragma(`table_info(${quoteIdent(table)})`) as Array<{ name: string }>)
+      // Copy only columns that exist on BOTH sides.
+      //
+      // The two schemas can legitimately drift: additive modules (provider
+      // tables, flow_type) may have been applied to the SQLite file on an
+      // earlier boot but not yet to a freshly created Postgres database. Naively
+      // using the SQLite column list then fails the whole migration on a column
+      // Postgres has never heard of. Intersecting is both safer and self-healing;
+      // anything skipped is logged rather than silently dropped.
+      const sourceColumns = (rawSqlite.pragma(`table_info(${quoteIdent(table)})`) as Array<{ name: string }>)
         .map(c => c.name);
+      const targetColumns = new Set(
+        (await t.all<{ column_name: string }>(
+          'SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = ?',
+          table,
+        )).map(r => r.column_name.toLowerCase()),
+      );
+      const columns = sourceColumns.filter(c => targetColumns.has(c.toLowerCase()));
+      const dropped = sourceColumns.filter(c => !targetColumns.has(c.toLowerCase()));
+      if (dropped.length) {
+        console.warn(`[migrate] ${table}: skipping column(s) absent in Postgres — ${dropped.join(', ')}`);
+      }
+      if (columns.length === 0) {
+        console.warn(`[migrate] ${table}: no shared columns, skipping table`);
+        counts[table] = 0;
+        continue;
+      }
       const rows = rawSqlite.prepare(`SELECT * FROM ${quoteIdent(table)}`).all() as Array<Record<string, unknown>>;
       counts[table] = rows.length;
       if (rows.length === 0) continue;
