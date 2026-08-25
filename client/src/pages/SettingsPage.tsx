@@ -4,7 +4,7 @@ import { useThemeStore } from '@/stores/themeStore'
 import { PageHeader } from '@/components/shared/PageHeader'
 import { api } from '@/lib/api'
 import { toast } from 'sonner'
-import { Sun, Moon, Monitor, Database, Upload, Trash2, Loader2 } from 'lucide-react'
+import { Sun, Moon, Monitor, Database, Upload, Trash2, Loader2, Eraser } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 export function SettingsPage() {
@@ -14,6 +14,9 @@ export function SettingsPage() {
   const [currency, setCurrency] = useState(user?.currency || 'USD')
   const [saving, setSaving] = useState(false)
   const [seeding, setSeeding] = useState(false)
+  const [wipeOpen, setWipeOpen] = useState(false)
+  const [confirmWipe, setConfirmWipe] = useState('')
+  const [wiping, setWiping] = useState(false)
 
   const handleSaveProfile = async () => {
     setSaving(true)
@@ -40,12 +43,44 @@ export function SettingsPage() {
   }
 
   const handleResetData = async () => {
-    if (!confirm('Are you sure? This will delete ALL your data.')) return
+    if (!confirm(
+      'This deletes EVERYTHING: transactions, accounts and their balances, ' +
+      'categories, budgets, goals and recurring items.\n\n' +
+      'If you only want to clear transactions and keep your accounts, ' +
+      'cancel this and use "Delete All Transactions" instead.\n\n' +
+      'Continue?'
+    )) return
     try {
       await api.delete('/data/reset')
       toast.success('All data has been reset')
     } catch {
       toast.error('Failed to reset')
+    }
+  }
+
+  // Clearing transactions is a different, much more common job than wiping the
+  // whole account: it is what you do before re-importing statements. Keeping
+  // the accounts means balances, budgets, goals and recurring items survive,
+  // so the balance sheet does not have to be rebuilt by hand afterwards.
+  const handleDeleteTransactions = async () => {
+    if (confirmWipe !== 'DELETE') return
+    setWiping(true)
+    try {
+      const result = await api.delete<{ deleted: number; accountsAdjusted: number }>(
+        '/transactions/bulk',
+        { confirm: true },
+      )
+      toast.success(
+        result.deleted === 0
+          ? 'No transactions to delete'
+          : `Deleted ${result.deleted.toLocaleString()} transactions across ${result.accountsAdjusted} account${result.accountsAdjusted === 1 ? '' : 's'}`,
+      )
+      setConfirmWipe('')
+      setWipeOpen(false)
+    } catch {
+      toast.error('Failed to delete transactions')
+    } finally {
+      setWiping(false)
     }
   }
 
@@ -162,6 +197,61 @@ export function SettingsPage() {
               </div>
             </button>
 
+            {!wipeOpen ? (
+              <button
+                onClick={() => setWipeOpen(true)}
+                className="w-full flex items-center gap-3 p-4 rounded-xl border border-warning/40 hover:bg-warning/10 transition-colors text-left"
+              >
+                <Eraser className="w-5 h-5 text-warning" />
+                <div>
+                  <p className="text-sm font-medium">Delete All Transactions</p>
+                  <p className="text-xs text-muted-foreground">
+                    Clears transaction history for a fresh import. Accounts, balances, budgets, goals and recurring items are kept.
+                  </p>
+                </div>
+              </button>
+            ) : (
+              <div className="w-full p-4 rounded-xl border border-warning/50 bg-warning/5 space-y-3">
+                <div className="flex items-start gap-3">
+                  <Eraser className="w-5 h-5 text-warning shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-sm font-medium">Delete every transaction?</p>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      This cannot be undone. Your accounts and their balances, categories, budgets,
+                      goals and recurring items all stay exactly as they are — only transaction
+                      history is removed.
+                    </p>
+                  </div>
+                </div>
+                <input
+                  autoFocus
+                  value={confirmWipe}
+                  onChange={(e) => setConfirmWipe(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter' && confirmWipe === 'DELETE') handleDeleteTransactions() }}
+                  placeholder="Type DELETE to confirm"
+                  aria-label="Type DELETE to confirm"
+                  className="w-full px-3 py-2 rounded-lg bg-background border border-border/60 text-sm focus:outline-none focus:ring-2 focus:ring-warning/50"
+                />
+                <div className="flex gap-2">
+                  <button
+                    onClick={handleDeleteTransactions}
+                    disabled={confirmWipe !== 'DELETE' || wiping}
+                    className="flex items-center gap-2 px-4 py-2 rounded-lg bg-destructive text-destructive-foreground text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed hover:opacity-90 transition-opacity"
+                  >
+                    {wiping && <Loader2 className="w-4 h-4 animate-spin" />}
+                    {wiping ? 'Deleting…' : 'Delete transactions'}
+                  </button>
+                  <button
+                    onClick={() => { setWipeOpen(false); setConfirmWipe('') }}
+                    disabled={wiping}
+                    className="px-4 py-2 rounded-lg border border-border/60 text-sm hover:bg-accent/30 transition-colors disabled:opacity-40"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+
             <button
               onClick={handleResetData}
               className="w-full flex items-center gap-3 p-4 rounded-xl border border-destructive/30 hover:bg-destructive/10 transition-colors text-left"
@@ -169,7 +259,9 @@ export function SettingsPage() {
               <Trash2 className="w-5 h-5 text-destructive" />
               <div>
                 <p className="text-sm font-medium text-destructive">Delete All Data</p>
-                <p className="text-xs text-muted-foreground">Permanently remove all your data</p>
+                <p className="text-xs text-muted-foreground">
+                  Removes accounts and balances too, along with categories, budgets, goals and recurring items. Rarely what you want.
+                </p>
               </div>
             </button>
           </div>

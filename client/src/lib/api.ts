@@ -78,8 +78,14 @@ export const api = {
     request<T>(endpoint, { method: 'POST', body: JSON.stringify(data) }),
   put: <T>(endpoint: string, data?: unknown) =>
     request<T>(endpoint, { method: 'PUT', body: JSON.stringify(data) }),
-  delete: <T>(endpoint: string) =>
-    request<T>(endpoint, { method: 'DELETE' }),
+  // DELETE carries a body for endpoints that take filters or an explicit
+  // confirmation flag (see /transactions/bulk). The body is omitted entirely
+  // when no data is passed, so ordinary deletes are unchanged.
+  delete: <T>(endpoint: string, data?: unknown) =>
+    request<T>(endpoint, {
+      method: 'DELETE',
+      ...(data === undefined ? {} : { body: JSON.stringify(data) }),
+    }),
   upload: <T>(endpoint: string, formData: FormData) => {
     const token = localStorage.getItem('finbudget_token')
     const headers: Record<string, string> = {}
