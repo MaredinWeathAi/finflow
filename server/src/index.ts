@@ -142,12 +142,27 @@ const authLimiter = rateLimit({
   message: { error: 'Too many attempts from this address. Try again in a few minutes.' },
 });
 
+// The upload router is not only "upload a file" — reviewing a parsed session
+// hits it once PER ITEM (approve, skip, re-categorise). A 2,600-row bank
+// export therefore needs thousands of requests to get through review, and the
+// old 60/hour cap made "Skip all duplicates" mathematically impossible to
+// finish on a real statement import.
+//
+// The limits that actually protect the process — file size, file count,
+// aggregate bytes — are enforced by multer on the POST itself, so this
+// limiter only has to stop someone hammering the endpoint, not ration
+// ordinary review clicks.
+//
+// skipFailedRequests stops a tripped window from sustaining itself: without
+// it every rejected request counted toward the same window, so a client that
+// kept retrying could hold itself locked out indefinitely.
 const uploadLimiter = rateLimit({
-  windowMs: 60 * 60_000,
-  limit: 60,
+  windowMs: 15 * 60_000,
+  limit: 3000,
   standardHeaders: 'draft-7',
   legacyHeaders: false,
-  message: { error: 'Upload limit reached for this hour.' },
+  skipFailedRequests: true,
+  message: { error: 'Upload activity limit reached. Wait a few minutes and try again.' },
 });
 
 app.use('/api/', apiLimiter);

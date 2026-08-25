@@ -5,6 +5,7 @@ import {
   reclassifyTransactionFlow,
   reclassifyTransactionsFlow,
   handleTransactionFlowDeleted,
+  classifyUserFlows,
 } from '../engine/flow.js';
 
 const router = Router();
@@ -272,6 +273,140 @@ router.put('/:id', async (req: Request, res: Response) => {
   } catch (error) {
     console.error('Update transaction error:', error);
     res.status(500).json({ error: 'Failed to update transaction' });
+  }
+});
+
+// DELETE /bulk - delete many transactions in one request.
+//
+// Declared BEFORE `/:id` on purpose. Express matches routes in declaration
+// order, so `/:id` would otherwise capture the literal path "bulk" and try to
+// delete a transaction whose id is the string "bulk".
+//
+// Safety properties, in order of importance:
+//   1. Always scoped to req.user.id. A caller cannot reach another user's rows
+//      whatever they put in the filters.
+//   2. Requires an explicit { confirm: true }. Without it an empty filter set
+//      would silently mean "every transaction I own", which is exactly the
+//      accident this endpoint must not enable.
+//   3. Runs inside one transaction, so a failure part-way cannot leave
+//      balances reversed for rows that still exist.
+//
+// Balance reversal is aggregated per account — one UPDATE per affected
+// account rather than one per row — which is what makes deleting a few
+// thousand rows a handful of writes instead of a few thousand.
+router.delete('/bulk', async (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.id;
+    const body = (req.body ?? {}) as {
+      confirm?: boolean;
+      accountId?: string;
+      startDate?: string;
+      endDate?: string;
+      source?: string;
+      ids?: string[];
+    };
+
+    if (body.confirm !== true) {
+      res.status(400).json({
+        error: 'Bulk delete requires an explicit { "confirm": true } in the request body.',
+      });
+      return;
+    }
+
+    const where: string[] = ['user_id = ?'];
+    const params: unknown[] = [userId];
+
+    if (body.accountId) {
+      where.push('account_id = ?');
+      params.push(String(body.accountId));
+    }
+    if (body.startDate) {
+      where.push('date >= ?');
+      params.push(String(body.startDate));
+    }
+    if (body.endDate) {
+      where.push('date <= ?');
+      params.push(String(body.endDate));
+    }
+    if (body.source) {
+      where.push('source = ?');
+      params.push(String(body.source));
+    }
+    if (Array.isArray(body.ids) && body.ids.length > 0) {
+      if (body.ids.length > 5000) {
+        res.status(400).json({ error: 'Too many ids in one request. Send at most 5000.' });
+        return;
+      }
+      where.push(`id IN (${body.ids.map(() => '?').join(', ')})`);
+      for (const id of body.ids) params.push(String(id));
+    }
+
+    const clause = where.join(' AND ');
+
+    // Snapshot first: we need the amounts to reverse balances, and the pair
+    // links to re-classify any transfer counterpart that survives the delete.
+    const doomed = (await db.all(
+      `SELECT id, account_id as "accountId", amount, transfer_pair_id as "transferPairId"
+         FROM transactions
+        WHERE ${clause}`,
+      ...params,
+    )) as Array<{ id: string; accountId: string; amount: number; transferPairId: string | null }>;
+
+    if (doomed.length === 0) {
+      res.json({ deleted: 0, accountsAdjusted: 0, counterpartsUnpaired: 0 });
+      return;
+    }
+
+    const doomedIds = new Set(doomed.map((t) => t.id));
+    const perAccount = new Map<string, number>();
+    const counterparts = new Set<string>();
+
+    for (const t of doomed) {
+      const prev = perAccount.get(t.accountId) ?? 0;
+      // Round on every step: float money drifts (0.1 + 0.2) and a few thousand
+      // additions is more than enough to move the account balance by a cent.
+      perAccount.set(t.accountId, Math.round((prev + Number(t.amount)) * 100) / 100);
+      // A counterpart that is itself being deleted needs no fixing up.
+      if (t.transferPairId && !doomedIds.has(t.transferPairId)) {
+        counterparts.add(t.transferPairId);
+      }
+    }
+
+    const now = new Date().toISOString();
+
+    await db.tx(async (t) => {
+      for (const [accountId, delta] of perAccount) {
+        await t.run(
+          'UPDATE accounts SET balance = balance - ?, updated_at = ? WHERE id = ? AND user_id = ?',
+          delta, now, accountId, userId,
+        );
+      }
+
+      await t.run(`DELETE FROM transactions WHERE ${clause}`, ...params);
+
+      for (const id of counterparts) {
+        await t.run(
+          'UPDATE transactions SET flow_type = NULL, transfer_pair_id = NULL WHERE id = ? AND user_id = ?',
+          id, userId,
+        );
+      }
+    });
+
+    // Re-pair and re-classify only when a surviving row actually lost its
+    // partner. Skipping this when nothing was unpaired keeps a routine delete
+    // from triggering a full-user reclassification pass.
+    if (counterparts.size > 0) {
+      await classifyUserFlows(db, userId);
+    }
+
+    res.json({
+      deleted: doomed.length,
+      accountsAdjusted: perAccount.size,
+      counterpartsUnpaired: counterparts.size,
+    });
+  } catch (error) {
+    console.error('Bulk delete transactions error:', error);
+    res.status(500).json({ error: 'Failed to bulk delete transactions' });
   }
 });
 
