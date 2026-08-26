@@ -278,27 +278,26 @@ export function classifyUnpaired(t: TxnRow, ctx: ClassifyContext): FlowType {
   const cat = categoryOf(t, ctx);
 
   if (t.amount < 0) {
-    // Debt service — card payments, mortgages, loan payments.
+    // Debt service — card payments, mortgages, loan payments — is spending.
     //
     // Owner's ruling (26 Aug 2026): "Make sure every CC PMT is an expense and
     // is treated as such, not a transfer."
     //
     // This used to send card and loan payments to `transfer`, on the theory
-    // that the purchases they settle are already counted as expenses on the
-    // card account. That theory only holds if the card account EXISTS. With no
-    // liability accounts loaded, the purchases were never recorded either, so
-    // both ends vanished and $184,812.54 of real outflow over 18 months landed
-    // in no column at all.
+    // that the purchases they settle are already counted on the card account.
+    // That theory needs the card's TRANSACTIONS to be in the database, and they
+    // are not — importing a card statement is a separate act from creating the
+    // account. $184,812.54 of real outflow over 18 months landed in no column
+    // at all as a result.
     //
-    // So: when the user owns no liability account, the payment leaving checking
-    // is the only visible evidence of that spending, and it counts as spending.
-    // When they DO own one, the purchases are visible and counting the payment
-    // as well would double-count, so it stays out of expenses as `debt_payment`
-    // (a paired payment already becomes debt_payment above, in rule 1).
-    if (DEBT_CATEGORIES.has(cat)) {
-      if (cat === 'mortgage') return 'expense';
-      return ctx.userHasLiabilityAccount ? 'debt_payment' : 'expense';
-    }
+    // The guard against double-counting lives where it belongs: in the pairing
+    // rule above. A payment that actually matches a credit on a liability
+    // account becomes `debt_payment` there, and that can only happen once the
+    // card's own rows exist. Merely OWNING a card account is not evidence its
+    // purchases were imported — an earlier version tested that and wrongly
+    // suppressed every payment for a user who had created the accounts but
+    // never uploaded their statements.
+    if (DEBT_CATEGORIES.has(cat)) return 'expense';
     // A real spending category outranks the descriptor. Without this, anything
     // paid over Zelle or Venmo stays a transfer no matter how it is labelled.
     if (isSpendingCategory(cat)) return 'expense';
@@ -311,12 +310,6 @@ export function classifyUnpaired(t: TxnRow, ctx: ClassifyContext): FlowType {
     if (TRANSFER_RE.test(name) || cat === 'transfer') return 'transfer';
     if (INTEREST_FEE_RE.test(name)) return 'interest_fee';
     if (acctIsLiability) return 'expense'; // purchases charged to the card
-    // Same rule as the debt categories above, for a card payment recognised by
-    // its descriptor alone (no CC PMT category attached — e.g. a hand-entered
-    // row, which never runs through the categoriser).
-    if (CARD_PAYMENT_RE.test(name)) {
-      return ctx.userHasLiabilityAccount ? 'debt_payment' : 'expense';
-    }
     return 'expense';
   }
 
