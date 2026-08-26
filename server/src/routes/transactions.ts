@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../db/database.js';
+import { merchantStem, recategorizeAll } from '../engine/categorizer.js';
 
 import {
   ensureFlowClassification,
@@ -11,39 +12,6 @@ import {
 
 const router = Router();
 
-/**
- * Reduce a bank descriptor to the merchant underneath it.
- *
- * Two rows are "the same transaction" to a person when they are the same payee,
- * even though the bank appends a different date, confirmation number, store
- * number and reference on every single one:
- *
- *   "PUBLIX SUPER M 08/24 PURCHASE PALMETTO BAY FL"
- *   "PUBLIX SUPER M 07/11 PURCHASE PALMETTO BAY FL"   -> same stem
- *
- * Strips the noise banks add — confirmation and reference ids, ACH metadata,
- * dates, long digit runs, and the boilerplate words that appear on every card
- * line — then keeps what is left. Matching on this rather than on the raw name
- * is what makes "apply to all the others like this" mean what people expect.
- */
-function merchantStem(rawName: string): string {
-  let s = String(rawName || '').toLowerCase();
-  // P2P payments carry a free-text memo that differs every time
-  // ("Zelle payment to MAURO GALLO for Keian - Super Copa"). The payee is the
-  // merchant; the memo is not. Scoped to P2P lines so an ordinary descriptor
-  // containing the word "for" is left alone.
-  if (/\b(?:zelle|venmo|cash app|paypal)\b/.test(s)) {
-    s = s.replace(/\bfor\b.*$/, ' ');
-  }
-  s = s.replace(/conf(irmation)?#\s*\S+/g, ' ');
-  s = s.replace(/\b(?:id|indn|co id|trn|seq|ref|ppd|web|tel|arc|des):\S*/g, ' ');
-  s = s.replace(/\b\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\b/g, ' ');
-  s = s.replace(/\b[a-z]*\d[a-z\d]{4,}\b/g, ' ');   // mixed alphanumeric ids
-  s = s.replace(/\b\d{3,}\b/g, ' ');                 // long digit runs
-  s = s.replace(/\b(purchase|payment|pos|debit|card|recurring|checkcard|des)\b/g, ' ');
-  s = s.replace(/[^a-z0-9&' ]+/g, ' ');
-  return s.replace(/\s+/g, ' ').trim();
-}
 
 // GET / - list transactions with filtering, sorting, pagination
 router.get('/', async (req: Request, res: Response) => {
@@ -519,6 +487,25 @@ router.post('/bulk-categorize', async (req: Request, res: Response) => {
   } catch (error) {
     console.error('Bulk categorize error:', error);
     res.status(500).json({ error: 'Failed to bulk categorize transactions' });
+  }
+});
+
+// POST /recategorize-all - re-run categorisation over everything, in place.
+//
+// The alternative was deleting every transaction and re-importing the
+// statements, which is a lot of ceremony to pick up an improved rule — and it
+// discards notes, edits and ids along the way. This keeps the rows and just
+// re-decides what they are.
+router.post('/recategorize-all', async (req: Request, res: Response) => {
+  try {
+    const summary = await recategorizeAll(req.user!.id);
+    // Categories feed the flow classifier (Transfer, CC PMT and Mortgage all
+    // change what a row IS), so the whole user is re-classified afterwards.
+    await classifyUserFlows(db, req.user!.id);
+    res.json(summary);
+  } catch (error) {
+    console.error('Recategorize-all error:', error);
+    res.status(500).json({ error: 'Failed to re-categorize transactions' });
   }
 });
 

@@ -4,7 +4,7 @@ import { useThemeStore } from '@/stores/themeStore'
 import { PageHeader } from '@/components/shared/PageHeader'
 import { api } from '@/lib/api'
 import { toast } from 'sonner'
-import { Sun, Moon, Monitor, Database, Upload, Trash2, Loader2, Eraser } from 'lucide-react'
+import { Sun, Moon, Monitor, Database, Upload, Trash2, Loader2, Eraser, Wand2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 export function SettingsPage() {
@@ -17,6 +17,7 @@ export function SettingsPage() {
   const [wipeOpen, setWipeOpen] = useState(false)
   const [confirmWipe, setConfirmWipe] = useState('')
   const [wiping, setWiping] = useState(false)
+  const [recategorizing, setRecategorizing] = useState(false)
 
   const handleSaveProfile = async () => {
     setSaving(true)
@@ -81,6 +82,29 @@ export function SettingsPage() {
       toast.error('Failed to delete transactions')
     } finally {
       setWiping(false)
+    }
+  }
+
+  // Improving a rule used to mean deleting everything and re-importing the
+  // statements just to see the benefit. This re-decides the categories on the
+  // rows that are already here, keeping ids, notes and edits.
+  const handleRecategorize = async () => {
+    setRecategorizing(true)
+    try {
+      const r = await api.post<{
+        scanned: number; changed: number; bySimilarity: number; stillUncategorized: number
+      }>('/transactions/recategorize-all')
+      const extras: string[] = []
+      if (r.bySimilarity > 0) extras.push(`${r.bySimilarity} matched by similarity`)
+      if (r.stillUncategorized > 0) extras.push(`${r.stillUncategorized} still need a category`)
+      toast.success(
+        `Re-categorised ${r.changed.toLocaleString()} of ${r.scanned.toLocaleString()} transactions` +
+        (extras.length ? ` — ${extras.join(', ')}` : ''),
+      )
+    } catch {
+      toast.error('Failed to re-categorise')
+    } finally {
+      setRecategorizing(false)
     }
   }
 
@@ -194,6 +218,26 @@ export function SettingsPage() {
               <div>
                 <p className="text-sm font-medium">Export All Data</p>
                 <p className="text-xs text-muted-foreground">Download everything as JSON</p>
+              </div>
+            </button>
+
+            <button
+              onClick={handleRecategorize}
+              disabled={recategorizing}
+              className="w-full flex items-center gap-3 p-4 rounded-xl border border-border/50 hover:bg-accent/30 transition-colors text-left disabled:opacity-60"
+            >
+              {recategorizing ? (
+                <Loader2 className="w-5 h-5 animate-spin text-primary" />
+              ) : (
+                <Wand2 className="w-5 h-5 text-primary" />
+              )}
+              <div>
+                <p className="text-sm font-medium">
+                  {recategorizing ? 'Re-categorising…' : 'Re-categorise All Transactions'}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  Re-runs the rules over the transactions you already have — no re-import needed. Your own corrections always win.
+                </p>
               </div>
             </button>
 
