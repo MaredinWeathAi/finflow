@@ -15,10 +15,31 @@ import { cn } from '@/lib/utils'
 
 type Preset = 'month' | 'quarter' | 'year' | 'ytd' | 'trailing12' | 'custom'
 
+/** The four printable reports. Each is a document, not a screen. */
+const REPORTS = [
+  {
+    id: 'statement', path: '/reports/print', name: 'Category Statement',
+    blurb: 'Totals by category, then every transaction underneath the category it belongs to.',
+  },
+  {
+    id: 'funding', path: '/reports/print/funding', name: 'Cash Flow & Funding',
+    blurb: 'What you earned and spent each month — and, when that came up short, where the money to cover it came from.',
+  },
+  {
+    id: 'debt', path: '/reports/print/debt-service', name: 'Debt Service',
+    blurb: 'Every mortgage, card, loan and lease payment by lender, and what share of income they take.',
+  },
+  {
+    id: 'committed', path: '/reports/print/committed', name: 'Committed vs Discretionary',
+    blurb: 'Income down through debt service and commitments to the part you can actually change.',
+  },
+] as const
+
 const iso = (d: Date) => format(d, 'yyyy-MM-dd')
 
 export function StatementLauncher() {
   const now = useMemo(() => new Date(), [])
+  const [reportId, setReportId] = useState<string>('statement')
   const [preset, setPreset] = useState<Preset>('month')
   // Steppers count back from the most recent COMPLETE period: a statement of a
   // month still in progress reads as a bad month rather than a partial one.
@@ -51,9 +72,11 @@ export function StatementLauncher() {
 
   const stepper = preset === 'month' || preset === 'quarter' || preset === 'year'
 
+  const report = REPORTS.find(r => r.id === reportId) ?? REPORTS[0]
+
   const open = () => {
     const qs = new URLSearchParams({ start: range.start, end: range.end, label: range.label })
-    window.open(`/reports/print?${qs.toString()}`, '_blank', 'noopener')
+    window.open(`${report.path}?${qs.toString()}`, '_blank', 'noopener')
   }
 
   const presets: { value: Preset; label: string }[] = [
@@ -69,11 +92,10 @@ export function StatementLauncher() {
     <div className="bg-card rounded-2xl border border-border/50 p-5 mb-6 print:hidden">
       <div className="flex items-start justify-between gap-4 flex-wrap mb-4">
         <div>
-          <h2 className="text-sm font-semibold">Print a Category Statement</h2>
+          <h2 className="text-sm font-semibold">Print a report</h2>
           <p className="text-xs text-muted-foreground mt-1 max-w-xl">
-            Totals by category for the period, then every transaction underneath the category it
-            belongs to. Opens as a printable document — use your browser's print dialog to save it
-            as a PDF.
+            {report.blurb} Opens as a printable document — use your browser's print dialog to save
+            it as a PDF.
           </p>
         </div>
         <button
@@ -81,8 +103,23 @@ export function StatementLauncher() {
           className="h-9 px-4 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors flex items-center gap-2 shrink-0"
         >
           <Printer className="w-4 h-4" />
-          Open statement
+          Open report
         </button>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2 mb-4">
+        {REPORTS.map(r => (
+          <button
+            key={r.id}
+            onClick={() => setReportId(r.id)}
+            className={cn('text-left px-3 py-2.5 rounded-lg border transition-colors',
+              reportId === r.id
+                ? 'border-primary bg-primary/10'
+                : 'border-border/50 bg-background hover:bg-accent')}
+          >
+            <span className={cn('block text-sm font-medium', reportId === r.id && 'text-primary')}>{r.name}</span>
+          </button>
+        ))}
       </div>
 
       <div className="flex items-center gap-2 flex-wrap">

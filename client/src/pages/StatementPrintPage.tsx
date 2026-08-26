@@ -55,18 +55,18 @@ interface Statement {
   data_notes: { note?: string | null } | null
 }
 
-const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December']
+export const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December']
 
-function monthLabel(ym: string): string {
+export function monthLabel(ym: string): string {
   const [y, m] = ym.split('-').map(Number)
   return `${MONTH_NAMES[m - 1]} ${y}`
 }
-function shortDate(iso: string): string {
+export function shortDate(iso: string): string {
   const [, m, d] = iso.split('-').map(Number)
   return `${MONTH_NAMES[m - 1].slice(0, 3)} ${d}`
 }
 /** Negatives in parentheses so meaning survives a black-and-white printer. */
-function money(n: number, opts: { parens?: boolean } = {}): string {
+export function money(n: number, opts: { parens?: boolean } = {}): string {
   const s = formatCurrency(Math.abs(n))
   if (n < 0 && opts.parens !== false) return `(${s})`
   return s
@@ -364,7 +364,7 @@ export function StatementPrintPage() {
   )
 }
 
-const PRINT_CSS = `
+export const PRINT_CSS = `
 .stmt {
   background: #fff; color: #000; min-height: 100vh;
   font: 10.5pt/1.4 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -422,6 +422,34 @@ table.detail .num { width: 0.95in; }
 table.detail .desc em { color: #666; font-size: 8.5pt; }
 tr.cat-total td { font-weight: 700; border-top: 1px solid #000; background: #fff !important; }
 
+/* --- KPI strip, shared by the funding and debt-service reports --- */
+.kpis { display: flex; gap: 10px; margin: 14px 0 20px; }
+.kpi { flex: 1; border: 1px solid #CCC; border-radius: 2px; padding: 9px 11px;
+  display: flex; flex-direction: column; gap: 2px; }
+.k-label { font-size: 7.5pt; text-transform: uppercase; letter-spacing: .07em; color: #555; }
+.k-value { font-size: 14pt; font-weight: 700; line-height: 1.1; }
+.k-value.bad { color: #A81E14; } .k-value.good { color: #0D6344; }
+.k-sub { font-size: 8pt; color: #666; }
+
+/* --- waterfall (committed vs discretionary) --- */
+table.waterfall td { padding: 6px; border-bottom: 1px solid #EAEAEA; }
+table.waterfall td:first-child { width: 2.1in; }
+table.waterfall td.num { width: 1.1in; text-align: right; }
+table.waterfall td.bar { width: auto; padding-right: 14px; }
+table.waterfall td.bar span { display: block; height: 9px; background: #333;
+  -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+.b-debt { background: #A81E14 !important; }
+.b-comm { background: #7A6A2E !important; }
+.b-disc { background: #2E5A6B !important; }
+tr.wf-start td { font-weight: 700; border-top: 1.5px solid #000; }
+tr.wf-mid td { font-weight: 600; background: #F5F5F5 !important; }
+.tier-note { margin: 3px 0 6px; font-size: 8.5pt; }
+
+/* A wide month grid scrolls on screen rather than breaking the page. */
+.scroller { overflow-x: auto; }
+table.grid td, table.grid th { padding: 3px 5px; font-size: 8pt; white-space: nowrap; }
+table.grid td.desc { max-width: 1.9in; overflow: hidden; text-overflow: ellipsis; }
+
 .toolbar { display: flex; align-items: center; gap: 14px; margin-bottom: 18px;
   font-size: 9.5pt; color: #555; }
 .toolbar button { font: inherit; font-weight: 600; color: #fff; background: #111;
@@ -440,6 +468,11 @@ tr.cat-total td { font-weight: 700; border-top: 1px solid #000; background: #fff
   .section { break-before: page; }
   h1, h2 { break-after: avoid; }
   table.data tbody tr:nth-child(even) td,
-  tr.band-head td { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  tr.band-head td,
+  tr.wf-mid td,
+  table.waterfall td.bar span { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .kpis { break-inside: avoid; }
+  .scroller { overflow: visible; }
+  table.grid { font-size: 7pt; }
 }
 `

@@ -6,6 +6,9 @@ import { onAuthEvent } from '@/lib/api'
 import { ForcePasswordChange } from '@/components/auth/ForcePasswordChange'
 import { AppLayout } from '@/components/layout/AppLayout'
 import { StatementPrintPage } from '@/pages/StatementPrintPage'
+import { FundingPrintPage } from '@/pages/FundingPrintPage'
+import { DebtServicePrintPage } from '@/pages/DebtServicePrintPage'
+import { CommittedPrintPage } from '@/pages/CommittedPrintPage'
 import { LoginPage } from '@/pages/LoginPage'
 import { ForgotPasswordPage } from '@/pages/ForgotPasswordPage'
 import { DashboardPage } from '@/pages/DashboardPage'
@@ -102,6 +105,18 @@ export default function App() {
         <Route
           path="/reports/print"
           element={<ProtectedRoute><StatementPrintPage /></ProtectedRoute>}
+        />
+        <Route
+          path="/reports/print/funding"
+          element={<ProtectedRoute><FundingPrintPage /></ProtectedRoute>}
+        />
+        <Route
+          path="/reports/print/debt-service"
+          element={<ProtectedRoute><DebtServicePrintPage /></ProtectedRoute>}
+        />
+        <Route
+          path="/reports/print/committed"
+          element={<ProtectedRoute><CommittedPrintPage /></ProtectedRoute>}
         />
         <Route path="/forgot-password" element={<ForgotPasswordPage />} />
         <Route

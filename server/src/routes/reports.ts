@@ -16,6 +16,7 @@ import {
   monthStartIso,
   monthEndIso,
 } from '../engine/coverage.js';
+import { merchantStem } from '../engine/categorizer.js';
 
 const router = Router();
 
@@ -1011,6 +1012,421 @@ router.get('/statement', async (req: Request, res: Response) => {
   } catch (error) {
     console.error('Statement report error:', error);
     res.status(500).json({ error: 'Failed to generate statement' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Shared period/scope resolution for the printable reports.
+// ---------------------------------------------------------------------------
+interface ReportScope {
+  start: string;
+  end: string;
+  label: string;
+  scopeIds: string[];
+  scopeSql: string;
+  scopeNames: string[];
+  allAccounts: boolean;
+  months: string[];            // every month in range that has data, oldest first
+  completeMonths: string[];
+  partialMonths: string[];
+}
+
+async function resolveScope(req: Request, userId: string): Promise<ReportScope | { error: string }> {
+  const start = String(req.query.start || '');
+  const end = String(req.query.end || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end)) {
+    return { error: 'start and end are required as YYYY-MM-DD' };
+  }
+  if (start > end) return { error: 'start must not be after end' };
+
+  const requested = String(req.query.accounts || '')
+    .split(',').map((s) => s.trim()).filter(Boolean);
+  const visible = await db.all(
+    'SELECT id, name FROM accounts WHERE user_id = ? AND is_hidden = 0 ORDER BY name ASC',
+    userId,
+  ) as Array<{ id: string; name: string }>;
+  const scopeIds = requested.length
+    ? visible.filter((a) => requested.includes(a.id)).map((a) => a.id)
+    : visible.map((a) => a.id);
+  if (scopeIds.length === 0) return { error: 'No visible accounts match the requested scope' };
+
+  const coverage = await getCoverage(userId);
+  const inRange = monthsWithDataFromCoverage(coverage, start.slice(0, 7), end.slice(0, 7));
+
+  return {
+    start, end,
+    label: String(req.query.label || `${start} to ${end}`),
+    scopeIds,
+    scopeSql: `AND t.account_id IN (${scopeIds.map(() => '?').join(', ')})`,
+    scopeNames: visible.filter((a) => scopeIds.includes(a.id)).map((a) => a.name),
+    allAccounts: scopeIds.length === visible.length,
+    months: inRange.map((m) => m.month),
+    completeMonths: inRange.filter((m) => m.status === 'complete').map((m) => m.month),
+    partialMonths: inRange.filter((m) => m.status === 'partial').map((m) => m.month),
+  };
+}
+
+const r2 = (n: any) => Math.round((Number(n) || 0) * 100) / 100;
+
+// ---------------------------------------------------------------------------
+// GET /funding - Cash Flow & Deficit Funding
+//
+// A sources-and-uses statement. Month by month: what the household actually
+// earned and spent, and — when that came out negative — where the money to
+// cover it came from. The app's own history says the honest answer is asset
+// sales, loan drawdowns and brokerage withdrawals, none of which are income,
+// and all of which are finite. A deficit funded from savings looks identical
+// to a balanced month on a bank statement; this report is what makes the
+// difference visible.
+// ---------------------------------------------------------------------------
+router.get('/funding', async (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.id;
+    await ensureFlowClassification(userId);
+    const scope = await resolveScope(req, userId);
+    if ('error' in scope) { res.status(400).json({ error: scope.error }); return; }
+    const { start, end, scopeIds, scopeSql } = scope;
+
+    // Operating result per month.
+    const opRows = await db.all(
+      `SELECT substr(t.date, 1, 7) as month,
+              ${sqlIncome('t')} as income,
+              ${sqlExpenses('t')} as expenses
+       FROM transactions t
+       WHERE t.user_id = ? AND t.date >= ? AND t.date <= ? ${scopeSql}
+       GROUP BY substr(t.date, 1, 7)`,
+      userId, start, end, ...scopeIds,
+    ) as any[];
+
+    // Inflows that are NOT income, by what kind of thing they are. The category
+    // is the evidence: Asset Sale, Loan Proceeds and Asset Transfer are the
+    // three owner-confirmed ways money arrives without being earned.
+    const fundRows = await db.all(
+      `SELECT substr(t.date, 1, 7) as month,
+              LOWER(COALESCE(c.name, 'other')) as kind,
+              COALESCE(SUM(t.amount), 0) as total,
+              COUNT(t.id) as "txnCount"
+       FROM transactions t
+       LEFT JOIN categories c ON t.category_id = c.id
+       WHERE t.user_id = ? AND t.flow_type = 'transfer' AND t.amount > 0
+         AND t.date >= ? AND t.date <= ? ${scopeSql}
+       GROUP BY substr(t.date, 1, 7), LOWER(COALESCE(c.name, 'other'))`,
+      userId, start, end, ...scopeIds,
+    ) as any[];
+
+    const FUNDING_LABELS: Record<string, string> = {
+      'asset sale': 'Asset sales',
+      'loan proceeds': 'Borrowing',
+      'asset transfer': 'Drawn from savings & investments',
+    };
+    const labelFor = (kind: string) => FUNDING_LABELS[kind] ?? 'Moved in from other accounts';
+
+    const byMonth = new Map<string, { income: number; expenses: number; funding: Map<string, number> }>();
+    const ensure = (m: string) => {
+      if (!byMonth.has(m)) byMonth.set(m, { income: 0, expenses: 0, funding: new Map() });
+      return byMonth.get(m)!;
+    };
+    for (const r of opRows) {
+      const e = ensure(r.month);
+      e.income = r2(r.income); e.expenses = r2(r.expenses);
+    }
+    for (const r of fundRows) {
+      const e = ensure(r.month);
+      const l = labelFor(r.kind);
+      e.funding.set(l, r2((e.funding.get(l) ?? 0) + r2(r.total)));
+    }
+
+    const sourceLabels = Array.from(
+      new Set(fundRows.map((r) => labelFor(r.kind))),
+    ).sort();
+
+    let cumulative = 0;
+    const months = Array.from(byMonth.keys()).sort().map((m) => {
+      const e = byMonth.get(m)!;
+      const net = r2(e.income - e.expenses);
+      cumulative = r2(cumulative + net);
+      const funding: Record<string, number> = {};
+      for (const l of sourceLabels) funding[l] = r2(e.funding.get(l) ?? 0);
+      return {
+        month: m,
+        income: e.income,
+        expenses: e.expenses,
+        net,
+        cumulative,
+        funding,
+        fundingTotal: r2(sourceLabels.reduce((s, l) => s + (e.funding.get(l) ?? 0), 0)),
+      };
+    });
+
+    const totals = {
+      income: r2(months.reduce((s, m) => s + m.income, 0)),
+      expenses: r2(months.reduce((s, m) => s + m.expenses, 0)),
+      net: r2(months.reduce((s, m) => s + m.net, 0)),
+      fundingTotal: r2(months.reduce((s, m) => s + m.fundingTotal, 0)),
+      funding: Object.fromEntries(
+        sourceLabels.map((l) => [l, r2(months.reduce((s, m) => s + (m.funding[l] ?? 0), 0))]),
+      ) as Record<string, number>,
+    };
+    const deficitMonths = months.filter((m) => m.net < 0).length;
+    const completeCount = scope.completeMonths.length;
+
+    res.json({
+      report: 'funding',
+      period: { start, end, label: scope.label },
+      scope: { allAccounts: scope.allAccounts, accountNames: scope.scopeNames },
+      coverage: { completeMonths: scope.completeMonths, partialMonths: scope.partialMonths },
+      sourceLabels,
+      months,
+      totals,
+      deficitMonths,
+      monthCount: months.length,
+      // Burn rate over COMPLETE months only — a part-month drags the average
+      // toward zero and makes a deficit look smaller than it is.
+      avgMonthlyNet: completeCount > 0
+        ? r2(months.filter((m) => scope.completeMonths.includes(m.month))
+              .reduce((s, m) => s + m.net, 0) / completeCount)
+        : null,
+      completeMonthCount: completeCount,
+      data_notes: await getFlowDataNotes(db, userId),
+    });
+  } catch (error) {
+    console.error('Funding report error:', error);
+    res.status(500).json({ error: 'Failed to generate funding report' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /debt-service - what the lenders take
+//
+// Every payment that services debt, by payee, by month, and as a share of
+// income. Marcelo's Q2 2026 was 72% — a number that exists nowhere else in the
+// app because card payments, the mortgage and the auto leases live in four
+// different categories and are never added together.
+//
+// Principal and interest cannot be separated: no APR is stored anywhere, and
+// the bank descriptor does not carry the split. The report says so rather than
+// implying the whole payment is a cost.
+// ---------------------------------------------------------------------------
+const DEBT_SERVICE_CATEGORIES = ['mortgage', 'cc pmt', 'loan payment', 'auto lease'];
+
+router.get('/debt-service', async (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.id;
+    await ensureFlowClassification(userId);
+    const scope = await resolveScope(req, userId);
+    if ('error' in scope) { res.status(400).json({ error: scope.error }); return; }
+    const { start, end, scopeIds, scopeSql } = scope;
+
+    const catPlaceholders = DEBT_SERVICE_CATEGORIES.map(() => '?').join(', ');
+    const debtFilter = `LOWER(COALESCE(c.name, '')) IN (${catPlaceholders})`;
+
+    const rows = await db.all(
+      `SELECT t.name, t.amount, t.date, COALESCE(c.name, 'Uncategorised') as "categoryName"
+       FROM transactions t
+       LEFT JOIN categories c ON t.category_id = c.id
+       WHERE t.user_id = ? AND t.flow_type IN ('expense', 'interest_fee', 'debt_payment')
+         AND ${debtFilter}
+         AND t.date >= ? AND t.date <= ? ${scopeSql}
+       ORDER BY t.date ASC`,
+      userId, ...DEBT_SERVICE_CATEGORIES, start, end, ...scopeIds,
+    ) as any[];
+
+    // Group by payee. merchantStem() strips confirmation numbers, ACH metadata
+    // and dates, so eleven differently-numbered Amex payments collapse to one
+    // lender line instead of eleven rows that each look small.
+    const byPayee = new Map<string, {
+      payee: string; category: string; total: number; count: number;
+      months: Map<string, number>;
+    }>();
+    for (const r of rows) {
+      const key = merchantStem(String(r.name || '')) || String(r.name || '').toLowerCase();
+      if (!byPayee.has(key)) {
+        byPayee.set(key, {
+          payee: String(r.name || ''), category: r.categoryName,
+          total: 0, count: 0, months: new Map(),
+        });
+      }
+      const e = byPayee.get(key)!;
+      const amt = Math.abs(Number(r.amount) || 0);
+      e.total = r2(e.total + amt);
+      e.count += 1;
+      const m = String(r.date).slice(0, 7);
+      e.months.set(m, r2((e.months.get(m) ?? 0) + amt));
+    }
+
+    const monthKeys = Array.from(new Set(rows.map((r) => String(r.date).slice(0, 7)))).sort();
+
+    const incomeRow = await db.get(
+      `SELECT ${sqlIncome('t')} as income FROM transactions t
+       WHERE t.user_id = ? AND t.date >= ? AND t.date <= ? ${scopeSql}`,
+      userId, start, end, ...scopeIds,
+    ) as any;
+    const income = r2(incomeRow.income);
+
+    const expenseRow = await db.get(
+      `SELECT ${sqlExpenses('t')} as expenses FROM transactions t
+       WHERE t.user_id = ? AND t.date >= ? AND t.date <= ? ${scopeSql}`,
+      userId, start, end, ...scopeIds,
+    ) as any;
+    const expenses = r2(expenseRow.expenses);
+
+    const payees = Array.from(byPayee.values())
+      .map((p) => ({
+        payee: p.payee,
+        category: p.category,
+        total: p.total,
+        count: p.count,
+        pctOfIncome: income > 0 ? Math.round((p.total / income) * 1000) / 10 : 0,
+        byMonth: Object.fromEntries(monthKeys.map((m) => [m, r2(p.months.get(m) ?? 0)])),
+      }))
+      .sort((a, b) => b.total - a.total);
+
+    const totalDebt = r2(payees.reduce((s, p) => s + p.total, 0));
+    const completeCount = scope.completeMonths.length;
+
+    res.json({
+      report: 'debt-service',
+      period: { start, end, label: scope.label },
+      scope: { allAccounts: scope.allAccounts, accountNames: scope.scopeNames },
+      coverage: { completeMonths: scope.completeMonths, partialMonths: scope.partialMonths },
+      monthKeys,
+      payees,
+      totals: {
+        debtService: totalDebt,
+        income,
+        expenses,
+        pctOfIncome: income > 0 ? Math.round((totalDebt / income) * 1000) / 10 : 0,
+        pctOfExpenses: expenses > 0 ? Math.round((totalDebt / expenses) * 1000) / 10 : 0,
+        perMonth: completeCount > 0 ? r2(totalDebt / completeCount) : null,
+      },
+      completeMonthCount: completeCount,
+      byMonthTotals: Object.fromEntries(
+        monthKeys.map((m) => [m, r2(payees.reduce((s, p) => s + (p.byMonth[m] ?? 0), 0))]),
+      ),
+      note: 'Principal and interest cannot be separated: no interest rate is stored for these accounts and the bank descriptor does not carry the split. These are total payments, not total cost.',
+      data_notes: await getFlowDataNotes(db, userId),
+    });
+  } catch (error) {
+    console.error('Debt service report error:', error);
+    res.status(500).json({ error: 'Failed to generate debt service report' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /committed - what is actually cuttable
+//
+// Splits spending three ways: debt service (contractual), committed (you can
+// change it, but not this month — utilities, insurance, tuition), and
+// discretionary (this month's decisions). The useful number is the last one:
+// "spend less" is only actionable against the part you actually control.
+//
+// The mapping is stated in the response so it can be argued with. Groceries
+// sits in committed and restaurants in discretionary, which is the split most
+// people mean even though both are food.
+// ---------------------------------------------------------------------------
+const COMMITMENT_TIERS: Record<string, 'debt' | 'committed' | 'discretionary'> = {
+  'mortgage': 'debt', 'cc pmt': 'debt', 'loan payment': 'debt', 'auto lease': 'debt',
+  'housing': 'committed', 'utilities': 'committed', 'insurance': 'committed',
+  'healthcare': 'committed', 'education': 'committed', 'taxes': 'committed',
+  'college savings': 'committed', 'kids': 'committed', 'groceries': 'committed',
+  'bank fees': 'committed', 'subscriptions': 'committed', 'home services': 'committed',
+  'transportation': 'committed', 'pets': 'committed',
+};
+const tierOf = (cat: string): 'debt' | 'committed' | 'discretionary' =>
+  COMMITMENT_TIERS[cat.toLowerCase()] ?? 'discretionary';
+
+router.get('/committed', async (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.id;
+    await ensureFlowClassification(userId);
+    const scope = await resolveScope(req, userId);
+    if ('error' in scope) { res.status(400).json({ error: scope.error }); return; }
+    const { start, end, scopeIds, scopeSql } = scope;
+
+    const catRows = await db.all(
+      `SELECT COALESCE(c.name, 'Uncategorised') as name,
+              COALESCE(c.icon, '❓') as icon,
+              substr(t.date, 1, 7) as month,
+              ${sqlExpenses('t')} as total,
+              COUNT(t.id) as "txnCount"
+       FROM transactions t
+       LEFT JOIN categories c ON t.category_id = c.id
+       WHERE t.user_id = ? AND t.flow_type IN ('expense', 'interest_fee', 'refund')
+         AND t.date >= ? AND t.date <= ? ${scopeSql}
+       GROUP BY c.name, c.icon, substr(t.date, 1, 7)`,
+      userId, start, end, ...scopeIds,
+    ) as any[];
+
+    const incomeByMonth = await db.all(
+      `SELECT substr(t.date, 1, 7) as month, ${sqlIncome('t')} as income
+       FROM transactions t
+       WHERE t.user_id = ? AND t.date >= ? AND t.date <= ? ${scopeSql}
+       GROUP BY substr(t.date, 1, 7)`,
+      userId, start, end, ...scopeIds,
+    ) as any[];
+
+    const monthKeys = Array.from(new Set([
+      ...catRows.map((r) => r.month), ...incomeByMonth.map((r) => r.month),
+    ])).sort();
+
+    const cats = new Map<string, { name: string; icon: string; tier: string; total: number; txnCount: number; byMonth: Map<string, number> }>();
+    for (const r of catRows) {
+      if (!cats.has(r.name)) {
+        cats.set(r.name, { name: r.name, icon: r.icon, tier: tierOf(r.name), total: 0, txnCount: 0, byMonth: new Map() });
+      }
+      const e = cats.get(r.name)!;
+      e.total = r2(e.total + r2(r.total));
+      e.txnCount += Number(r.txnCount) || 0;
+      e.byMonth.set(r.month, r2(r.total));
+    }
+
+    const categories = Array.from(cats.values())
+      .map((c) => ({
+        name: c.name, icon: c.icon, tier: c.tier, total: c.total, txnCount: c.txnCount,
+        byMonth: Object.fromEntries(monthKeys.map((m) => [m, r2(c.byMonth.get(m) ?? 0)])),
+      }))
+      .sort((a, b) => b.total - a.total);
+
+    const tierTotal = (tier: string) => r2(categories.filter((c) => c.tier === tier).reduce((s, c) => s + c.total, 0));
+    const income = r2(incomeByMonth.reduce((s, r) => s + r2(r.income), 0));
+    const debt = tierTotal('debt');
+    const committed = tierTotal('committed');
+    const discretionary = tierTotal('discretionary');
+    const completeCount = scope.completeMonths.length;
+
+    res.json({
+      report: 'committed',
+      period: { start, end, label: scope.label },
+      scope: { allAccounts: scope.allAccounts, accountNames: scope.scopeNames },
+      coverage: { completeMonths: scope.completeMonths, partialMonths: scope.partialMonths },
+      monthKeys,
+      categories,
+      incomeByMonth: Object.fromEntries(incomeByMonth.map((r) => [r.month, r2(r.income)])),
+      totals: {
+        income, debt, committed, discretionary,
+        spending: r2(debt + committed + discretionary),
+        afterDebt: r2(income - debt),
+        afterCommitted: r2(income - debt - committed),
+        net: r2(income - debt - committed - discretionary),
+        pctDebt: income > 0 ? Math.round((debt / income) * 1000) / 10 : 0,
+        pctCommitted: income > 0 ? Math.round((committed / income) * 1000) / 10 : 0,
+        pctDiscretionary: income > 0 ? Math.round((discretionary / income) * 1000) / 10 : 0,
+      },
+      perMonth: completeCount > 0 ? {
+        income: r2(income / completeCount), debt: r2(debt / completeCount),
+        committed: r2(committed / completeCount), discretionary: r2(discretionary / completeCount),
+      } : null,
+      completeMonthCount: completeCount,
+      tiers: {
+        debt: 'Contractual. Missing one has consequences beyond the money.',
+        committed: 'Real commitments you could change, but not this month.',
+        discretionary: 'This month\'s decisions — the part actually under your control.',
+      },
+      data_notes: await getFlowDataNotes(db, userId),
+    });
+  } catch (error) {
+    console.error('Committed report error:', error);
+    res.status(500).json({ error: 'Failed to generate committed spending report' });
   }
 });
 
