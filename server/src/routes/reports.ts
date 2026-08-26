@@ -7,6 +7,7 @@ import {
   SQL_SPEND_FLOWS,
   sqlIncome,
   sqlExpenses,
+  sqlRefunds,
 } from '../engine/flow.js';
 import {
   getCoverage,
@@ -700,5 +701,305 @@ router.get('/dashboard-summary', async (req: Request, res: Response) => {
 
 // NOTE: `/debug-income` was removed (audit finding L6) — a debug endpoint
 // dumping raw transaction rows should not exist in a production build.
+
+// ---------------------------------------------------------------------------
+// GET /statement - the printable Category Statement
+//
+// Section 1: totals by category, split into income / expenses / the internal
+//            moves that belong to neither.
+// Section 2: every transaction in the period, grouped under those same
+//            categories, with subtotals that tie back to section 1 by
+//            construction — both come from the same flow.ts helpers.
+//
+// Everything is period-scoped and account-scoped. Coverage is reported so the
+// printed page can say when a month inside the range is only partly loaded,
+// rather than presenting a half-month as a whole one.
+// ---------------------------------------------------------------------------
+router.get('/statement', async (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.id;
+    await ensureFlowClassification(userId);
+
+    const start = String(req.query.start || '');
+    const end = String(req.query.end || '');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end)) {
+      res.status(400).json({ error: 'start and end are required as YYYY-MM-DD' });
+      return;
+    }
+    if (start > end) {
+      res.status(400).json({ error: 'start must not be after end' });
+      return;
+    }
+    const label = String(req.query.label || '');
+
+    // Account scope. An empty/absent list means every visible account.
+    const requested = String(req.query.accounts || '')
+      .split(',').map((s) => s.trim()).filter(Boolean);
+    const visible = await db.all(
+      'SELECT id, name, type FROM accounts WHERE user_id = ? AND is_hidden = 0 ORDER BY name ASC',
+      userId,
+    ) as Array<{ id: string; name: string; type: string }>;
+    const scopeIds = requested.length
+      ? visible.filter((a) => requested.includes(a.id)).map((a) => a.id)
+      : visible.map((a) => a.id);
+    if (scopeIds.length === 0) {
+      res.status(400).json({ error: 'No visible accounts match the requested scope' });
+      return;
+    }
+    const acctPlaceholders = scopeIds.map(() => '?').join(', ');
+    const scopeSql = `AND t.account_id IN (${acctPlaceholders})`;
+    const scopeNames = visible.filter((a) => scopeIds.includes(a.id)).map((a) => a.name);
+    const allAccounts = scopeIds.length === visible.length;
+
+    // ---- coverage -------------------------------------------------------
+    const coverage = await getCoverage(userId);
+    const monthsInRange = monthsWithDataFromCoverage(coverage, start.slice(0, 7), end.slice(0, 7));
+    const completeMonths = monthsInRange.filter((m) => m.status === 'complete').map((m) => m.month);
+    const partialMonths = monthsInRange.filter((m) => m.status === 'partial').map((m) => m.month);
+    // A monthly average needs at least two complete months to mean anything.
+    const showMonthlyAvg = completeMonths.length >= 2;
+    const cmPlaceholders = completeMonths.map(() => '?').join(', ');
+
+    const round = (n: any) => Math.round((Number(n) || 0) * 100) / 100;
+
+    // ---- prior period ---------------------------------------------------
+    // Same length, immediately before. Suppressed entirely when the prior
+    // window is not fully covered — comparing against a hole is worse than
+    // showing no comparison at all.
+    const dayMs = 86400000;
+    const spanDays = Math.round((Date.parse(end) - Date.parse(start)) / dayMs) + 1;
+    const priorEnd = new Date(Date.parse(start) - dayMs).toISOString().slice(0, 10);
+    const priorStart = new Date(Date.parse(start) - spanDays * dayMs).toISOString().slice(0, 10);
+    const priorMonths = monthsWithDataFromCoverage(coverage, priorStart.slice(0, 7), priorEnd.slice(0, 7));
+    const priorFullyCovered =
+      priorMonths.length > 0 && priorMonths.every((m) => m.status === 'complete');
+
+    // ---- band totals ----------------------------------------------------
+    const totals = await db.get(
+      `SELECT ${sqlIncome('t')} as "income",
+              ${sqlExpenses('t')} as "expenses",
+              ${sqlRefunds('t')} as "refunds",
+              COALESCE(SUM(CASE WHEN t.flow_type = 'transfer' AND t.amount > 0 THEN t.amount ELSE 0 END), 0) as "movedIn",
+              COALESCE(SUM(CASE WHEN t.flow_type = 'transfer' AND t.amount < 0 THEN -t.amount ELSE 0 END), 0) as "movedOut",
+              COALESCE(SUM(CASE WHEN t.flow_type = 'debt_payment' THEN ABS(t.amount) ELSE 0 END), 0) as "debtPayments",
+              COUNT(*) as "rowCount"
+       FROM transactions t
+       WHERE t.user_id = ? AND t.date >= ? AND t.date <= ? ${scopeSql}`,
+      userId, start, end, ...scopeIds,
+    ) as any;
+
+    const income = round(totals.income);
+    const expenses = round(totals.expenses);
+
+    // ---- category rollups ----------------------------------------------
+    // LEFT JOIN + COALESCE so rows with no category are a visible line rather
+    // than silently dropped: the parts must always sum to the whole.
+    const UNCAT_LAST = `CASE WHEN c.id IS NULL OR LOWER(c.name) LIKE '%uncategor%' THEN 1 ELSE 0 END`;
+
+    const expenseRows = await db.all(
+      `SELECT c.id as "categoryId",
+              COALESCE(c.name, 'Uncategorised') as name,
+              COALESCE(c.icon, '❓') as icon,
+              ${sqlExpenses('t')} as total,
+              COUNT(t.id) as "txnCount"
+       FROM transactions t
+       LEFT JOIN categories c ON t.category_id = c.id
+       WHERE t.user_id = ? AND t.flow_type IN ('expense', 'interest_fee', 'refund')
+         AND t.date >= ? AND t.date <= ? ${scopeSql}
+       GROUP BY c.id, c.name, c.icon
+       ORDER BY ${UNCAT_LAST} ASC, total DESC`,
+      userId, start, end, ...scopeIds,
+    ) as any[];
+
+    const incomeRows = await db.all(
+      `SELECT c.id as "categoryId",
+              COALESCE(c.name, 'Uncategorised') as name,
+              COALESCE(c.icon, '❓') as icon,
+              COALESCE(SUM(t.amount), 0) as total,
+              COUNT(t.id) as "txnCount"
+       FROM transactions t
+       LEFT JOIN categories c ON t.category_id = c.id
+       WHERE t.user_id = ? AND t.flow_type = 'income'
+         AND t.date >= ? AND t.date <= ? ${scopeSql}
+       GROUP BY c.id, c.name, c.icon
+       ORDER BY ${UNCAT_LAST} ASC, total DESC`,
+      userId, start, end, ...scopeIds,
+    ) as any[];
+
+    // Internal moves, by category and direction.
+    const moveRows = await db.all(
+      `SELECT COALESCE(c.name, 'Unlabelled') as name,
+              COALESCE(c.icon, '🔄') as icon,
+              CASE WHEN t.amount > 0 THEN 'in' ELSE 'out' END as direction,
+              COALESCE(SUM(ABS(t.amount)), 0) as total,
+              COUNT(t.id) as "txnCount"
+       FROM transactions t
+       LEFT JOIN categories c ON t.category_id = c.id
+       WHERE t.user_id = ? AND t.flow_type IN ('transfer', 'debt_payment')
+         AND t.date >= ? AND t.date <= ? ${scopeSql}
+       GROUP BY c.name, c.icon, CASE WHEN t.amount > 0 THEN 'in' ELSE 'out' END
+       ORDER BY total DESC`,
+      userId, start, end, ...scopeIds,
+    ) as any[];
+
+    // ---- per-category monthly averages (complete months only) -----------
+    const avgByCategory = new Map<string, number>();
+    if (showMonthlyAvg) {
+      const avgRows = await db.all(
+        `SELECT c.id as "categoryId", ${sqlExpenses('t')} as total
+         FROM transactions t
+         LEFT JOIN categories c ON t.category_id = c.id
+         WHERE t.user_id = ? AND t.flow_type IN ('expense', 'interest_fee', 'refund')
+           AND substr(t.date, 1, 7) IN (${cmPlaceholders}) ${scopeSql}
+         GROUP BY c.id`,
+        userId, ...completeMonths, ...scopeIds,
+      ) as any[];
+      for (const r of avgRows) {
+        avgByCategory.set(r.categoryId ?? '__none__', round(r.total) / completeMonths.length);
+      }
+      const avgIncomeRows = await db.all(
+        `SELECT c.id as "categoryId", COALESCE(SUM(t.amount), 0) as total
+         FROM transactions t
+         LEFT JOIN categories c ON t.category_id = c.id
+         WHERE t.user_id = ? AND t.flow_type = 'income'
+           AND substr(t.date, 1, 7) IN (${cmPlaceholders}) ${scopeSql}
+         GROUP BY c.id`,
+        userId, ...completeMonths, ...scopeIds,
+      ) as any[];
+      for (const r of avgIncomeRows) {
+        avgByCategory.set('inc:' + (r.categoryId ?? '__none__'), round(r.total) / completeMonths.length);
+      }
+    }
+
+    // ---- prior-period per-category totals -------------------------------
+    const priorByCategory = new Map<string, number>();
+    if (priorFullyCovered) {
+      const priorExpense = await db.all(
+        `SELECT c.id as "categoryId", ${sqlExpenses('t')} as total
+         FROM transactions t
+         LEFT JOIN categories c ON t.category_id = c.id
+         WHERE t.user_id = ? AND t.flow_type IN ('expense', 'interest_fee', 'refund')
+           AND t.date >= ? AND t.date <= ? ${scopeSql}
+         GROUP BY c.id`,
+        userId, priorStart, priorEnd, ...scopeIds,
+      ) as any[];
+      for (const r of priorExpense) priorByCategory.set(r.categoryId ?? '__none__', round(r.total));
+      const priorIncome = await db.all(
+        `SELECT c.id as "categoryId", COALESCE(SUM(t.amount), 0) as total
+         FROM transactions t
+         LEFT JOIN categories c ON t.category_id = c.id
+         WHERE t.user_id = ? AND t.flow_type = 'income'
+           AND t.date >= ? AND t.date <= ? ${scopeSql}
+         GROUP BY c.id`,
+        userId, priorStart, priorEnd, ...scopeIds,
+      ) as any[];
+      for (const r of priorIncome) priorByCategory.set('inc:' + (r.categoryId ?? '__none__'), round(r.total));
+    }
+
+    // ---- budgets (single calendar month only) ---------------------------
+    // A monthly budget cannot be meaningfully multiplied across a quarter —
+    // rollover makes that arithmetic wrong — so the column only appears when
+    // the period IS one whole calendar month.
+    const isWholeMonth =
+      start.slice(0, 7) === end.slice(0, 7) &&
+      start.endsWith('-01') &&
+      end === monthEndIso(start.slice(0, 7));
+    const budgetByCategory = new Map<string, number>();
+    if (isWholeMonth) {
+      const budgetRows = await db.all(
+        `SELECT category_id as "categoryId", amount FROM budgets WHERE user_id = ? AND month = ?`,
+        userId, start,
+      ) as any[];
+      for (const b of budgetRows) budgetByCategory.set(b.categoryId, round(b.amount));
+    }
+
+    const decorate = (rows: any[], band: 'income' | 'expense') => {
+      const bandTotal = band === 'income' ? income : expenses;
+      const prefix = band === 'income' ? 'inc:' : '';
+      return rows.map((r) => {
+        const key = prefix + (r.categoryId ?? '__none__');
+        const total = round(r.total);
+        const prior = priorByCategory.has(key) ? priorByCategory.get(key)! : null;
+        return {
+          categoryId: r.categoryId,
+          name: r.name,
+          icon: r.icon,
+          total,
+          txnCount: Number(r.txnCount) || 0,
+          pctOfBand: bandTotal !== 0 ? Math.round((total / bandTotal) * 1000) / 10 : 0,
+          monthlyAvg: showMonthlyAvg ? round(avgByCategory.get(key) ?? 0) : null,
+          priorTotal: prior,
+          change: prior === null ? null : round(total - prior),
+          budget: budgetByCategory.has(r.categoryId) ? budgetByCategory.get(r.categoryId)! : null,
+        };
+      });
+    };
+
+    const expenseCategories = decorate(expenseRows, 'expense');
+    const incomeCategories = decorate(incomeRows, 'income');
+
+    // Reconciliation tripwire: the rows MUST sum to the headline. If they ever
+    // stop doing so the two came from different definitions, which is the exact
+    // class of bug this report exists to make impossible.
+    const expenseCheck = round(expenseCategories.reduce((s, r) => s + r.total, 0));
+    const incomeCheck = round(incomeCategories.reduce((s, r) => s + r.total, 0));
+    if (Math.abs(expenseCheck - expenses) > 0.01 || Math.abs(incomeCheck - income) > 0.01) {
+      console.error(
+        `Statement reconciliation failed for user ${userId}: ` +
+        `expenses ${expenses} vs rows ${expenseCheck}; income ${income} vs rows ${incomeCheck}`,
+      );
+    }
+
+    // ---- section 2: every transaction -----------------------------------
+    const transactions = (await db.all(
+      `SELECT t.id, t.date, t.name, t.notes, t.amount, t.flow_type as "flowType",
+              t.is_pending as "isPending", t.category_id as "categoryId",
+              COALESCE(c.name, 'Uncategorised') as "categoryName",
+              a.name as "accountName"
+       FROM transactions t
+       LEFT JOIN categories c ON t.category_id = c.id
+       JOIN accounts a ON t.account_id = a.id
+       WHERE t.user_id = ? AND t.date >= ? AND t.date <= ? ${scopeSql}
+       ORDER BY t.date ASC, t.created_at ASC, t.id ASC`,
+      userId, start, end, ...scopeIds,
+    ) as any[]).map((t) => ({ ...t, amount: round(t.amount), isPending: !!t.isPending }));
+
+    const dataNotes = await getFlowDataNotes(db, userId);
+
+    res.json({
+      period: { start, end, label: label || `${start} to ${end}` },
+      scope: { allAccounts, accountNames: scopeNames, accountIds: scopeIds },
+      coverage: {
+        completeMonths,
+        partialMonths,
+        completeMonthCount: completeMonths.length,
+        showMonthlyAvg,
+      },
+      prior: priorFullyCovered ? { start: priorStart, end: priorEnd } : null,
+      showBudgets: isWholeMonth,
+      totals: {
+        income,
+        expenses,
+        net: round(income - expenses),
+        refunds: round(totals.refunds),
+        movedIn: round(totals.movedIn),
+        movedOut: round(totals.movedOut),
+        debtPayments: round(totals.debtPayments),
+        rowCount: Number(totals.rowCount) || 0,
+      },
+      incomeCategories,
+      expenseCategories,
+      moves: moveRows.map((r) => ({
+        name: r.name, icon: r.icon, direction: r.direction,
+        total: round(r.total), txnCount: Number(r.txnCount) || 0,
+      })),
+      transactions,
+      data_notes: dataNotes,
+    });
+  } catch (error) {
+    console.error('Statement report error:', error);
+    res.status(500).json({ error: 'Failed to generate statement' });
+  }
+});
 
 export default router;

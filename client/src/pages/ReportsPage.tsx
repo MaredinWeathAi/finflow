@@ -10,6 +10,7 @@ import {
 } from 'recharts'
 import { cn, formatCurrency } from '@/lib/utils'
 import { PageHeader } from '@/components/shared/PageHeader'
+import { StatementLauncher } from '@/components/reports/StatementLauncher'
 import { api } from '@/lib/api'
 import type { CashFlowData } from '@/types'
 import { toast } from 'sonner'
@@ -153,6 +154,8 @@ export function ReportsPage() {
       <div className="print:hidden">
         <PageHeader title="Reports" description="Financial reports and analytics" />
       </div>
+
+      <StatementLauncher />
 
       {/* Tab + Month Nav */}
       <div className="flex items-center justify-between mb-6 print:hidden">

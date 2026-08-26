@@ -5,6 +5,7 @@ import { useAuthStore } from '@/stores/authStore'
 import { onAuthEvent } from '@/lib/api'
 import { ForcePasswordChange } from '@/components/auth/ForcePasswordChange'
 import { AppLayout } from '@/components/layout/AppLayout'
+import { StatementPrintPage } from '@/pages/StatementPrintPage'
 import { LoginPage } from '@/pages/LoginPage'
 import { ForgotPasswordPage } from '@/pages/ForgotPasswordPage'
 import { DashboardPage } from '@/pages/DashboardPage'
@@ -96,6 +97,12 @@ export default function App() {
       />
       <Routes>
         <Route path="/login" element={<LoginPage />} />
+        {/* Printable statement: deliberately outside AppLayout — it is a
+            document, not a screen, so it gets no sidebar and no dark theme. */}
+        <Route
+          path="/reports/print"
+          element={<ProtectedRoute><StatementPrintPage /></ProtectedRoute>}
+        />
         <Route path="/forgot-password" element={<ForgotPasswordPage />} />
         <Route
           element={
