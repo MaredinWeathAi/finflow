@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../db/database.js';
+
 import {
   ensureFlowClassification,
   reclassifyTransactionFlow,
@@ -9,6 +10,40 @@ import {
 } from '../engine/flow.js';
 
 const router = Router();
+
+/**
+ * Reduce a bank descriptor to the merchant underneath it.
+ *
+ * Two rows are "the same transaction" to a person when they are the same payee,
+ * even though the bank appends a different date, confirmation number, store
+ * number and reference on every single one:
+ *
+ *   "PUBLIX SUPER M 08/24 PURCHASE PALMETTO BAY FL"
+ *   "PUBLIX SUPER M 07/11 PURCHASE PALMETTO BAY FL"   -> same stem
+ *
+ * Strips the noise banks add — confirmation and reference ids, ACH metadata,
+ * dates, long digit runs, and the boilerplate words that appear on every card
+ * line — then keeps what is left. Matching on this rather than on the raw name
+ * is what makes "apply to all the others like this" mean what people expect.
+ */
+function merchantStem(rawName: string): string {
+  let s = String(rawName || '').toLowerCase();
+  // P2P payments carry a free-text memo that differs every time
+  // ("Zelle payment to MAURO GALLO for Keian - Super Copa"). The payee is the
+  // merchant; the memo is not. Scoped to P2P lines so an ordinary descriptor
+  // containing the word "for" is left alone.
+  if (/\b(?:zelle|venmo|cash app|paypal)\b/.test(s)) {
+    s = s.replace(/\bfor\b.*$/, ' ');
+  }
+  s = s.replace(/conf(irmation)?#\s*\S+/g, ' ');
+  s = s.replace(/\b(?:id|indn|co id|trn|seq|ref|ppd|web|tel|arc|des):\S*/g, ' ');
+  s = s.replace(/\b\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\b/g, ' ');
+  s = s.replace(/\b[a-z]*\d[a-z\d]{4,}\b/g, ' ');   // mixed alphanumeric ids
+  s = s.replace(/\b\d{3,}\b/g, ' ');                 // long digit runs
+  s = s.replace(/\b(purchase|payment|pos|debit|card|recurring|checkcard|des)\b/g, ' ');
+  s = s.replace(/[^a-z0-9&' ]+/g, ' ');
+  return s.replace(/\s+/g, ' ').trim();
+}
 
 // GET / - list transactions with filtering, sorting, pagination
 router.get('/', async (req: Request, res: Response) => {
@@ -261,6 +296,10 @@ router.put('/:id', async (req: Request, res: Response) => {
     // Amount/account/name/date/category edits can all change what this row IS.
     await reclassifyTransactionFlow(db, req.user!.id, id);
 
+    // Propagation to matching merchants deliberately does NOT happen here.
+    // The UI asks first and then calls POST /recategorize, so applying it on
+    // every PUT as well would either double-apply or silently overrule the
+    // answer the user just gave.
     const transaction = await db.get(`SELECT t.*, c.name as category_name, c.icon as category_icon, c.color as category_color, a.name as account_name
          FROM transactions t
          LEFT JOIN categories c ON t.category_id = c.id
@@ -516,34 +555,68 @@ router.post('/recategorize', async (req: Request, res: Response) => {
     // Update the target transaction
     await db.run('UPDATE transactions SET category_id = ?, updated_at = ? WHERE id = ?', categoryId, now, transactionId);
 
-    // If propagate is true, update all similar transactions (same name pattern)
-    if (propagate !== false) {
-      // Find similar transactions by name (case-insensitive)
-      const normalizedName = transaction.name.toLowerCase().trim();
+    const touchedIds: string[] = [transactionId];
+    let ruleCreated = false;
 
-      // Update all transactions with the same name (case-insensitive) that have a different category
-      const result = await db.run(`UPDATE transactions SET category_id = ?, updated_at = ?
-         WHERE user_id = ? AND LOWER(TRIM(name)) = ? AND id != ? AND (category_id IS NULL OR category_id != ?)`, categoryId, now, userId, normalizedName, transactionId, categoryId);
+    // "All the others like this one" has to mean the same MERCHANT, not the
+    // same string. This used to match on LOWER(TRIM(name)) = the full
+    // descriptor — and two rows from the same shop are never byte-identical,
+    // because the bank stamps a date and a reference on each one:
+    //
+    //   PUBLIX SUPER M 08/24 PURCHASE PALMETTO BAY FL
+    //   PUBLIX SUPER M 07/11 PURCHASE PALMETTO BAY FL
+    //
+    // So the exact-match found nothing, updated the single row, and reported
+    // "Updated 1 transaction". Matching on the merchant stem is what makes the
+    // feature do what it says.
+    const stem = merchantStem(transaction.name);
 
-      updatedCount += result.changes;
+    if (propagate !== false && stem.length >= 6) {
+      const candidates = await db.all(
+        `SELECT id, name FROM transactions
+          WHERE user_id = ? AND id != ? AND (category_id IS NULL OR category_id != ?)`,
+        userId, transactionId, categoryId,
+      ) as Array<{ id: string; name: string }>;
 
-      // Learn the rule for future categorization — always create/update a rule
-      let ruleCreated = false;
+      const siblings = candidates.filter((c) => merchantStem(c.name) === stem);
+
+      if (siblings.length > 0) {
+        await db.tx(async (t) => {
+          for (const s of siblings) {
+            await t.run(
+              'UPDATE transactions SET category_id = ?, updated_at = ? WHERE id = ? AND user_id = ?',
+              categoryId, now, s.id, userId,
+            );
+          }
+        });
+        updatedCount += siblings.length;
+        touchedIds.push(...siblings.map((s) => s.id));
+      }
+
+      // The rule is stored against the stem too, and as a literal 'substring'
+      // match. Storing the full descriptor meant the rule required that exact
+      // date and reference to recur, so it never fired on a future import
+      // either — the edit was lost twice over.
       try {
-        // Check if a rule with this exact pattern already exists (any category)
-        const existingRule = await db.get(`SELECT id, category_id FROM category_rules WHERE user_id = ? AND LOWER(pattern) = ?`, userId, normalizedName) as any;
+        const existingRule = await db.get(
+          `SELECT id, category_id FROM category_rules WHERE user_id = ? AND LOWER(pattern) = ?`,
+          userId, stem,
+        ) as any;
 
         if (existingRule) {
-          // Update existing rule to point to the new category
           if (existingRule.category_id !== categoryId) {
-            await db.run(`UPDATE category_rules SET category_id = ?, created_at = ? WHERE id = ?`, categoryId, now, existingRule.id);
+            await db.run(
+              `UPDATE category_rules SET category_id = ?, match_type = 'substring', created_at = ? WHERE id = ?`,
+              categoryId, now, existingRule.id,
+            );
             ruleCreated = true;
           }
-          // If same category already, rule exists — no action needed
         } else {
-          // Create new rule
-          await db.run(`INSERT INTO category_rules (id, user_id, pattern, category_id, match_type, created_at)
-             VALUES (?, ?, ?, ?, 'contains', ?)`, crypto.randomUUID(), userId, normalizedName, categoryId, now);
+          await db.run(
+            `INSERT INTO category_rules (id, user_id, pattern, category_id, match_type, created_at)
+             VALUES (?, ?, ?, ?, 'substring', ?)`,
+            crypto.randomUUID(), userId, stem, categoryId, now,
+          );
           ruleCreated = true;
         }
       } catch (e) {
@@ -551,19 +624,16 @@ router.post('/recategorize', async (req: Request, res: Response) => {
       }
     }
 
-    // Re-classify flows for everything sharing this name (category signals
-    // like Transfer / CC PMT feed the flow classifier).
-    const touched = await db.all(
-      `SELECT id FROM transactions WHERE user_id = ? AND LOWER(TRIM(name)) = ?`,
-      userId, transaction.name.toLowerCase().trim(),
-    ) as any[];
-    await reclassifyTransactionsFlow(db, userId, touched.map((t: any) => t.id));
+    // Re-classify every row we touched: a category like Transfer, CC PMT or
+    // Mortgage feeds straight into what the flow classifier decides this is.
+    await reclassifyTransactionsFlow(db, userId, touchedIds);
 
     res.json({
       message: `Updated ${updatedCount} transaction${updatedCount !== 1 ? 's' : ''}`,
       updated: updatedCount,
       categoryName: category.name,
-      ruleCreated: propagate !== false,
+      ruleCreated,
+      matchedOn: stem.length >= 6 ? stem : null,
     });
   } catch (error) {
     console.error('Recategorize error:', error);
