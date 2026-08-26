@@ -35,6 +35,7 @@ interface Funding {
   }
   deficitMonths: number
   monthCount: number
+  circulation: { in: number; out: number; txnCount: number }
   avgMonthlyNet: number | null
   completeMonthCount: number
   data_notes: { note?: string | null } | null
@@ -141,6 +142,10 @@ export function FundingPrintPage() {
       </table>
 
       <h2>Where the money came from</h2>
+      <p className="note">
+        Money that only moved between your own accounts is excluded — its outgoing leg is already
+        in the Expenses column's sibling, so counting the arrival as funding would double it.
+      </p>
       <table className="data compact">
         <thead><tr><th>Source</th><th className="num">Total</th><th className="num">Share</th></tr></thead>
         <tbody>
@@ -162,6 +167,15 @@ export function FundingPrintPage() {
           </tr>
         </tbody>
       </table>
+
+      {data.circulation.txnCount > 0 && (
+        <p className="note">
+          Separately, {formatCurrency(data.circulation.in)} moved in and{' '}
+          {formatCurrency(data.circulation.out)} moved out across{' '}
+          {data.circulation.txnCount.toLocaleString()} transfers between accounts you already own.
+          That is circulation, not funding, and it is deliberately not in the table above.
+        </p>
+      )}
 
       {totals.net < 0 && (
         <p className="memo">

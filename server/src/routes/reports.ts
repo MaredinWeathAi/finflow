@@ -1101,6 +1101,14 @@ router.get('/funding', async (req: Request, res: Response) => {
     // Inflows that are NOT income, by what kind of thing they are. The category
     // is the evidence: Asset Sale, Loan Proceeds and Asset Transfer are the
     // three owner-confirmed ways money arrives without being earned.
+    //
+    // PAIRED transfers are excluded. A transfer with a counterpart leg inside
+    // the same account set is money sliding around inside the perimeter — the
+    // savings sweep, moving cash from one checking account to the other — and
+    // its outflow leg is already sitting in the same report. Counting the
+    // inflow as "funding" made $190,096 of internal circulation look like
+    // $190,096 of rescue money, which is exactly the kind of number that makes
+    // a deficit look survivable when it isn't.
     const fundRows = await db.all(
       `SELECT substr(t.date, 1, 7) as month,
               LOWER(COALESCE(c.name, 'other')) as kind,
@@ -1109,10 +1117,23 @@ router.get('/funding', async (req: Request, res: Response) => {
        FROM transactions t
        LEFT JOIN categories c ON t.category_id = c.id
        WHERE t.user_id = ? AND t.flow_type = 'transfer' AND t.amount > 0
+         AND t.transfer_pair_id IS NULL
          AND t.date >= ? AND t.date <= ? ${scopeSql}
        GROUP BY substr(t.date, 1, 7), LOWER(COALESCE(c.name, 'other'))`,
       userId, start, end, ...scopeIds,
     ) as any[];
+
+    // Reported as a memo line, not as funding: how much simply circulated.
+    const circulation = await db.get(
+      `SELECT COALESCE(SUM(CASE WHEN t.amount > 0 THEN t.amount ELSE 0 END), 0) as "in",
+              COALESCE(SUM(CASE WHEN t.amount < 0 THEN -t.amount ELSE 0 END), 0) as "out",
+              COUNT(*) as "txnCount"
+       FROM transactions t
+       WHERE t.user_id = ? AND t.flow_type = 'transfer'
+         AND t.transfer_pair_id IS NOT NULL
+         AND t.date >= ? AND t.date <= ? ${scopeSql}`,
+      userId, start, end, ...scopeIds,
+    ) as any;
 
     const FUNDING_LABELS: Record<string, string> = {
       'asset sale': 'Asset sales',
@@ -1180,6 +1201,11 @@ router.get('/funding', async (req: Request, res: Response) => {
       totals,
       deficitMonths,
       monthCount: months.length,
+      circulation: {
+        in: r2(circulation.in),
+        out: r2(circulation.out),
+        txnCount: Number(circulation.txnCount) || 0,
+      },
       // Burn rate over COMPLETE months only — a part-month drags the average
       // toward zero and makes a deficit look smaller than it is.
       avgMonthlyNet: completeCount > 0
