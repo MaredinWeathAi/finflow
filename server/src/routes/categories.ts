@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../db/database.js';
+import { DEFAULT_CATEGORIES } from '../engine/default-categories.js';
 
 const router = Router();
 
@@ -24,11 +25,15 @@ router.post('/ensure-defaults', async (req: Request, res: Response) => {
     const existingCount = (await db.get('SELECT COUNT(*) as count FROM categories WHERE user_id = ?', userId) as any).count;
 
     if (existingCount > 0) {
-      // Even if categories exist, ensure system categories (CC PMT) are present
-      const systemCategories = [
-        { name: 'CC PMT', icon: '💳', color: '#64748B', isIncome: false },
-        { name: 'Home Improvements', icon: '🏡', color: '#D97706', isIncome: false },
-      ];
+      // Backfill EVERY missing default, not a hand-picked pair.
+      //
+      // This used to top up only CC PMT and Home Improvements, so a category
+      // the flow classifier depends on could be permanently absent for an
+      // existing user. Interactive Brokers withdrawals resolved to "Asset
+      // Transfer", the category did not exist, the lookup returned null, and
+      // the rows fell through to Other Income — booking $39,200 of moving your
+      // own money between your own accounts as earnings.
+      const systemCategories = DEFAULT_CATEGORIES;
       let added = 0;
       for (const cat of systemCategories) {
         const exists = await db.get('SELECT id FROM categories WHERE user_id = ? AND LOWER(name) = ?', userId, cat.name.toLowerCase()) as any;
@@ -45,32 +50,7 @@ router.post('/ensure-defaults', async (req: Request, res: Response) => {
       return;
     }
 
-    const defaults = [
-      { name: 'Housing', icon: '🏠', color: '#6366F1', isIncome: false },
-      { name: 'Groceries', icon: '🛒', color: '#22C55E', isIncome: false },
-      { name: 'Food & Dining', icon: '🍔', color: '#F59E0B', isIncome: false },
-      { name: 'Transportation', icon: '🚗', color: '#3B82F6', isIncome: false },
-      { name: 'Shopping', icon: '🛍️', color: '#8B5CF6', isIncome: false },
-      { name: 'Utilities', icon: '💡', color: '#14B8A6', isIncome: false },
-      { name: 'Healthcare', icon: '🏥', color: '#EF4444', isIncome: false },
-      { name: 'Entertainment', icon: '🎬', color: '#EC4899', isIncome: false },
-      { name: 'Subscriptions', icon: '📱', color: '#F97316', isIncome: false },
-      { name: 'Insurance', icon: '🛡️', color: '#06B6D4', isIncome: false },
-      { name: 'Health & Fitness', icon: '💪', color: '#10B981', isIncome: false },
-      { name: 'Personal Care', icon: '💇', color: '#D946EF', isIncome: false },
-      { name: 'Education', icon: '📚', color: '#0EA5E9', isIncome: false },
-      { name: 'Travel', icon: '✈️', color: '#F472B6', isIncome: false },
-      { name: 'Pets', icon: '🐾', color: '#A78BFA', isIncome: false },
-      { name: 'Gifts & Donations', icon: '🎁', color: '#FB923C', isIncome: false },
-      { name: 'Investments', icon: '📊', color: '#818CF8', isIncome: false },
-      { name: 'Home Improvements', icon: '🏡', color: '#D97706', isIncome: false },
-      { name: 'Salary', icon: '💵', color: '#10B981', isIncome: true },
-      { name: 'Freelance', icon: '💼', color: '#22D3EE', isIncome: true },
-      { name: 'Other Income', icon: '💰', color: '#34D399', isIncome: true },
-      { name: 'CC PMT', icon: '💳', color: '#64748B', isIncome: false },
-      { name: 'Transfer', icon: '🔄', color: '#94A3B8', isIncome: false },
-      { name: 'Uncategorized', icon: '❓', color: '#64748B', isIncome: false },
-    ];
+    const defaults = DEFAULT_CATEGORIES;
 
     const insertSql =
       `INSERT INTO categories (id, user_id, name, icon, color, is_income, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?)`;
