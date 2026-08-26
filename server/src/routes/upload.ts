@@ -208,10 +208,19 @@ async function autoCreateAccount(userId: string, statementMeta: any): Promise<st
 }
 
 // Ensure user has default categories
+/**
+ * Make sure every default category exists for this user.
+ *
+ * This used to bail out the moment the user had ANY category, which meant new
+ * defaults only ever reached brand-new accounts. Anyone who had already
+ * imported a statement silently never got them — and a categorisation rule
+ * pointing at a category that does not exist resolves to nothing, so the rule
+ * looks broken when it is the seeding that is.
+ *
+ * Now it fills in what is missing and leaves everything else, including the
+ * user's own categories, untouched.
+ */
 async function ensureDefaultCategories(userId: string): Promise<void> {
-  const existingCount = (await db.get('SELECT COUNT(*) as count FROM categories WHERE user_id = ?', userId) as any).count;
-  if (existingCount > 0) return;
-
   const defaults = [
     { name: 'Housing', icon: '🏠', color: '#6366F1', isIncome: false },
     { name: 'Groceries', icon: '🛒', color: '#22C55E', isIncome: false },
@@ -254,14 +263,25 @@ async function ensureDefaultCategories(userId: string): Promise<void> {
     { name: 'Uncategorized', icon: '❓', color: '#64748B', isIncome: false },
   ];
 
+  const existing = await db.all(
+    'SELECT LOWER(name) as "lowerName" FROM categories WHERE user_id = ?',
+    userId,
+  ) as Array<{ lowerName: string }>;
+  const have = new Set(existing.map((c) => c.lowerName));
+
+  const missing = defaults.filter((c) => !have.has(c.name.toLowerCase()));
+  if (missing.length === 0) return;
+
   const INSERT_CATEGORY_SQL =
     `INSERT INTO categories (id, user_id, name, icon, color, is_income, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?)`;
 
-  for (const [idx, cat] of defaults.entries()) {
-    await db.run(INSERT_CATEGORY_SQL, crypto.randomUUID(), userId, cat.name, cat.icon, cat.color, cat.isIncome ? 1 : 0, idx);
+  let sortOrder = have.size;
+  for (const cat of missing) {
+    await db.run(INSERT_CATEGORY_SQL, crypto.randomUUID(), userId, cat.name, cat.icon, cat.color, cat.isIncome ? 1 : 0, sortOrder);
+    sortOrder += 1;
   }
 
-  console.log(`Created ${defaults.length} default categories for user ${userId}`);
+  console.log(`Added ${missing.length} missing default categories for user ${userId}`);
 }
 
 // POST / - upload files, parse, detect duplicates, auto-create accounts
