@@ -313,10 +313,20 @@ async function matchUserRules(lowerName: string, userId: string, amount?: number
         case 'ends_with':
           nameMatch = lowerName.endsWith(pattern);
           break;
+        case 'substring':
+          // Literal: the pattern appears verbatim, in order.
+          nameMatch = lowerName.includes(pattern);
+          break;
         case 'contains':
         default:
-          // Word-based matching: ALL words in the pattern must appear in the name
-          // e.g. "zelle received" matches "Zelle Payment Received"
+          // Word-based: ALL words in the pattern appear SOMEWHERE in the name,
+          // in any order. Deliberately loose so "zelle received" matches
+          // "Zelle Payment Received" — but it is much broader than it reads,
+          // and a rule written as a phrase will match text that never contains
+          // that phrase. A rule for "transfer marcelo zinn" also matched
+          // "INTERACTIVE BROK DES:ACH TRANSFER ... INDN:MARCELO ZINN", because
+          // all three words are present. Use 'substring' or 'starts_with' when
+          // the phrase itself is what identifies the payee.
           const words = pattern.split(/\s+/).filter(Boolean);
           nameMatch = words.length > 0 && words.every((w: string) => lowerName.includes(w));
           break;

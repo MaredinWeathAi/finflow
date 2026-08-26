@@ -322,10 +322,17 @@ function matchesRule(txn: any, rule: any): boolean {
       case 'ends_with':
         nameMatch = txnName.endsWith(pattern);
         break;
+      case 'substring':
+        // Literal: the pattern appears verbatim, in order.
+        nameMatch = txnName.includes(pattern);
+        break;
       case 'contains':
       default:
-        // Word-based matching: ALL words in the pattern must appear in the name
-        // e.g. "zelle received" matches "Zelle Payment Received"
+        // Word-based: ALL words appear somewhere in the name, in any order.
+        // Much broader than it reads — see the note in categorizer.ts. Kept
+        // byte-identical to the classifier's version on purpose: a rule that
+        // previews one way here and applies another way there would be worse
+        // than either behaviour on its own.
         const words = pattern.split(/\s+/).filter(Boolean);
         nameMatch = words.length > 0 && words.every((w: string) => txnName.includes(w));
         break;
