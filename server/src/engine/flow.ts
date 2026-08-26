@@ -254,9 +254,18 @@ const DEBT_CATEGORIES = new Set(['cc pmt', 'loan payment', 'mortgage']);
  * An explicit category is evidence about meaning; a payment rail in the
  * descriptor is not.
  */
+/**
+ * Categories that move value around rather than consume it. A negative row in
+ * one of these is money going INTO something the household owns (a brokerage
+ * deposit, a loan repayment of principal) — not spending.
+ */
+const NON_CONSUMPTION_CATEGORIES = new Set([
+  'transfer', 'asset transfer', 'asset sale', 'loan proceeds', 'refund',
+]);
+
 function isSpendingCategory(cat: string): boolean {
   if (!cat) return false;
-  return cat !== 'transfer' && !DEBT_CATEGORIES.has(cat) && !cat.includes('income');
+  return !NON_CONSUMPTION_CATEGORIES.has(cat) && !DEBT_CATEGORIES.has(cat) && !cat.includes('income');
 }
 
 /** Lenders whose inbound money is borrowing, not earnings. */
@@ -293,6 +302,9 @@ export function classifyUnpaired(t: TxnRow, ctx: ClassifyContext): FlowType {
     // A real spending category outranks the descriptor. Without this, anything
     // paid over Zelle or Venmo stays a transfer no matter how it is labelled.
     if (isSpendingCategory(cat)) return 'expense';
+    // Money going INTO an asset the household owns (a brokerage deposit is the
+    // mirror of the withdrawals ruled an asset transfer) is not consumption.
+    if (NON_CONSUMPTION_CATEGORIES.has(cat)) return 'transfer';
     // Transfer shape is tested BEFORE the fee library: "OVERDRAFT PROTECTION TO
     // CHK 4301" is an internal sweep, and \boverdraft\b in the fee patterns
     // used to book 88 of those as bank charges.
@@ -314,8 +326,6 @@ export function classifyUnpaired(t: TxnRow, ctx: ClassifyContext): FlowType {
       return 'debt_payment'; // a positive amount on a credit/loan account is never income
     }
     if (REFUND_RE.test(name)) return 'refund';
-    // Borrowing raises the balance and the debt by the same amount. A $43,000
-    // loan drawdown counted as income hides a deficit outright.
     // Three ways money arrives that are NOT earnings, all owner-confirmed:
     //   loan proceeds  — borrowing raises the balance and the debt equally
     //                    (the $43,000 Prosper drawdown that funded the roof)
@@ -342,17 +352,48 @@ export function classifyUnpaired(t: TxnRow, ctx: ClassifyContext): FlowType {
 function pairEligible(neg: TxnRow, pos: TxnRow, ctx: ClassifyContext): boolean {
   const negName = String(neg.name || '').toLowerCase();
   const posName = String(pos.name || '').toLowerCase();
-  if (TRANSFER_RE.test(negName) || TRANSFER_RE.test(posName)) return true;
-  if (CARD_PAYMENT_RE.test(negName) || CARD_PAYMENT_RE.test(posName)) return true;
   const negCat = categoryOf(neg, ctx);
   const posCat = categoryOf(pos, ctx);
-  if (negCat === 'transfer' || posCat === 'transfer' || negCat === 'cc pmt' || posCat === 'cc pmt') return true;
-  // A positive landing on a liability account paired against an outflow from a
-  // depository account is a card/loan payment even without a name signal —
-  // but not when the positive leg looks like a merchant refund.
-  if (isLiabilityType(ctx.accountTypes.get(pos.account_id)) && !REFUND_RE.test(posName) && !hasComparablePriorDebit(pos, ctx)) {
+
+  // VETO 1 — never pair away a row that names real consumption.
+  //
+  // A category is evidence about what the money was FOR, and it outranks a
+  // coincidence of sign, amount and date. Without this veto the matcher ate
+  // three $25 account maintenance fees (paired against the $25 monthly savings
+  // sweep), a $300 ISTOURS purchase and two $200 soccer-club charges already
+  // categorised as Kids — $800 of real spending that vanished from the expense
+  // column while the books still balanced, which is why nobody noticed.
+  if (isSpendingCategory(negCat) || isSpendingCategory(posCat)) return false;
+
+  // VETO 2 — a refund is a reversal of a purchase, not the far leg of a move.
+  if (REFUND_RE.test(posName) || posCat === 'refund') return false;
+
+  // Both legs must look like a transfer. This used to accept a signal on
+  // EITHER leg, so any outflow at all could be captured by an unrelated
+  // transfer-shaped inflow of the same amount. On 09/03/2025 a -$11,500
+  // transfer was eligible to pair with the +$11,500 Zelle that is Marcelo's
+  // salary; it escaped only because the genuine matching leg happened to be
+  // one day closer, and ties break on random UUID order.
+  const negLooksLikeTransfer =
+    TRANSFER_RE.test(negName) || CARD_PAYMENT_RE.test(negName) ||
+    negCat === 'transfer' || DEBT_CATEGORIES.has(negCat);
+  const posLooksLikeTransfer =
+    TRANSFER_RE.test(posName) || CARD_PAYMENT_RE.test(posName) ||
+    posCat === 'transfer' || posCat === 'asset transfer' || posCat === 'loan proceeds';
+
+  if (negLooksLikeTransfer && posLooksLikeTransfer) return true;
+
+  // The one case that needs no name signal at all, because the destination
+  // proves it: money arriving ON a liability account from a depository one is
+  // a card or loan payment. Still subject to both vetoes above.
+  if (
+    negLooksLikeTransfer &&
+    isLiabilityType(ctx.accountTypes.get(pos.account_id)) &&
+    !hasComparablePriorDebit(pos, ctx)
+  ) {
     return true;
   }
+
   return false;
 }
 

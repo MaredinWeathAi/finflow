@@ -31,6 +31,7 @@
  */
 import type { Sql } from '../db/sql.js';
 import { recurringCoreName } from './recurring-detector.js';
+import { frequencyStep } from './frequency.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -328,18 +329,19 @@ interface ManualRecurringRow {
   next_date: string;
 }
 
-const FREQ_MONTHS: Record<string, number> = {
-  monthly: 1, quarterly: 3, 'semi-annual': 6, semiannual: 6, annual: 12, yearly: 12,
-};
-const FREQ_DAYS: Record<string, number> = { daily: 1, weekly: 7, biweekly: 14 };
-
-/** Roll a manual recurring item's next_date forward until strictly after `afterIso`. */
+/**
+ * Roll a manual recurring item's next_date forward until strictly after
+ * `afterIso`. Frequency handling comes from engine/frequency.ts — the two
+ * tables that used to live here between them didn't know 'annually' or
+ * 'semi-monthly', so those items stopped projecting the moment their due date
+ * passed and silently dropped out of committed bills.
+ */
 export function rollForward(nextDate: string, frequency: string, afterIso: string): string | null {
-  const freq = (frequency || '').toLowerCase();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(nextDate)) return null;
   let current = nextDate;
-  const months = FREQ_MONTHS[freq];
-  const dayStep = FREQ_DAYS[freq];
+  const step = frequencyStep(frequency);
+  const months = step?.months;
+  const dayStep = step?.days;
   if (!months && !dayStep) return current > afterIso ? current : null;
   for (let i = 0; i < 400 && current <= afterIso; i++) {
     if (dayStep) {

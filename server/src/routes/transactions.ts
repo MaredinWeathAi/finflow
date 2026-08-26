@@ -265,21 +265,31 @@ router.put('/:id', async (req: Request, res: Response) => {
     } = req.body;
     const now = new Date().toISOString();
 
-    // If amount changed, adjust account balance
-    if (amount !== undefined && amount !== existing.amount) {
-      const diff = amount - existing.amount;
-      const targetAccountId = account_id || existing.account_id;
-      await db.run('UPDATE accounts SET balance = balance + ?, updated_at = ? WHERE id = ?', diff, now, targetAccountId);
+    // Rebalance the affected accounts.
+    //
+    // There is exactly one correct rule: back the OLD amount out of the OLD
+    // account, then apply the NEW amount to the NEW account. Stating it that
+    // way handles all four cases (nothing changed, amount changed, account
+    // changed, both changed) with no special-casing.
+    //
+    // The previous version applied `diff` to the new account and then, when
+    // both amount and account changed, subtracted the NEW amount from the NEW
+    // account and added the OLD amount to the OLD one — the reverse of correct
+    // on both sides. Editing a -$100 on account A to -$50 on account B left A
+    // $200 out and B $150 out, permanently, with nothing to correct it later.
+    const oldAccountId = existing.account_id;
+    const newAccountId = account_id || existing.account_id;
+    const oldAmount = existing.amount;
+    const newAmount = amount !== undefined ? amount : existing.amount;
 
-      // If account changed, also adjust old account
-      if (account_id && account_id !== existing.account_id) {
-        await db.run('UPDATE accounts SET balance = balance - ?, updated_at = ? WHERE id = ?', amount, now, account_id);
-        await db.run('UPDATE accounts SET balance = balance + ?, updated_at = ? WHERE id = ?', existing.amount, now, existing.account_id);
+    if (oldAccountId === newAccountId) {
+      const delta = newAmount - oldAmount;
+      if (delta !== 0) {
+        await db.run('UPDATE accounts SET balance = balance + ?, updated_at = ? WHERE id = ?', delta, now, newAccountId);
       }
-    } else if (account_id && account_id !== existing.account_id) {
-      // Account changed but amount same - move the amount
-      await db.run('UPDATE accounts SET balance = balance - ?, updated_at = ? WHERE id = ?', existing.amount, now, existing.account_id);
-      await db.run('UPDATE accounts SET balance = balance + ?, updated_at = ? WHERE id = ?', existing.amount, now, account_id);
+    } else {
+      await db.run('UPDATE accounts SET balance = balance - ?, updated_at = ? WHERE id = ?', oldAmount, now, oldAccountId);
+      await db.run('UPDATE accounts SET balance = balance + ?, updated_at = ? WHERE id = ?', newAmount, now, newAccountId);
     }
 
     await db.run(`UPDATE transactions SET

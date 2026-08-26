@@ -205,27 +205,13 @@ export function RecurringPage() {
   const [showModal, setShowModal] = useState(false)
   const [editExpense, setEditExpense] = useState<RecurringExpense | null>(null)
   const [isDetecting, setIsDetecting] = useState(false)
-  const [hasAutoDetected, setHasAutoDetected] = useState(false)
 
-  // Auto-detect recurring expenses on page load (once per session)
-  useEffect(() => {
-    if (!isLoading && !hasAutoDetected) {
-      setHasAutoDetected(true)
-      // Run detection silently in background
-      api.post<{
-        detected: number; created: number; createdNames: string[];
-        deactivated: number; deactivatedNames: string[]
-      }>('/recurring/detect').then(result => {
-        if (result.created > 0) {
-          toast.success(`Auto-detected ${result.created} new recurring expense${result.created > 1 ? 's' : ''}: ${result.createdNames.join(', ')}`)
-          refetch()
-        }
-        if (result.deactivated > 0) {
-          refetch()
-        }
-      }).catch(() => { /* silent */ })
-    }
-  }, [isLoading, hasAutoDetected])
+  // Detection is NOT run automatically any more.
+  //
+  // It used to fire on every page load and write rows to the database without
+  // asking — and because the success handler read a field the API doesn't
+  // send, it then reported failure, so the writes happened invisibly. Detection
+  // now only runs when you press Auto-Detect.
 
   const activeCount = recurring.filter(r => r.is_active).length
   const priceIncreases = recurring.filter(r => {
@@ -237,11 +223,13 @@ export function RecurringPage() {
     setIsDetecting(true)
     try {
       const result = await api.post<{
-        detected: number; created: number; createdNames: string[];
+        detected: number; created: number
+        createdItems: { name: string; amount: number; frequency: string; confidence: number }[]
         deactivated: number; deactivatedNames: string[]
       }>('/recurring/detect')
       if (result.created > 0) {
-        toast.success(`Found ${result.created} new recurring expense${result.created > 1 ? 's' : ''}: ${result.createdNames.join(', ')}`)
+        const names = (result.createdItems || []).map(i => i.name).join(', ')
+        toast.success(`Found ${result.created} new recurring expense${result.created > 1 ? 's' : ''}: ${names}`)
       } else {
         toast.info('No new recurring patterns detected')
       }

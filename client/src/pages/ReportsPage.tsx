@@ -14,19 +14,30 @@ import { api } from '@/lib/api'
 import type { CashFlowData } from '@/types'
 import { toast } from 'sonner'
 
+/**
+ * Mirrors the actual /reports/summary payload.
+ *
+ * This interface used to declare snake_case names (`savings_rate`,
+ * `expense_categories`, `daily_spending`, ...) that the API has never sent. The
+ * first render therefore hit `undefined.toFixed()` and, with no error boundary
+ * in the app, React unmounted the whole root — the Reports tab took the entire
+ * application to a white screen on every single load.
+ */
 interface ReportSummary {
+  month: string
   income: number
   expenses: number
   net: number
-  savings_rate: number
-  expense_categories: { name: string; icon: string; color: string; amount: number; count: number }[]
-  income_categories: { name: string; icon: string; color: string; amount: number; count: number }[]
-  accounts: { name: string; type: string; balance: number }[]
-  goals: { name: string; target: number; current: number; color: string; icon: string }[]
-  budgets: { name: string; limit: number; spent: number; color: string; icon: string }[]
-  daily_spending: { date: string; amount: number }[]
-  monthly_trend: { month: string; income: number; expenses: number; net: number }[]
-  top_merchants: { name: string; amount: number; count: number }[]
+  savingsRate: number
+  transactionCount: number
+  expenseCategories: { id: string; name: string; icon: string; color: string; total: number; count: number }[]
+  incomeCategories: { id: string; name: string; icon: string; color: string; total: number; count: number }[]
+  accounts: { id: string; name: string; type: string; institution?: string; balance: number; icon?: string }[]
+  goals: { id: string; name: string; target_amount: number; current_amount: number; color?: string; icon?: string }[]
+  budgets: { id: string; amount: number; spent: number; category_name?: string; category_icon?: string; category_color?: string }[]
+  dailySpending: { date: string; income: number; expenses: number }[]
+  monthlyTrend: { month: string; income: number; expenses: number; net: number }[]
+  topMerchants: { name: string; total: number; count: number }[]
 }
 
 const CHART_COLORS = [
@@ -189,27 +200,27 @@ export function ReportsPage() {
             <StatCard icon={TrendingUp} label="Income" value={formatCurrency(summary.income)} color="bg-emerald-500/10 text-emerald-500" />
             <StatCard icon={TrendingDown} label="Expenses" value={formatCurrency(summary.expenses)} color="bg-red-500/10 text-red-500" />
             <StatCard icon={DollarSign} label="Net Savings" value={formatCurrency(summary.net)} color="bg-blue-500/10 text-blue-500" />
-            <StatCard icon={Percent} label="Savings Rate" value={`${summary.savings_rate.toFixed(1)}%`} color="bg-purple-500/10 text-purple-500" />
+            <StatCard icon={Percent} label="Savings Rate" value={`${summary.savingsRate.toFixed(1)}%`} color="bg-purple-500/10 text-purple-500" />
           </div>
 
           {/* Charts Row: Expense Pie + Daily Spending */}
           <div className="grid lg:grid-cols-2 gap-4">
             {/* Expense Breakdown Pie */}
-            {summary.expense_categories.length > 0 && (
+            {summary.expenseCategories.length > 0 && (
               <div className="bg-card rounded-2xl border border-border/50 p-5 print:bg-white print:border-gray-200">
                 <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-4 print:text-gray-500">Expense Breakdown</p>
                 <div style={{ height: 260 }}>
                   <ResponsiveContainer>
                     <PieChart>
                       <Pie
-                        data={summary.expense_categories.slice(0, 10)}
+                        data={summary.expenseCategories.slice(0, 10)}
                         cx="50%" cy="50%"
                         innerRadius={55} outerRadius={100}
                         paddingAngle={2}
-                        dataKey="amount"
+                        dataKey="total"
                         nameKey="name"
                       >
-                        {summary.expense_categories.slice(0, 10).map((cat, i) => (
+                        {summary.expenseCategories.slice(0, 10).map((cat, i) => (
                           <Cell key={i} fill={cat.color || CHART_COLORS[i % CHART_COLORS.length]} />
                         ))}
                       </Pie>
@@ -218,11 +229,11 @@ export function ReportsPage() {
                   </ResponsiveContainer>
                 </div>
                 <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 mt-3">
-                  {summary.expense_categories.slice(0, 8).map((cat, i) => (
+                  {summary.expenseCategories.slice(0, 8).map((cat, i) => (
                     <div key={i} className="flex items-center gap-2 text-xs">
                       <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: cat.color || CHART_COLORS[i % CHART_COLORS.length] }} />
                       <span className="truncate">{cat.icon} {cat.name}</span>
-                      <span className="ml-auto tabular-nums font-medium">{formatCurrency(cat.amount)}</span>
+                      <span className="ml-auto tabular-nums font-medium">{formatCurrency(cat.total)}</span>
                     </div>
                   ))}
                 </div>
@@ -230,12 +241,12 @@ export function ReportsPage() {
             )}
 
             {/* Daily Spending */}
-            {summary.daily_spending.length > 0 && (
+            {summary.dailySpending.length > 0 && (
               <div className="bg-card rounded-2xl border border-border/50 p-5 print:bg-white print:border-gray-200">
                 <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-4 print:text-gray-500">Daily Spending</p>
                 <div style={{ height: 260 }}>
                   <ResponsiveContainer>
-                    <AreaChart data={summary.daily_spending}>
+                    <AreaChart data={summary.dailySpending}>
                       <defs>
                         <linearGradient id="spendGrad" x1="0" y1="0" x2="0" y2="1">
                           <stop offset="5%" stopColor="#EF4444" stopOpacity={0.3} />
@@ -246,25 +257,25 @@ export function ReportsPage() {
                       <XAxis dataKey="date" tick={{ fill: 'hsl(240 5% 55%)', fontSize: 10 }} tickFormatter={(d) => d.split('-')[2]} />
                       <YAxis tick={{ fill: 'hsl(240 5% 55%)', fontSize: 10 }} />
                       <Tooltip content={<CustomTooltip />} />
-                      <Area type="monotone" dataKey="amount" stroke="#EF4444" fill="url(#spendGrad)" name="Spending" strokeWidth={2} />
+                      <Area type="monotone" dataKey="expenses" stroke="#EF4444" fill="url(#spendGrad)" name="Spending" strokeWidth={2} />
                     </AreaChart>
                   </ResponsiveContainer>
                 </div>
                 <div className="flex items-center justify-between mt-2 text-xs text-muted-foreground">
-                  <span>Daily avg: {formatCurrency(summary.daily_spending.reduce((s, d) => s + d.amount, 0) / Math.max(summary.daily_spending.length, 1))}</span>
-                  <span>Peak: {formatCurrency(Math.max(...summary.daily_spending.map(d => d.amount)))}</span>
+                  <span>Daily avg: {formatCurrency(summary.dailySpending.reduce((s, d) => s + d.expenses, 0) / Math.max(summary.dailySpending.length, 1))}</span>
+                  <span>Peak: {formatCurrency(Math.max(...summary.dailySpending.map(d => d.expenses)))}</span>
                 </div>
               </div>
             )}
           </div>
 
           {/* 6-Month Trend */}
-          {summary.monthly_trend.length > 0 && (
+          {summary.monthlyTrend.length > 0 && (
             <div className="bg-card rounded-2xl border border-border/50 p-5 print:bg-white print:border-gray-200">
               <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-4 print:text-gray-500">6-Month Trend</p>
               <div style={{ height: 280 }}>
                 <ResponsiveContainer>
-                  <BarChart data={summary.monthly_trend}>
+                  <BarChart data={summary.monthlyTrend}>
                     <CartesianGrid strokeDasharray="3 3" stroke="hsl(240 10% 18%)" />
                     <XAxis dataKey="month" tick={{ fill: 'hsl(240 5% 55%)', fontSize: 12 }} />
                     <YAxis tick={{ fill: 'hsl(240 5% 55%)', fontSize: 12 }} />
@@ -279,12 +290,12 @@ export function ReportsPage() {
           )}
 
           {/* Net Savings Trend Line */}
-          {summary.monthly_trend.length > 1 && (
+          {summary.monthlyTrend.length > 1 && (
             <div className="bg-card rounded-2xl border border-border/50 p-5 print:bg-white print:border-gray-200">
               <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-4 print:text-gray-500">Net Savings Trend</p>
               <div style={{ height: 200 }}>
                 <ResponsiveContainer>
-                  <LineChart data={summary.monthly_trend}>
+                  <LineChart data={summary.monthlyTrend}>
                     <CartesianGrid strokeDasharray="3 3" stroke="hsl(240 10% 18%)" />
                     <XAxis dataKey="month" tick={{ fill: 'hsl(240 5% 55%)', fontSize: 12 }} />
                     <YAxis tick={{ fill: 'hsl(240 5% 55%)', fontSize: 12 }} />
@@ -299,22 +310,22 @@ export function ReportsPage() {
           {/* Top Merchants + Budget Performance */}
           <div className="grid lg:grid-cols-2 gap-4">
             {/* Top Merchants */}
-            {summary.top_merchants.length > 0 && (
+            {summary.topMerchants.length > 0 && (
               <div className="bg-card rounded-2xl border border-border/50 p-5 print:bg-white print:border-gray-200">
                 <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-4 print:text-gray-500">Top Merchants</p>
                 <div className="space-y-2.5">
-                  {summary.top_merchants.slice(0, 8).map((m, i) => (
+                  {summary.topMerchants.slice(0, 8).map((m, i) => (
                     <div key={i} className="flex items-center gap-3">
                       <span className="text-xs font-medium text-muted-foreground w-5">{i + 1}</span>
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center justify-between">
                           <span className="text-sm font-medium truncate">{m.name}</span>
-                          <span className="text-sm font-semibold tabular-nums">{formatCurrency(m.amount)}</span>
+                          <span className="text-sm font-semibold tabular-nums">{formatCurrency(m.total)}</span>
                         </div>
                         <div className="h-1 rounded-full bg-muted mt-1 overflow-hidden">
                           <div
                             className="h-full rounded-full bg-primary"
-                            style={{ width: `${(m.amount / (summary.top_merchants[0]?.amount || 1)) * 100}%` }}
+                            style={{ width: `${(m.total / (summary.topMerchants[0]?.total || 1)) * 100}%` }}
                           />
                         </div>
                       </div>
@@ -331,14 +342,14 @@ export function ReportsPage() {
                 <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-4 print:text-gray-500">Budget Performance</p>
                 <div className="space-y-3">
                   {summary.budgets.map((b, i) => {
-                    const pct = b.limit > 0 ? (b.spent / b.limit) * 100 : 0
+                    const pct = b.amount > 0 ? (b.spent / b.amount) * 100 : 0
                     const isOver = pct > 100
                     return (
                       <div key={i}>
                         <div className="flex items-center justify-between mb-1">
-                          <span className="text-sm font-medium">{b.icon} {b.name}</span>
+                          <span className="text-sm font-medium">{b.category_icon} {b.category_name}</span>
                           <span className={cn('text-xs font-semibold tabular-nums', isOver ? 'text-red-500' : 'text-muted-foreground')}>
-                            {formatCurrency(b.spent)} / {formatCurrency(b.limit)}
+                            {formatCurrency(b.spent)} / {formatCurrency(b.amount)}
                           </span>
                         </div>
                         <div className="h-2 rounded-full bg-muted overflow-hidden">
@@ -392,7 +403,7 @@ export function ReportsPage() {
                 <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-4 print:text-gray-500">Goals Progress</p>
                 <div className="space-y-3">
                   {summary.goals.map((g, i) => {
-                    const pct = g.target > 0 ? (g.current / g.target) * 100 : 0
+                    const pct = g.target_amount > 0 ? (g.current_amount / g.target_amount) * 100 : 0
                     return (
                       <div key={i}>
                         <div className="flex items-center justify-between mb-1">
@@ -403,8 +414,8 @@ export function ReportsPage() {
                           <div className="h-full rounded-full" style={{ backgroundColor: g.color || '#6366F1', width: `${Math.min(pct, 100)}%` }} />
                         </div>
                         <div className="flex justify-between mt-0.5">
-                          <span className="text-[10px] text-muted-foreground tabular-nums">{formatCurrency(g.current)}</span>
-                          <span className="text-[10px] text-muted-foreground tabular-nums">{formatCurrency(g.target)}</span>
+                          <span className="text-[10px] text-muted-foreground tabular-nums">{formatCurrency(g.current_amount)}</span>
+                          <span className="text-[10px] text-muted-foreground tabular-nums">{formatCurrency(g.target_amount)}</span>
                         </div>
                       </div>
                     )

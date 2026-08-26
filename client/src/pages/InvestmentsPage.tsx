@@ -28,8 +28,10 @@ const typeLabels: Record<string, string> = {
 
 function HoldingRow({ investment }: { investment: Investment }) {
   const value = investment.current_value || investment.shares * investment.current_price
-  const gainLoss = investment.gain_loss ?? (value - investment.cost_basis)
-  const gainPct = investment.gain_loss_percent ?? (investment.cost_basis > 0 ? (gainLoss / investment.cost_basis) * 100 : 0)
+  // cost_basis is per share; the position's cost is shares * cost_basis.
+  const totalCost = investment.total_cost ?? investment.shares * investment.cost_basis
+  const gainLoss = investment.gain_loss ?? (value - totalCost)
+  const gainPct = investment.gain_loss_percent ?? (totalCost > 0 ? (gainLoss / totalCost) * 100 : 0)
   const isPositive = gainLoss >= 0
 
   return (
@@ -51,7 +53,7 @@ function HoldingRow({ investment }: { investment: Investment }) {
       </div>
       <div className="text-right shrink-0 w-24">
         <p className="text-sm font-bold tabular-nums">{formatCurrency(value)}</p>
-        <p className="text-xs text-muted-foreground">Cost: {formatCurrency(investment.cost_basis)}</p>
+        <p className="text-xs text-muted-foreground">Cost: {formatCurrency(totalCost)}</p>
       </div>
       <div className={cn('text-right shrink-0 w-24 flex items-center gap-1 justify-end', isPositive ? 'text-success' : 'text-danger')}>
         {isPositive ? <TrendingUp className="w-3.5 h-3.5" /> : <TrendingDown className="w-3.5 h-3.5" />}

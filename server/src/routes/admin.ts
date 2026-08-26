@@ -203,9 +203,9 @@ router.get('/dashboard', async (req: Request, res: Response) => {
       JOIN budgets b ON b.user_id = u.id AND b.month = ?
       WHERE u.advisor_id = ? AND u.role = 'client'
       AND (
-        SELECT COALESCE(SUM(ABS(t.amount)), 0)
+        SELECT ${sqlExpenses('t')}
         FROM transactions t
-        WHERE t.user_id = u.id AND t.category_id = b.category_id AND t.flow_type IN ('expense', 'interest_fee')
+        WHERE t.user_id = u.id AND t.category_id = b.category_id AND t.flow_type IN ('expense', 'interest_fee', 'refund')
         AND t.date >= ? AND t.date < date(?, '+1 month')
       ) > b.amount * 0.9
     `, currentMonth, advisorId, currentMonth, currentMonth) as any[];
@@ -264,10 +264,10 @@ router.get('/clients/:clientId/report', async (req: Request, res: Response) => {
       const expenses = (await db.get(`SELECT ${sqlExpenses()} as total FROM transactions WHERE user_id = ? AND ${SQL_SPEND_FLOWS} AND date >= ? AND date <= ?`, clientId, monthStart, monthEnd) as any).total;
 
       const categoryBreakdown = await db.all(`
-        SELECT c.name, c.icon, c.color, ${sqlExpenses('t')} as total, COUNT(t.id) as count
-        FROM transactions t JOIN categories c ON t.category_id = c.id
+        SELECT COALESCE(c.name, 'Uncategorised') as name, COALESCE(c.icon, '❓') as icon, COALESCE(c.color, '#94A3B8') as color, ${sqlExpenses('t')} as total, COUNT(t.id) as count
+        FROM transactions t LEFT JOIN categories c ON t.category_id = c.id
         WHERE t.user_id = ? AND t.flow_type IN ('expense', 'interest_fee', 'refund') AND t.date >= ? AND t.date <= ?
-        GROUP BY c.id ORDER BY total DESC
+        GROUP BY c.id, c.name, c.icon, c.color ORDER BY total DESC
       `, clientId, monthStart, monthEnd) as any[];
 
       const accounts = await db.all('SELECT name, type, balance FROM accounts WHERE user_id = ?', clientId) as any[];

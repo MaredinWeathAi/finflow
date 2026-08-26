@@ -1,6 +1,8 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../db/database.js';
 import { detectRecurring, recurringCoreName } from '../engine/recurring-detector.js';
+import { frequencyStep } from '../engine/frequency.js';
+import { ensureFlowClassification } from '../engine/flow.js';
 
 const router = Router();
 
@@ -162,17 +164,29 @@ router.delete('/:id', async (req: Request, res: Response) => {
 router.post('/detect', async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
+    await ensureFlowClassification(userId);
     const now = new Date();
     const twelveMonthsAgo = new Date(now);
     twelveMonthsAgo.setMonth(twelveMonthsAgo.getMonth() - 12);
     const cutoff = twelveMonthsAgo.toISOString().slice(0, 10);
 
-    // 1. Fetch transactions from the last 12 months
+    // 1. Fetch the last 12 months of REAL SPENDING.
+    //
+    // This query used to have no flow filter and no sign filter, and the
+    // detector takes ABS() of the amount — so a recurring deposit was
+    // indistinguishable from a recurring bill. Against Marcelo's real data it
+    // produced 20 "recurring expenses" totalling ~$55,525/month, including
+    // BOTH legs of his own savings sweep and $6,100 of inbound Interactive
+    // Brokers transfers fitted as a weekly expense worth $26,413/month.
+    //
+    // Only outflows the app already classified as spending can be a bill.
     const transactions = await db.all(`SELECT t.name, t.amount, t.date, t.category_id,
                 c.name as category_name, c.icon as category_icon, c.color as category_color
          FROM transactions t
          LEFT JOIN categories c ON t.category_id = c.id
          WHERE t.user_id = ? AND t.date >= ?
+           AND t.flow_type IN ('expense', 'interest_fee')
+           AND t.amount < 0
          ORDER BY t.date ASC`, userId, cutoff) as Array<{
         name: string; amount: number; date: string; category_id: string | null;
         category_name: string | null; category_icon: string | null; category_color: string | null;
@@ -261,28 +275,11 @@ router.post('/detect', async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 function estimateNextDate(lastDate: string, frequency: string): string {
   const d = new Date(lastDate);
-  switch (frequency) {
-    case 'weekly':
-      d.setDate(d.getDate() + 7);
-      break;
-    case 'biweekly':
-      d.setDate(d.getDate() + 14);
-      break;
-    case 'monthly':
-      d.setMonth(d.getMonth() + 1);
-      break;
-    case 'quarterly':
-      d.setMonth(d.getMonth() + 3);
-      break;
-    case 'semi-annual':
-      d.setMonth(d.getMonth() + 6);
-      break;
-    case 'annual':
-      d.setFullYear(d.getFullYear() + 1);
-      break;
-    default:
-      d.setMonth(d.getMonth() + 1); // fallback to monthly
-  }
+  // Shared frequency table — this switch had no 'semi-monthly' case, so a bill
+  // paid twice a month was given a next date a full month out.
+  const step = frequencyStep(frequency) ?? { months: 1 };
+  if (step.days) d.setDate(d.getDate() + step.days);
+  else d.setMonth(d.getMonth() + step.months!);
   return d.toISOString().slice(0, 10);
 }
 

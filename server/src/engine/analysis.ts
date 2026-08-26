@@ -289,10 +289,15 @@ async function avgMonthlyOverCompleteMonths(
 // ---------------------------------------------------------------------------
 
 async function analyzeExpenses(userId: string, completeMonthList: string[]): Promise<{ merchants: MerchantSummary[]; total: number; avgMonthly: number }> {
-  const expenses = await db.all(`SELECT t.name, t.amount, t.date, c.name as category_name
+  // Refund rows are included so the all-time total nets them out, matching
+  // sqlExpenses(). This query used to select only expense+interest_fee, so the
+  // headline `totalExpenses` came out GROSS ($341,107 against the contract's
+  // $336,591) and disagreed with the avgMonthlyExpenses figure computed a few
+  // lines below it, inside the same response.
+  const expenses = await db.all(`SELECT t.name, t.amount, t.date, t.flow_type, c.name as category_name
      FROM transactions t
      LEFT JOIN categories c ON t.category_id = c.id
-     WHERE t.user_id = ? AND t.flow_type IN ('expense', 'interest_fee')
+     WHERE t.user_id = ? AND ${SQL_SPEND_FLOWS.replace('flow_type', 't.flow_type')}
      ORDER BY t.date DESC`, userId) as any[];
 
   const grouped = new Map<string, { amounts: number[]; dates: string[]; category?: string }>();
@@ -302,7 +307,10 @@ async function analyzeExpenses(userId: string, completeMonthList: string[]): Pro
     if (!grouped.has(key)) {
       grouped.set(key, { amounts: [], dates: [], category: txn.category_name });
     }
-    grouped.get(key)!.amounts.push(Math.abs(txn.amount));
+    // A refund reduces what was spent at that merchant; everything else adds.
+    grouped.get(key)!.amounts.push(
+      txn.flow_type === 'refund' ? -Math.abs(txn.amount) : Math.abs(txn.amount),
+    );
     grouped.get(key)!.dates.push(txn.date);
   }
 

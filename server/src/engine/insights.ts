@@ -6,7 +6,8 @@ import {
   SQL_SPEND_FLOWS,
   sqlExpenses,
 } from './flow.js';
-import { getCoverage, completeMonthsFromCoverage } from './coverage.js';
+import { getCoverage, completeMonthsFromCoverage, monthEndIso } from './coverage.js';
+import { monthlyAmount } from './frequency.js';
 
 // All income/expense aggregates in this file use the persisted flow_type
 // (see engine/flow.ts) — never the sign of the amount. Transfers, credit-card
@@ -391,26 +392,33 @@ async function analyzeBudgetAdherence(userId: string): Promise<Insight[]> {
 
 async function analyzeSpendingTrends(userId: string): Promise<Insight[]> {
   const insights: Insight[] = [];
-  const curStart = getCurrentMonthStart();
-  const curEnd = getCurrentMonthEnd();
-  const prevStart = getPreviousMonthStart();
-  const prevEnd = getPreviousMonthEnd();
+  // Compare the last two COMPLETE months. This used to compare the calendar
+  // current month against the previous one, so on the 5th of a month almost
+  // every category satisfied "spending dropped by half" and the page filled up
+  // with false "Great improvement" insights, while genuine increases stayed
+  // suppressed until month end.
+  const complete = completeMonthsFromCoverage(await getCoverage(userId), 2); // newest first
+  if (complete.length < 2) return insights;
+  const curStart = `${complete[0]}-01`;
+  const curEnd = monthEndIso(complete[0]);
+  const prevStart = `${complete[1]}-01`;
+  const prevEnd = monthEndIso(complete[1]);
 
   // Get spending by category for current and previous month
   const currentSpending = await db.all(`SELECT c.name as category_name, c.id as category_id,
-            COALESCE(SUM(ABS(t.amount)), 0) as spent
+            ${sqlExpenses('t')} as spent
      FROM categories c
      LEFT JOIN transactions t ON t.category_id = c.id
-       AND t.user_id = ? AND t.flow_type IN ('expense', 'interest_fee')
+       AND t.user_id = ? AND t.flow_type IN ('expense', 'interest_fee', 'refund')
        AND t.date >= ? AND t.date <= ?
      WHERE c.user_id = ? AND c.is_income = 0
      GROUP BY c.id, c.name`, userId, curStart, curEnd, userId) as any[];
 
   const previousSpending = await db.all(`SELECT c.id as category_id,
-            COALESCE(SUM(ABS(t.amount)), 0) as spent
+            ${sqlExpenses('t')} as spent
      FROM categories c
      LEFT JOIN transactions t ON t.category_id = c.id
-       AND t.user_id = ? AND t.flow_type IN ('expense', 'interest_fee')
+       AND t.user_id = ? AND t.flow_type IN ('expense', 'interest_fee', 'refund')
        AND t.date >= ? AND t.date <= ?
      WHERE c.user_id = ? AND c.is_income = 0
      GROUP BY c.id`, userId, prevStart, prevEnd, userId) as any[];
@@ -468,12 +476,9 @@ async function analyzeRecurringCosts(userId: string): Promise<Insight[]> {
   const priceIncreases: { name: string; oldPrice: number; newPrice: number; pctChange: number }[] = [];
 
   for (const r of recurring) {
-    // Normalize to monthly
-    let monthly = r.amount;
-    if (r.frequency === 'weekly') monthly = r.amount * 4.33;
-    else if (r.frequency === 'biweekly') monthly = r.amount * 2.17;
-    else if (r.frequency === 'quarterly') monthly = r.amount / 3;
-    else if (r.frequency === 'yearly' || r.frequency === 'annual') monthly = r.amount / 12;
+    // Shared frequency table (engine/frequency.ts). An unrecognised frequency
+    // contributes 0 rather than its full amount every month.
+    const monthly = monthlyAmount(r.amount, r.frequency) ?? 0;
 
     monthlyTotal += monthly;
 
@@ -798,13 +803,17 @@ async function detectUncategorized(userId: string): Promise<Insight[]> {
 // 9. Generate Recommendations
 // ---------------------------------------------------------------------------
 
-/** Normalize a recurring amount to a monthly figure. */
+/**
+ * Normalize a recurring amount to a monthly figure.
+ *
+ * Delegates to engine/frequency.ts. This used to have its own table that knew
+ * 'yearly' and 'annual' but not 'annually', 'semi-monthly' or 'semi-annual' —
+ * and returned the raw amount for anything it didn't recognise, so an annual
+ * bill counted twelve times. Unknown frequencies now contribute 0 rather than
+ * a wrong number.
+ */
 function toMonthlyAmount(amount: number, frequency: string): number {
-  if (frequency === 'weekly') return amount * 4.33;
-  if (frequency === 'biweekly') return amount * 2.17;
-  if (frequency === 'quarterly') return amount / 3;
-  if (frequency === 'yearly' || frequency === 'annual') return amount / 12;
-  return amount;
+  return monthlyAmount(amount, frequency) ?? 0;
 }
 
 /**
@@ -985,12 +994,7 @@ async function computeMonthlyVsAnnualView(userId: string): Promise<{ monthlyView
 
   let monthRecurring = 0;
   for (const r of recurringItems) {
-    let monthly = r.amount;
-    if (r.frequency === 'weekly') monthly = r.amount * 4.33;
-    else if (r.frequency === 'biweekly') monthly = r.amount * 2.17;
-    else if (r.frequency === 'quarterly') monthly = r.amount / 3;
-    else if (r.frequency === 'yearly' || r.frequency === 'annual') monthly = r.amount / 12;
-    monthRecurring += monthly;
+    monthRecurring += monthlyAmount(r.amount, r.frequency) ?? 0;
   }
 
   const monthNet = monthIncome - monthExpenses;
@@ -1001,7 +1005,11 @@ async function computeMonthlyVsAnnualView(userId: string): Promise<{ monthlyView
     totalExpenses: Math.round(monthExpenses * 100) / 100,
     totalRecurring: Math.round(monthRecurring * 100) / 100,
     netCashFlow: Math.round(monthNet * 100) / 100,
-    savingsRate: Math.round(monthSavingsRate * 10000) / 10000,
+    // A PERCENTAGE, matching /reports/summary and what the Insights card
+    // renders. This used to ship the raw fraction (-0.1983) into a card that
+    // formats it as `${value.toFixed(1)}%`, so a household overspending by 20%
+    // of its income read "-0.2%" — off by a factor of 100.
+    savingsRate: Math.round(monthSavingsRate * 100 * 100) / 100,
   };
 
   // --- Annual view (current calendar year) ---
@@ -1023,7 +1031,7 @@ async function computeMonthlyVsAnnualView(userId: string): Promise<{ monthlyView
     totalExpenses: Math.round(yearExpenses * 100) / 100,
     totalRecurring: Math.round(annualRecurring * 100) / 100,
     netCashFlow: Math.round(yearNet * 100) / 100,
-    savingsRate: Math.round(yearSavingsRate * 10000) / 10000,
+    savingsRate: Math.round(yearSavingsRate * 100 * 100) / 100,   // percentage, see above
   };
 
   return { monthlyView, annualView };

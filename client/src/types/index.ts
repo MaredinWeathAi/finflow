@@ -119,8 +119,11 @@ export interface Investment {
   cost_basis: number
   current_price: number
   last_updated: string
-  // computed
+  // computed by the server. cost_basis above is PER SHARE; total_cost is the
+  // whole position (shares * cost_basis). Mixing the two is what made the
+  // Investments header report a 3,367% return.
   current_value?: number
+  total_cost?: number
   gain_loss?: number
   gain_loss_percent?: number
 }

@@ -23,7 +23,11 @@ export function useInvestments() {
   }, [fetchInvestments])
 
   const totalValue = investments.reduce((sum, i) => sum + (i.current_value || i.shares * i.current_price), 0)
-  const totalCostBasis = investments.reduce((sum, i) => sum + i.cost_basis, 0)
+  // cost_basis is stored PER SHARE. Summing it directly treated each share
+  // price as a whole position cost, which reported the sample portfolio's
+  // return as +3,366.8% instead of +10.5% — and disagreed with the per-holding
+  // gain/loss figures rendered directly beneath the card.
+  const totalCostBasis = investments.reduce((sum, i) => sum + (i.total_cost ?? i.shares * i.cost_basis), 0)
   const totalGainLoss = totalValue - totalCostBasis
   const totalGainLossPercent = totalCostBasis > 0 ? (totalGainLoss / totalCostBasis) * 100 : 0
 

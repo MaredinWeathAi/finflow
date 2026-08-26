@@ -52,13 +52,13 @@ router.get('/monthly', async (req: Request, res: Response) => {
     const savingsRate = income > 0 ? Math.round(((income - expenses) / income) * 10000) / 100 : 0;
 
     // Top expense categories (refunds net against their category)
-    const topCategories = await db.all(`SELECT c.id, c.name, c.icon, c.color,
+    const topCategories = await db.all(`SELECT c.id, COALESCE(c.name, 'Uncategorised') as name, COALESCE(c.icon, '❓') as icon, COALESCE(c.color, '#94A3B8') as color,
                 ${sqlExpenses('t')} as total,
                 COUNT(t.id) as transaction_count
          FROM transactions t
-         JOIN categories c ON t.category_id = c.id
+         LEFT JOIN categories c ON t.category_id = c.id
          WHERE t.user_id = ? AND t.flow_type IN ('expense', 'interest_fee', 'refund') AND t.date >= ? AND t.date <= ?
-         GROUP BY c.id
+         GROUP BY c.id, c.name, c.icon, c.color
          ORDER BY total DESC
          LIMIT 10`, userId, monthStr, endDate);
 
@@ -152,13 +152,13 @@ router.get('/annual', async (req: Request, res: Response) => {
     const avgMonthlyExpenses = Math.round((completeExpenses / completeMonthCount) * 100) / 100;
 
     // Top categories for the year (refunds net against their category)
-    const topCategories = await db.all(`SELECT c.id, c.name, c.icon, c.color,
+    const topCategories = await db.all(`SELECT c.id, COALESCE(c.name, 'Uncategorised') as name, COALESCE(c.icon, '❓') as icon, COALESCE(c.color, '#94A3B8') as color,
                 ${sqlExpenses('t')} as total,
                 COUNT(t.id) as transaction_count
          FROM transactions t
-         JOIN categories c ON t.category_id = c.id
+         LEFT JOIN categories c ON t.category_id = c.id
          WHERE t.user_id = ? AND t.flow_type IN ('expense', 'interest_fee', 'refund') AND t.date >= ? AND t.date <= ?
-         GROUP BY c.id
+         GROUP BY c.id, c.name, c.icon, c.color
          ORDER BY total DESC
          LIMIT 10`, userId, startDate, endDate);
 
@@ -290,24 +290,24 @@ router.get('/summary', async (req: Request, res: Response) => {
 
     // Category breakdown (expenses; refunds net against their category)
     const expenseCategories = await db.all(`
-      SELECT c.id, c.name, c.icon, c.color,
+      SELECT c.id, COALESCE(c.name, 'Uncategorised') as name, COALESCE(c.icon, '❓') as icon, COALESCE(c.color, '#94A3B8') as color,
         ${sqlExpenses('t')} as total,
         COUNT(t.id) as count
       FROM transactions t
-      JOIN categories c ON t.category_id = c.id
+      LEFT JOIN categories c ON t.category_id = c.id
       WHERE t.user_id = ? AND t.flow_type IN ('expense', 'interest_fee', 'refund') AND t.date >= ? AND t.date <= ?
-      GROUP BY c.id ORDER BY total DESC
+      GROUP BY c.id, c.name, c.icon, c.color ORDER BY total DESC
     `, userId, monthStart, monthEnd) as any[];
 
     // Category breakdown (income)
     const incomeCategories = await db.all(`
-      SELECT c.id, c.name, c.icon, c.color,
+      SELECT c.id, COALESCE(c.name, 'Uncategorised') as name, COALESCE(c.icon, '❓') as icon, COALESCE(c.color, '#94A3B8') as color,
         COALESCE(SUM(t.amount), 0) as total,
         COUNT(t.id) as count
       FROM transactions t
-      JOIN categories c ON t.category_id = c.id
+      LEFT JOIN categories c ON t.category_id = c.id
       WHERE t.user_id = ? AND t.flow_type = 'income' AND t.date >= ? AND t.date <= ?
-      GROUP BY c.id ORDER BY total DESC
+      GROUP BY c.id, c.name, c.icon, c.color ORDER BY total DESC
     `, userId, monthStart, monthEnd) as any[];
 
     // Account balances
@@ -463,25 +463,25 @@ router.get('/dashboard-summary', async (req: Request, res: Response) => {
     const totalCash = cashAccounts.reduce((sum, acc) => sum + (acc.balance || 0), 0);
 
     // Top expense categories (refunds net against their category)
-    const topExpenses = await db.all(`SELECT c.id, c.name, c.icon, c.color,
+    const topExpenses = await db.all(`SELECT c.id, COALESCE(c.name, 'Uncategorised') as name, COALESCE(c.icon, '❓') as icon, COALESCE(c.color, '#94A3B8') as color,
               ${sqlExpenses('t')} as total,
               COUNT(t.id) as transaction_count
        FROM transactions t
-       JOIN categories c ON t.category_id = c.id
+       LEFT JOIN categories c ON t.category_id = c.id
        WHERE t.user_id = ? AND t.flow_type IN ('expense', 'interest_fee', 'refund') AND t.date >= ? AND t.date <= ?
-             AND c.is_income = 0
-       GROUP BY c.id
+             AND COALESCE(c.is_income, 0) = 0
+       GROUP BY c.id, c.name, c.icon, c.color
        ORDER BY CASE WHEN LOWER(c.name) = 'uncategorized' THEN 1 ELSE 0 END ASC, total DESC
        LIMIT 10`, userId, monthStart, monthEnd) as any[];
 
     // Top income categories (this month)
-    const topIncome = await db.all(`SELECT c.id, c.name, c.icon, c.color,
+    const topIncome = await db.all(`SELECT c.id, COALESCE(c.name, 'Uncategorised') as name, COALESCE(c.icon, '❓') as icon, COALESCE(c.color, '#94A3B8') as color,
               COALESCE(SUM(t.amount), 0) as total,
               COUNT(t.id) as transaction_count
        FROM transactions t
-       JOIN categories c ON t.category_id = c.id
+       LEFT JOIN categories c ON t.category_id = c.id
        WHERE t.user_id = ? AND t.flow_type = 'income' AND t.date >= ? AND t.date <= ?
-       GROUP BY c.id
+       GROUP BY c.id, c.name, c.icon, c.color
        ORDER BY total DESC
        LIMIT 10`, userId, monthStart, monthEnd) as any[];
 
@@ -572,25 +572,25 @@ router.get('/dashboard-summary', async (req: Request, res: Response) => {
     const lastMonthSavings = Math.round((lastMonthIncome - lastMonthExpenses) * 100) / 100;
 
     // Top 10 expense categories (complete months only; refunds net against their category)
-    const topExpenses6Mo = recentMonths.length === 0 ? [] : await db.all(`SELECT c.id, c.name, c.icon, c.color,
+    const topExpenses6Mo = recentMonths.length === 0 ? [] : await db.all(`SELECT c.id, COALESCE(c.name, 'Uncategorised') as name, COALESCE(c.icon, '❓') as icon, COALESCE(c.color, '#94A3B8') as color,
               ${sqlExpenses('t')} as total,
               COUNT(t.id) as transaction_count
        FROM transactions t
-       JOIN categories c ON t.category_id = c.id
+       LEFT JOIN categories c ON t.category_id = c.id
        WHERE t.user_id = ? AND t.flow_type IN ('expense', 'interest_fee', 'refund') AND substr(t.date, 1, 7) IN (${monthPlaceholders})
-             AND c.is_income = 0
-       GROUP BY c.id
+             AND COALESCE(c.is_income, 0) = 0
+       GROUP BY c.id, c.name, c.icon, c.color
        ORDER BY CASE WHEN LOWER(c.name) = 'uncategorized' THEN 1 ELSE 0 END ASC, total DESC
        LIMIT 10`, userId, ...recentMonths) as any[];
 
     // Top income categories (complete months only)
-    const topIncome6Mo = recentMonths.length === 0 ? [] : await db.all(`SELECT c.id, c.name, c.icon, c.color,
+    const topIncome6Mo = recentMonths.length === 0 ? [] : await db.all(`SELECT c.id, COALESCE(c.name, 'Uncategorised') as name, COALESCE(c.icon, '❓') as icon, COALESCE(c.color, '#94A3B8') as color,
               COALESCE(SUM(t.amount), 0) as total,
               COUNT(t.id) as transaction_count
        FROM transactions t
-       JOIN categories c ON t.category_id = c.id
+       LEFT JOIN categories c ON t.category_id = c.id
        WHERE t.user_id = ? AND t.flow_type = 'income' AND substr(t.date, 1, 7) IN (${monthPlaceholders})
-       GROUP BY c.id
+       GROUP BY c.id, c.name, c.icon, c.color
        ORDER BY total DESC
        LIMIT 10`, userId, ...recentMonths) as any[];
 

@@ -156,7 +156,15 @@ async function autoCreateAccount(userId: string, statementMeta: any): Promise<st
   const institution = statementMeta.institution || 'Unknown';
   const accountNickname = statementMeta.accountNickname || '';
   const accountName = accountNickname || `${institution} ${accountType.charAt(0).toUpperCase() + accountType.slice(1)}`;
-  const balance = statementMeta.endingBalance || 0;
+  // Seed the account at the statement's OPENING balance, not its closing one.
+  //
+  // Importing the statement's rows then walks the balance forward to the real
+  // closing figure. Seeding at the closing balance applied the period's net a
+  // second time: a statement opening $6,673.23 and closing $5,824.43 left the
+  // account at $4,975.63, and every later statement compounded the error.
+  // Falls back to the closing balance only when no opening balance was found,
+  // which is still wrong by one period but is the best available anchor.
+  const balance = statementMeta.beginningBalance ?? statementMeta.startingBalance ?? statementMeta.endingBalance ?? 0;
 
   // Extract last 4 digits from accountNumber or accountNickname
   let lastFour = '';
