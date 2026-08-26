@@ -377,7 +377,7 @@ router.post('/', upload.array('files', MAX_FILES), enforceTotalSize, async (req:
             (/^\d{4}-\d{2}-\d{2}$/.test(periodEnd) ? row.date > periodEnd : row.date > uploadCutoff);
 
           // Auto-categorize
-          const catResult = await categorizeItem(row.name, row.amount, userId);
+          const catResult = await categorizeItem(row.name, row.amount, userId, autoAccountId);
 
           // Detect transfer type
           const transferInfo = detectTransferType(row.name, row.amount);

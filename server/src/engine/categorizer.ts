@@ -258,12 +258,13 @@ const KEYWORD_CATEGORY_MAP: Record<string, string> = {
 export async function categorizeItem(
   name: string,
   amount: number,
-  userId: string
+  userId: string,
+  accountId?: string | null,
 ): Promise<CategorizationResult> {
   const lowerName = name.toLowerCase().trim();
 
   // 1. Check user's custom category_rules table (highest priority — user overrides)
-  const userRuleResult = await matchUserRules(lowerName, userId, amount);
+  const userRuleResult = await matchUserRules(lowerName, userId, amount, accountId);
   if (userRuleResult) {
     return userRuleResult;
   }
@@ -298,10 +299,15 @@ export async function loadUserRules(userId: string): Promise<any[]> {
        ORDER BY cr.priority DESC, cr.match_type ASC`, userId) as any[];
 }
 
-async function matchUserRules(lowerName: string, userId: string, amount?: number): Promise<CategorizationResult | null> {
+async function matchUserRules(
+  lowerName: string,
+  userId: string,
+  amount?: number,
+  accountId?: string | null,
+): Promise<CategorizationResult | null> {
   const rules = await loadUserRules(userId);
 
-  return matchRuleList(lowerName, rules, amount);
+  return matchRuleList(lowerName, rules, amount, accountId);
 }
 
 /**
@@ -312,7 +318,12 @@ async function matchUserRules(lowerName: string, userId: string, amount?: number
  * and the symptom would be a rule that behaves differently depending on which
  * screen triggered it.
  */
-export function matchRuleList(lowerName: string, rules: any[], amount?: number): CategorizationResult | null {
+export function matchRuleList(
+  lowerName: string,
+  rules: any[],
+  amount?: number,
+  accountId?: string | null,
+): CategorizationResult | null {
   for (const rule of rules) {
     const pattern = (rule.pattern || '').toLowerCase().trim();
 
@@ -348,6 +359,17 @@ export function matchRuleList(lowerName: string, rules: any[], amount?: number):
           break;
       }
       if (!nameMatch) continue;
+    }
+
+    // Account condition. The Rules screen offers an account picker and stores
+    // account_id, but nothing ever read it — a rule scoped to one account
+    // applied to every account, which is the opposite of what the user asked
+    // for and silently widens every rule they thought they had narrowed.
+    // Enforced only when we know which account the row belongs to; when we
+    // don't, an account-scoped rule is skipped rather than applied blindly.
+    if (rule.account_id) {
+      if (accountId === undefined || accountId === null) continue;
+      if (rule.account_id !== accountId) continue;
     }
 
     // Amount conditions (only check if amount is provided)
@@ -629,9 +651,9 @@ export async function recategorizeAll(userId: string): Promise<RecategorizeSumma
   };
 
   const rows = await db.all(
-    'SELECT id, name, amount, category_id as "categoryId", date FROM transactions WHERE user_id = ?',
+    'SELECT id, name, amount, category_id as "categoryId", date, account_id as "accountId" FROM transactions WHERE user_id = ?',
     userId,
-  ) as Array<{ id: string; name: string; amount: number; categoryId: string | null; date: string }>;
+  ) as Array<{ id: string; name: string; amount: number; categoryId: string | null; date: string; accountId: string | null }>;
 
   const uncategorizedId = byExactName.get('uncategorized') ?? null;
   const isBlank = (id: string | null) => !id || id === uncategorizedId;
@@ -644,7 +666,7 @@ export async function recategorizeAll(userId: string): Promise<RecategorizeSumma
   for (const r of rows) {
     const lower = String(r.name || '').toLowerCase().trim();
 
-    const ruleHit = matchRuleList(lower, rules, r.amount);
+    const ruleHit = matchRuleList(lower, rules, r.amount, r.accountId);
     if (ruleHit?.categoryId) { decided.set(r.id, ruleHit.categoryId); byRule++; continue; }
 
     const merchant = lookupMerchant(lower);
