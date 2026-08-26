@@ -216,6 +216,9 @@ interface ClassifyContext {
   userHasLiabilityAccount: boolean;
   /** lowercased category name by id */
   categoryNames: Map<string, string>;
+  /** lowercased names of categories flagged is_income — authoritative, not
+   *  guessed from the word "income" appearing in the name. */
+  incomeCategoryNames: Set<string>;
   /** normalized merchant name → debit occurrences (epoch day, abs amount) */
   merchantDebits: Map<string, Array<{ day: number; abs: number }>>;
 }
@@ -263,9 +266,21 @@ const NON_CONSUMPTION_CATEGORIES = new Set([
   'transfer', 'asset transfer', 'asset sale', 'loan proceeds', 'refund',
 ]);
 
-function isSpendingCategory(cat: string): boolean {
+/**
+ * Does this category name real consumption?
+ *
+ * The income test MUST come from the category's own is_income flag, not from
+ * the word "income" appearing in its name. "Salary" and "Freelance" are income
+ * categories that contain no such word — treating them as spending sent every
+ * one of Marcelo's paycheques to `refund`, wiping $25,220 of income out of a
+ * single month and netting it against his expenses. Caught in minutes because
+ * the printable statement puts income and expenses on the same page.
+ */
+function isSpendingCategory(cat: string, ctx: ClassifyContext): boolean {
   if (!cat) return false;
-  return !NON_CONSUMPTION_CATEGORIES.has(cat) && !DEBT_CATEGORIES.has(cat) && !cat.includes('income');
+  if (ctx.incomeCategoryNames.has(cat)) return false;
+  if (cat.includes('income')) return false;
+  return !NON_CONSUMPTION_CATEGORIES.has(cat) && !DEBT_CATEGORIES.has(cat);
 }
 
 /** Lenders whose inbound money is borrowing, not earnings. */
@@ -300,7 +315,7 @@ export function classifyUnpaired(t: TxnRow, ctx: ClassifyContext): FlowType {
     if (DEBT_CATEGORIES.has(cat)) return 'expense';
     // A real spending category outranks the descriptor. Without this, anything
     // paid over Zelle or Venmo stays a transfer no matter how it is labelled.
-    if (isSpendingCategory(cat)) return 'expense';
+    if (isSpendingCategory(cat, ctx)) return 'expense';
     // Money going INTO an asset the household owns (a brokerage deposit is the
     // mirror of the withdrawals ruled an asset transfer) is not consumption.
     if (NON_CONSUMPTION_CATEGORIES.has(cat)) return 'transfer';
@@ -340,7 +355,7 @@ export function classifyUnpaired(t: TxnRow, ctx: ClassifyContext): FlowType {
     // one month, listing College Savings and Entertainment as income lines.
     // As a refund it nets against the category it came from, which is what the
     // rollups already expect.
-    if (isSpendingCategory(cat)) return 'refund';
+    if (isSpendingCategory(cat, ctx)) return 'refund';
     if (TRANSFER_RE.test(name) || cat === 'transfer') return 'transfer';
     if (hasComparablePriorDebit(t, ctx)) return 'refund';
     return 'income';
@@ -364,7 +379,7 @@ function pairEligible(neg: TxnRow, pos: TxnRow, ctx: ClassifyContext): boolean {
   // sweep), a $300 ISTOURS purchase and two $200 soccer-club charges already
   // categorised as Kids — $800 of real spending that vanished from the expense
   // column while the books still balanced, which is why nobody noticed.
-  if (isSpendingCategory(negCat) || isSpendingCategory(posCat)) return false;
+  if (isSpendingCategory(negCat, ctx) || isSpendingCategory(posCat, ctx)) return false;
 
   // VETO 2 — a refund is a reversal of a purchase, not the far leg of a move.
   if (REFUND_RE.test(posName) || posCat === 'refund') return false;
@@ -441,8 +456,8 @@ export async function classifyUserFlows(sql: Sql, userId: string): Promise<FlowS
     `SELECT id, type FROM accounts WHERE user_id = ?`, userId,
   ) as Array<{ id: string; type: string }>;
   const categories = await sql.all(
-    `SELECT id, name FROM categories WHERE user_id = ?`, userId,
-  ) as Array<{ id: string; name: string }>;
+    `SELECT id, name, is_income as "isIncome" FROM categories WHERE user_id = ?`, userId,
+  ) as Array<{ id: string; name: string; isIncome: number }>;
   const txns = await sql.all(
     `SELECT id, account_id, name, amount, date, category_id, flow_type, transfer_pair_id
      FROM transactions WHERE user_id = ?
@@ -457,6 +472,9 @@ export async function classifyUserFlows(sql: Sql, userId: string): Promise<FlowS
     accountTypes: new Map(accounts.map((a) => [a.id, a.type])),
     userHasLiabilityAccount: accounts.some((a) => isLiabilityType(a.type)),
     categoryNames: new Map(categories.map((c) => [c.id, String(c.name || '').toLowerCase()])),
+    incomeCategoryNames: new Set(
+      categories.filter((c) => Number(c.isIncome) === 1).map((c) => String(c.name || '').toLowerCase()),
+    ),
     merchantDebits: new Map(),
   };
   for (const t of txns) {
