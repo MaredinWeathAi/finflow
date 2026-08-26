@@ -333,6 +333,14 @@ export function classifyUnpaired(t: TxnRow, ctx: ClassifyContext): FlowType {
       cat === 'asset transfer'
     ) return 'transfer';
     if (cat.includes('income')) return 'income';
+    // Money arriving into a category that names CONSUMPTION is that spending
+    // coming back — a returned purchase, a reversed charge, a refunded deposit.
+    // It is not earnings. Without this a +$40 credit sitting in Food & Dining
+    // was booked as income: the printable statement surfaced $3,457 of it in
+    // one month, listing College Savings and Entertainment as income lines.
+    // As a refund it nets against the category it came from, which is what the
+    // rollups already expect.
+    if (isSpendingCategory(cat)) return 'refund';
     if (TRANSFER_RE.test(name) || cat === 'transfer') return 'transfer';
     if (hasComparablePriorDebit(t, ctx)) return 'refund';
     return 'income';

@@ -87,6 +87,20 @@ export function StatementPrintPage() {
     return () => { cancelled = true }
   }, [query])
 
+  // The app shell paints a dark background on <body>. This route is a document,
+  // so it takes the page white for as long as it is mounted and hands it back
+  // on the way out.
+  useEffect(() => {
+    const prevBody = document.body.style.background
+    const prevHtml = document.documentElement.style.background
+    document.body.style.background = '#fff'
+    document.documentElement.style.background = '#fff'
+    return () => {
+      document.body.style.background = prevBody
+      document.documentElement.style.background = prevHtml
+    }
+  }, [])
+
   // Print once the document has actually rendered, not on a timer.
   useEffect(() => {
     if (!data) return

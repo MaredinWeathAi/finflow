@@ -912,6 +912,8 @@ router.get('/statement', async (req: Request, res: Response) => {
       ) as any[];
       for (const b of budgetRows) budgetByCategory.set(b.categoryId, round(b.amount));
     }
+    // A column of em-dashes does not earn its place on paper.
+    const showBudgets = isWholeMonth && budgetByCategory.size > 0;
 
     const decorate = (rows: any[], band: 'income' | 'expense') => {
       const bandTotal = band === 'income' ? income : expenses;
@@ -976,7 +978,7 @@ router.get('/statement', async (req: Request, res: Response) => {
         showMonthlyAvg,
       },
       prior: priorFullyCovered ? { start: priorStart, end: priorEnd } : null,
-      showBudgets: isWholeMonth,
+      showBudgets,
       totals: {
         income,
         expenses,
