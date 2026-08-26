@@ -14,9 +14,11 @@
  *                 category, never income
  *
  * Aggregation contract (used by every report/insight/budget query):
- *   income   = SUM(amount)      WHERE flow_type = 'income'
- *   expenses = SUM(ABS(amount)) WHERE flow_type IN ('expense','interest_fee')
- *   category rollups additionally net refunds against their category.
+ *   income   = sqlIncome()    — SUM(amount) over flow_type = 'income'
+ *   expenses = sqlExpenses()  — SUM(ABS) over expense+interest_fee, MINUS refunds
+ *
+ * Headline totals and category rollups call the SAME two helpers, so a refund
+ * can never make the summary card and the category table disagree.
  *
  * This module replaces the three divergent transfer keyword lists that used to
  * live in analysis.ts (x2) and reports.ts. Nothing may infer income from
@@ -64,6 +66,50 @@ export const LIABILITY_ACCOUNT_TYPES = ['credit', 'loan', 'mortgage'] as const;
 /** SQL fragments so every aggregate spells the contract identically. */
 export const SQL_INCOME_FLOW = `flow_type = 'income'`;
 export const SQL_EXPENSE_FLOWS = `flow_type IN ('expense', 'interest_fee')`;
+/** Rows that participate in the spending total: outflows AND their reversals. */
+export const SQL_SPEND_FLOWS = `flow_type IN ('expense', 'interest_fee', 'refund')`;
+
+const col = (alias: string) => (alias ? `${alias}.` : '');
+
+/**
+ * THE income expression. `SUM(amount)` over income rows — transfers between
+ * Marcelo's own accounts, credit-card payments and refunds are never income.
+ */
+export function sqlIncome(alias = ''): string {
+  const c = col(alias);
+  return `COALESCE(SUM(CASE WHEN ${c}flow_type = 'income' THEN ${c}amount ELSE 0 END), 0)`;
+}
+
+/**
+ * THE spending expression — real outflows NET OF REFUNDS.
+ *
+ * Audit finding H6: category rollups already netted refunds while every
+ * headline "total expenses" card ignored them, so an Amazon return made the
+ * category table and the summary card disagree inside a single response and
+ * overstated spending by the gross refund total. Both now call this.
+ *
+ * ABS() on both legs so the sum is sign-convention-proof: a refund stored as a
+ * negative (some card exports do) still reduces spending rather than adding to
+ * it.
+ */
+export function sqlExpenses(alias = ''): string {
+  const c = col(alias);
+  return `COALESCE(SUM(CASE WHEN ${c}flow_type IN ('expense', 'interest_fee') THEN ABS(${c}amount)`
+    + ` WHEN ${c}flow_type = 'refund' THEN -ABS(${c}amount)`
+    + ` ELSE 0 END), 0)`;
+}
+
+/** Gross refunds (positive) — what sqlExpenses() subtracted. */
+export function sqlRefunds(alias = ''): string {
+  const c = col(alias);
+  return `COALESCE(SUM(CASE WHEN ${c}flow_type = 'refund' THEN ABS(${c}amount) ELSE 0 END), 0)`;
+}
+
+/** Money moved between owned accounts / paid onto debt — neither in nor out. */
+export function sqlTransfers(alias = ''): string {
+  const c = col(alias);
+  return `COALESCE(SUM(CASE WHEN ${c}flow_type IN ('transfer', 'debt_payment') THEN ABS(${c}amount) ELSE 0 END), 0)`;
+}
 
 /**
  * Amount owed on an account (audit D7 — debt math must not be sign-blind).

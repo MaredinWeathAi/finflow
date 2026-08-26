@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { format, parseISO, isToday, isYesterday, subDays, subMonths, startOfMonth, endOfMonth, startOfQuarter, subQuarters, endOfQuarter } from 'date-fns'
+import { format, parseISO, isToday, isYesterday, subDays, subMonths, startOfMonth, endOfMonth, startOfQuarter, subQuarters, endOfQuarter, startOfYear, endOfYear, subYears } from 'date-fns'
 import { Search, Filter, Plus, ArrowUpDown, Download, Upload, X, Check, Tag, Receipt, Calendar } from 'lucide-react'
 import { cn, formatCurrency } from '@/lib/utils'
 import { useTransactions } from '@/hooks/useTransactions'
@@ -367,35 +367,74 @@ function AddTransactionModal({
   )
 }
 
-// Build date filter options: last 30 days, last month, last quarter, then individual months for 12 months
-function useDateFilterOptions() {
+type DateFilterOption = {
+  label: string
+  value: string
+  startDate?: string
+  endDate?: string
+  isMonth?: boolean
+}
+
+// Date-range presets. Period-to-date ranges (YTD, rolling 12 months) come
+// first because they are what a cash-flow question is usually asking, then
+// the shorter windows, then whole calendar years, then individual months.
+function useDateFilterOptions(): DateFilterOption[] {
   return useMemo(() => {
     const now = new Date()
-    const options: { label: string; value: string; startDate?: string; endDate?: string }[] = [
+    const iso = (d: Date) => format(d, 'yyyy-MM-dd')
+    const today = iso(now)
+
+    const options: DateFilterOption[] = [
       { label: 'All Time', value: '' },
+      // Jan 1 of this year through today.
+      { label: `Year to Date (${format(now, 'yyyy')})`, value: 'ytd',
+        startDate: iso(startOfYear(now)),
+        endDate: today },
+      // Rolling 12 months: the last 12 COMPLETE months plus the current
+      // partial one, i.e. the same window everyone means by "last 12 months".
+      { label: 'Last 12 Months', value: 'last12m',
+        startDate: iso(startOfMonth(subMonths(now, 11))),
+        endDate: today },
+      { label: 'Last 6 Months', value: 'last6m',
+        startDate: iso(startOfMonth(subMonths(now, 5))),
+        endDate: today },
+      { label: 'This Month', value: 'thismonth',
+        startDate: iso(startOfMonth(now)),
+        endDate: today },
       { label: 'Last 30 Days', value: 'last30',
-        startDate: format(subDays(now, 30), 'yyyy-MM-dd'),
-        endDate: format(now, 'yyyy-MM-dd') },
+        startDate: iso(subDays(now, 30)),
+        endDate: today },
       { label: 'Last Month', value: 'lastmonth',
-        startDate: format(startOfMonth(subMonths(now, 1)), 'yyyy-MM-dd'),
-        endDate: format(endOfMonth(subMonths(now, 1)), 'yyyy-MM-dd') },
+        startDate: iso(startOfMonth(subMonths(now, 1))),
+        endDate: iso(endOfMonth(subMonths(now, 1))) },
       { label: 'Last Quarter', value: 'lastquarter',
-        startDate: format(startOfQuarter(subQuarters(now, 1)), 'yyyy-MM-dd'),
-        endDate: format(endOfQuarter(subQuarters(now, 1)), 'yyyy-MM-dd') },
+        startDate: iso(startOfQuarter(subQuarters(now, 1))),
+        endDate: iso(endOfQuarter(subQuarters(now, 1))) },
     ]
-    // Add individual months for the last 12 months (most recent first)
-    for (let i = 0; i < 12; i++) {
-      const m = subMonths(now, i)
-      const ms = startOfMonth(m)
-      const me = endOfMonth(m)
-      const label = format(ms, 'MMMM yyyy')
+
+    // Whole calendar years, most recent complete year first.
+    for (let i = 1; i <= 3; i++) {
+      const y = subYears(now, i)
       options.push({
-        label,
-        value: `month_${format(ms, 'yyyy-MM')}`,
-        startDate: format(ms, 'yyyy-MM-dd'),
-        endDate: format(me, 'yyyy-MM-dd'),
+        label: `${format(y, 'yyyy')} (Full Year)`,
+        value: `year_${format(y, 'yyyy')}`,
+        startDate: iso(startOfYear(y)),
+        endDate: iso(endOfYear(y)),
       })
     }
+
+    // Individual months for the last 12 months (most recent first).
+    for (let i = 0; i < 12; i++) {
+      const ms = startOfMonth(subMonths(now, i))
+      options.push({
+        label: format(ms, 'MMMM yyyy'),
+        value: `month_${format(ms, 'yyyy-MM')}`,
+        startDate: iso(ms),
+        endDate: iso(endOfMonth(ms)),
+        isMonth: true,
+      })
+    }
+
     return options
   }, [])
 }
@@ -425,7 +464,12 @@ export function TransactionsPage() {
 
   const { categories } = useCategories()
   const { accounts } = useAccounts()
-  const { transactions, total, totalPages, totalIncome, totalExpenses, isLoading, refetch } = useTransactions({
+  const {
+    transactions, total, totalPages,
+    totalIncome, totalExpenses, totalNet, totalRefunds, totalTransfers,
+    incomeCount, expenseCount, refundCount, transferCount,
+    isLoading, refetch,
+  } = useTransactions({
     page,
     limit: 30,
     search: search || undefined,
@@ -485,23 +529,48 @@ export function TransactionsPage() {
         }
       />
 
-      {/* Summary */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-5">
+      {/* Summary — every number here is over ALL rows matching the current
+          filters, not just the page on screen. The sub-lines exist so the
+          three cards can be reconciled against the list underneath them:
+          income + expense + refund + transfer rows account for the full count. */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-2">
         <div className="bg-card rounded-xl border border-border/50 p-4">
           <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Income</p>
           <p className="text-lg font-bold text-success mt-1">{formatCurrency(totalIncome)}</p>
+          <p className="text-xs text-muted-foreground mt-1">
+            {incomeCount.toLocaleString()} deposit{incomeCount === 1 ? '' : 's'} · money earned
+          </p>
         </div>
         <div className="bg-card rounded-xl border border-border/50 p-4">
           <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Expenses</p>
           <p className="text-lg font-bold text-danger mt-1">{formatCurrency(totalExpenses)}</p>
+          <p className="text-xs text-muted-foreground mt-1">
+            {expenseCount.toLocaleString()} charge{expenseCount === 1 ? '' : 's'}
+            {refundCount > 0 && <> · net of {formatCurrency(totalRefunds)} in {refundCount} refund{refundCount === 1 ? '' : 's'}</>}
+          </p>
         </div>
         <div className="bg-card rounded-xl border border-border/50 p-4">
           <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Net</p>
-          <p className={cn('text-lg font-bold mt-1', totalIncome - totalExpenses >= 0 ? 'text-success' : 'text-danger')}>
-            {formatCurrency(totalIncome - totalExpenses)}
+          <p className={cn('text-lg font-bold mt-1', totalNet >= 0 ? 'text-success' : 'text-danger')}>
+            {formatCurrency(totalNet)}
+          </p>
+          <p className="text-xs text-muted-foreground mt-1">
+            income &minus; expenses
           </p>
         </div>
       </div>
+
+      {/* What the three cards deliberately leave out. Without this the header
+          looks like it silently lost several hundred rows. */}
+      {transferCount > 0 && (
+        <p className="text-xs text-muted-foreground mb-5 px-1">
+          Not counted above: <span className="font-medium text-foreground">{transferCount.toLocaleString()}</span>{' '}
+          transfer{transferCount === 1 ? '' : 's'} and card/loan payment{transferCount === 1 ? '' : 's'} totalling{' '}
+          <span className="font-medium text-foreground">{formatCurrency(totalTransfers)}</span> — money moving between your
+          own accounts, so counting it would double-count both the earning and the spending.
+        </p>
+      )}
+      {transferCount === 0 && <div className="mb-5" />}
 
       {/* Search & Filters */}
       <div className="flex items-center gap-3 mb-4">
@@ -514,6 +583,20 @@ export function TransactionsPage() {
             className="w-full h-10 pl-10 pr-4 rounded-lg border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
           />
         </div>
+        <select
+          value={selectedDateFilter}
+          onChange={e => { setSelectedDateFilter(e.target.value); setPage(1) }}
+          className={cn(
+            'h-10 px-3 rounded-lg border bg-background text-sm focus:outline-none',
+            selectedDateFilter ? 'border-primary text-primary' : 'border-input'
+          )}
+        >
+          {dateFilterOptions.map(opt => (
+            <option key={opt.value || 'all'} value={opt.value}>
+              {opt.isMonth ? `📅 ${opt.label}` : opt.label}
+            </option>
+          ))}
+        </select>
         <button
           onClick={() => setShowFilters(!showFilters)}
           className={cn(
@@ -540,17 +623,6 @@ export function TransactionsPage() {
       {/* Filter Bar */}
       {showFilters && (
         <div className="flex items-center gap-3 mb-4 p-3 bg-card rounded-xl border border-border/50 flex-wrap">
-          <select
-            value={selectedDateFilter}
-            onChange={e => { setSelectedDateFilter(e.target.value); setPage(1) }}
-            className="h-9 px-3 rounded-lg border border-input bg-background text-sm"
-          >
-            {dateFilterOptions.map((opt, i) => (
-              <option key={opt.value || 'all'} value={opt.value}>
-                {i >= 4 ? `📅 ${opt.label}` : opt.label}
-              </option>
-            ))}
-          </select>
           <select
             value={selectedCategory}
             onChange={e => { setSelectedCategory(e.target.value); setPage(1) }}

@@ -24,6 +24,13 @@ interface TransactionResponse {
   totalPages: number
   totalIncome: number
   totalExpenses: number
+  totalNet: number
+  totalRefunds: number
+  totalTransfers: number
+  incomeCount: number
+  expenseCount: number
+  refundCount: number
+  transferCount: number
 }
 
 export function useTransactions(filters: TransactionFilters = {}) {
@@ -34,6 +41,13 @@ export function useTransactions(filters: TransactionFilters = {}) {
     totalPages: 1,
     totalIncome: 0,
     totalExpenses: 0,
+    totalNet: 0,
+    totalRefunds: 0,
+    totalTransfers: 0,
+    incomeCount: 0,
+    expenseCount: 0,
+    refundCount: 0,
+    transferCount: 0,
   })
   const [isLoading, setIsLoading] = useState(true)
 

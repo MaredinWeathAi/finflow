@@ -1,6 +1,13 @@
 import crypto from 'crypto';
 import { db } from '../db/database.js';
-import { ensureFlowClassification, liabilityOwed } from './flow.js';
+import {
+  ensureFlowClassification,
+  liabilityOwed,
+  SQL_INCOME_FLOW,
+  SQL_SPEND_FLOWS,
+  sqlIncome,
+  sqlExpenses,
+} from './flow.js';
 import { getCoverage, completeMonthsFromCoverage } from './coverage.js';
 
 // All income/expense/transfer aggregates in this file read the persisted
@@ -253,7 +260,7 @@ async function analyzeIncome(userId: string, completeMonthList: string[]): Promi
   // and halved the average (audit D6); it also silently averaged the partial
   // current month in. A complete month with zero income counts as a real zero;
   // months outside coverage do not count at all.
-  const avgMonthly = await avgMonthlyOverCompleteMonths(userId, `flow_type = 'income'`, false, completeMonthList, total);
+  const avgMonthly = await avgMonthlyOverCompleteMonths(userId, SQL_INCOME_FLOW, sqlIncome(), completeMonthList, total);
 
   return { sources: sources.slice(0, 20), total, avgMonthly };
 }
@@ -266,14 +273,13 @@ async function analyzeIncome(userId: string, completeMonthList: string[]): Promi
 async function avgMonthlyOverCompleteMonths(
   userId: string,
   flowPredicate: string,
-  absolute: boolean,
+  sumExpr: string,
   completeMonthList: string[],
   allTimeTotal: number,
 ): Promise<number> {
   if (completeMonthList.length === 0) return allTimeTotal;
-  const sumExpr = absolute ? 'SUM(ABS(amount))' : 'SUM(amount)';
   const ph = completeMonthList.map(() => '?').join(', ');
-  const row = await db.get(`SELECT COALESCE(${sumExpr}, 0) as total FROM transactions
+  const row = await db.get(`SELECT ${sumExpr} as total FROM transactions
      WHERE user_id = ? AND ${flowPredicate} AND substr(date, 1, 7) IN (${ph})`, userId, ...completeMonthList) as any;
   return (row.total || 0) / completeMonthList.length;
 }
@@ -324,7 +330,7 @@ async function analyzeExpenses(userId: string, completeMonthList: string[]): Pro
   merchants.sort((a, b) => b.totalSpent - a.totalSpent);
 
   // Complete months only — see avgMonthlyOverCompleteMonths (audit D6).
-  const avgMonthly = await avgMonthlyOverCompleteMonths(userId, `flow_type IN ('expense', 'interest_fee')`, true, completeMonthList, total);
+  const avgMonthly = await avgMonthlyOverCompleteMonths(userId, SQL_SPEND_FLOWS, sqlExpenses(), completeMonthList, total);
 
   return { merchants: merchants.slice(0, 30), total, avgMonthly };
 }
@@ -389,8 +395,8 @@ async function analyzeTransfers(userId: string): Promise<{ transfers: TransferPa
 async function computeMonthlyCashFlow(userId: string): Promise<CashFlowMonth[]> {
   const rows = await db.all(`SELECT
        substr(date, 1, 7) as month,
-       SUM(CASE WHEN flow_type = 'income' THEN amount ELSE 0 END) as income,
-       SUM(CASE WHEN flow_type IN ('expense', 'interest_fee') THEN ABS(amount) ELSE 0 END) as expenses,
+       ${sqlIncome()} as income,
+       ${sqlExpenses()} as expenses,
        SUM(CASE WHEN flow_type IN ('transfer', 'debt_payment') THEN ABS(amount) ELSE 0 END) as transfers
      FROM transactions
      WHERE user_id = ?

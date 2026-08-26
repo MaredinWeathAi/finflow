@@ -1,7 +1,12 @@
 import { Router, Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import { db } from '../db/database.js';
-import { ensureFlowClassification } from '../engine/flow.js';
+import {
+  ensureFlowClassification,
+  SQL_SPEND_FLOWS,
+  sqlIncome,
+  sqlExpenses,
+} from '../engine/flow.js';
 import crypto from 'crypto';
 
 const router = Router();
@@ -16,7 +21,7 @@ router.get('/clients', async (req: Request, res: Response) => {
         (SELECT COUNT(*) FROM transactions WHERE user_id = u.id) as transaction_count,
         (SELECT COUNT(*) FROM accounts WHERE user_id = u.id) as account_count,
         (SELECT COALESCE(SUM(balance), 0) FROM accounts WHERE user_id = u.id AND type IN ('checking','savings')) as total_balance,
-        (SELECT COALESCE(SUM(ABS(amount)), 0) FROM transactions WHERE user_id = u.id AND flow_type IN ('expense', 'interest_fee') AND date >= date('now', 'start of month')) as monthly_spending
+        (SELECT ${sqlExpenses()} FROM transactions WHERE user_id = u.id AND ${SQL_SPEND_FLOWS} AND date >= date('now', 'start of month')) as monthly_spending
       FROM users u
       WHERE u.advisor_id = ? AND u.role = 'client'
       ORDER BY u.name ASC
@@ -103,7 +108,7 @@ router.get('/clients/:clientId', async (req: Request, res: Response) => {
     const currentMonth = new Date().toISOString().substring(0, 7) + '-01';
     const budgets = await db.all(`
       SELECT b.*, c.name as category_name, c.icon as category_icon, c.color as category_color,
-        (SELECT COALESCE(SUM(CASE WHEN t.flow_type IN ('expense', 'interest_fee') THEN ABS(t.amount) ELSE -t.amount END), 0) FROM transactions t
+        (SELECT ${sqlExpenses('t')} FROM transactions t
          WHERE t.user_id = ? AND t.category_id = b.category_id AND t.flow_type IN ('expense', 'interest_fee', 'refund')
          AND t.date >= ? AND t.date < date(?, '+1 month')) as spent
       FROM budgets b
@@ -120,8 +125,8 @@ router.get('/clients/:clientId', async (req: Request, res: Response) => {
     const monthlySummary = await db.all(`
       SELECT
         substr(date, 1, 7) as month,
-        SUM(CASE WHEN flow_type = 'income' THEN amount ELSE 0 END) as income,
-        SUM(CASE WHEN flow_type IN ('expense', 'interest_fee') THEN ABS(amount) ELSE 0 END) as expenses
+        ${sqlIncome()} as income,
+        ${sqlExpenses()} as expenses
       FROM transactions
       WHERE user_id = ? AND date >= ?
       GROUP BY substr(date, 1, 7)
@@ -256,10 +261,10 @@ router.get('/clients/:clientId/report', async (req: Request, res: Response) => {
 
       const income = (await db.get(`SELECT COALESCE(SUM(amount), 0) as total FROM transactions WHERE user_id = ? AND flow_type = 'income' AND date >= ? AND date <= ?`, clientId, monthStart, monthEnd) as any).total;
 
-      const expenses = (await db.get(`SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions WHERE user_id = ? AND flow_type IN ('expense', 'interest_fee') AND date >= ? AND date <= ?`, clientId, monthStart, monthEnd) as any).total;
+      const expenses = (await db.get(`SELECT ${sqlExpenses()} as total FROM transactions WHERE user_id = ? AND ${SQL_SPEND_FLOWS} AND date >= ? AND date <= ?`, clientId, monthStart, monthEnd) as any).total;
 
       const categoryBreakdown = await db.all(`
-        SELECT c.name, c.icon, c.color, COALESCE(SUM(CASE WHEN t.flow_type IN ('expense', 'interest_fee') THEN ABS(t.amount) ELSE -t.amount END), 0) as total, COUNT(t.id) as count
+        SELECT c.name, c.icon, c.color, ${sqlExpenses('t')} as total, COUNT(t.id) as count
         FROM transactions t JOIN categories c ON t.category_id = c.id
         WHERE t.user_id = ? AND t.flow_type IN ('expense', 'interest_fee', 'refund') AND t.date >= ? AND t.date <= ?
         GROUP BY c.id ORDER BY total DESC
@@ -290,16 +295,16 @@ router.get('/clients/:clientId/report', async (req: Request, res: Response) => {
 
       const monthlyData = await db.all(`
         SELECT substr(date, 1, 7) as month,
-          SUM(CASE WHEN flow_type = 'income' THEN amount ELSE 0 END) as income,
-          SUM(CASE WHEN flow_type IN ('expense', 'interest_fee') THEN ABS(amount) ELSE 0 END) as expenses
+          ${sqlIncome()} as income,
+          ${sqlExpenses()} as expenses
         FROM transactions WHERE user_id = ? AND date >= ? AND date <= ?
         GROUP BY substr(date, 1, 7) ORDER BY month ASC
       `, clientId, startDate, endDate) as any[];
 
       const totals = await db.get(`
         SELECT
-          SUM(CASE WHEN flow_type = 'income' THEN amount ELSE 0 END) as total_income,
-          SUM(CASE WHEN flow_type IN ('expense', 'interest_fee') THEN ABS(amount) ELSE 0 END) as total_expenses,
+          ${sqlIncome()} as total_income,
+          ${sqlExpenses()} as total_expenses,
           COUNT(*) as transaction_count
         FROM transactions WHERE user_id = ? AND date >= ? AND date <= ?
       `, clientId, startDate, endDate) as any;

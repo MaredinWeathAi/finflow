@@ -1,6 +1,10 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../db/database.js';
-import { ensureFlowClassification } from '../engine/flow.js';
+import {
+  ensureFlowClassification,
+  sqlIncome,
+  sqlExpenses,
+} from '../engine/flow.js';
 import { subMonths } from 'date-fns';
 
 const router = Router();
@@ -185,8 +189,8 @@ router.get('/recommendations', async (req: Request, res: Response) => {
 
     const monthlyStats = await db.get(`
         SELECT
-          SUM(CASE WHEN flow_type = 'income' THEN amount ELSE 0 END) as income,
-          SUM(CASE WHEN flow_type IN ('expense', 'interest_fee') THEN ABS(amount) ELSE 0 END) as expenses
+          ${sqlIncome()} as income,
+          ${sqlExpenses()} as expenses
         FROM transactions
         WHERE user_id = ? AND date LIKE ?
       `, userId, currentMonth + '%') as any;

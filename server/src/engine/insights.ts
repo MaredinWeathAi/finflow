@@ -1,6 +1,11 @@
 import crypto from 'crypto';
 import { db } from '../db/database.js';
-import { ensureFlowClassification, liabilityOwed } from './flow.js';
+import {
+  ensureFlowClassification,
+  liabilityOwed,
+  SQL_SPEND_FLOWS,
+  sqlExpenses,
+} from './flow.js';
 import { getCoverage, completeMonthsFromCoverage } from './coverage.js';
 
 // All income/expense aggregates in this file use the persisted flow_type
@@ -175,15 +180,15 @@ async function sumFlowsOverMonths(
   if (months.length === 0) {
     const income = (await db.get(`SELECT COALESCE(SUM(amount), 0) as total FROM transactions
        WHERE user_id = ? AND flow_type = 'income'`, userId) as any).total;
-    const expenses = (await db.get(`SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
-       WHERE user_id = ? AND flow_type IN ('expense', 'interest_fee')`, userId) as any).total;
+    const expenses = (await db.get(`SELECT ${sqlExpenses()} as total FROM transactions
+       WHERE user_id = ? AND ${SQL_SPEND_FLOWS}`, userId) as any).total;
     return { income, expenses, monthCount: 1 };
   }
   const ph = months.map(() => '?').join(', ');
   const income = (await db.get(`SELECT COALESCE(SUM(amount), 0) as total FROM transactions
      WHERE user_id = ? AND flow_type = 'income' AND substr(date, 1, 7) IN (${ph})`, userId, ...months) as any).total;
-  const expenses = (await db.get(`SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
-     WHERE user_id = ? AND flow_type IN ('expense', 'interest_fee') AND substr(date, 1, 7) IN (${ph})`, userId, ...months) as any).total;
+  const expenses = (await db.get(`SELECT ${sqlExpenses()} as total FROM transactions
+     WHERE user_id = ? AND ${SQL_SPEND_FLOWS} AND substr(date, 1, 7) IN (${ph})`, userId, ...months) as any).total;
   return { income, expenses, monthCount: months.length };
 }
 
@@ -217,7 +222,7 @@ async function computeHealthScore(userId: string, months3: string[], months6: st
   let withinBudget = 0;
   let totalBudgets = budgets.length;
   for (const b of budgets) {
-    const spent = (await db.get(`SELECT COALESCE(SUM(CASE WHEN flow_type IN ('expense', 'interest_fee') THEN ABS(amount) ELSE -amount END), 0) as spent FROM transactions
+    const spent = (await db.get(`SELECT ${sqlExpenses()} as spent FROM transactions
        WHERE user_id = ? AND category_id = ? AND flow_type IN ('expense', 'interest_fee', 'refund')
          AND date >= ? AND date <= ?`, userId, b.category_id, curStart, getCurrentMonthEnd()) as any).spent;
     const limit = b.amount + (b.rollover_amount || 0);
@@ -335,7 +340,7 @@ async function analyzeBudgetAdherence(userId: string): Promise<Insight[]> {
      WHERE b.user_id = ? AND (b.month = ? OR b.month = ?)`, userId, curStart, curMonthPrefix) as any[];
 
   for (const b of budgets) {
-    const spent = (await db.get(`SELECT COALESCE(SUM(CASE WHEN flow_type IN ('expense', 'interest_fee') THEN ABS(amount) ELSE -amount END), 0) as spent FROM transactions
+    const spent = (await db.get(`SELECT ${sqlExpenses()} as spent FROM transactions
        WHERE user_id = ? AND category_id = ? AND flow_type IN ('expense', 'interest_fee', 'refund')
          AND date >= ? AND date <= ?`, userId, b.category_id, curStart, curEnd) as any).spent;
 
@@ -833,7 +838,7 @@ async function generateRecommendations(
        WHERE b.user_id = ? AND (b.month = ? OR b.month = ?)`, userId, curStart, getMonthPrefix(curStart)) as any[];
     let totalOverage = 0;
     for (const b of budgets) {
-      const spent = (await db.get(`SELECT COALESCE(SUM(CASE WHEN flow_type IN ('expense', 'interest_fee') THEN ABS(amount) ELSE -amount END), 0) as spent FROM transactions
+      const spent = (await db.get(`SELECT ${sqlExpenses()} as spent FROM transactions
          WHERE user_id = ? AND category_id = ? AND flow_type IN ('expense', 'interest_fee', 'refund')
            AND date >= ? AND date <= ?`, userId, b.category_id, curStart, curEnd) as any).spent;
       const limit = b.amount + (b.rollover_amount || 0);
@@ -971,8 +976,8 @@ async function computeMonthlyVsAnnualView(userId: string): Promise<{ monthlyView
   const monthIncome = (await db.get(`SELECT COALESCE(SUM(amount), 0) as total FROM transactions
      WHERE user_id = ? AND flow_type = 'income' AND date >= ? AND date <= ?`, userId, curStart, curEnd) as any).total;
 
-  const monthExpenses = (await db.get(`SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
-     WHERE user_id = ? AND flow_type IN ('expense', 'interest_fee') AND date >= ? AND date <= ?`, userId, curStart, curEnd) as any).total;
+  const monthExpenses = (await db.get(`SELECT ${sqlExpenses()} as total FROM transactions
+     WHERE user_id = ? AND ${SQL_SPEND_FLOWS} AND date >= ? AND date <= ?`, userId, curStart, curEnd) as any).total;
 
   // Monthly recurring total (active recurring expenses normalized to monthly)
   const recurringItems = await db.all(`SELECT amount, frequency FROM recurring_expenses
@@ -1006,8 +1011,8 @@ async function computeMonthlyVsAnnualView(userId: string): Promise<{ monthlyView
   const yearIncome = (await db.get(`SELECT COALESCE(SUM(amount), 0) as total FROM transactions
      WHERE user_id = ? AND flow_type = 'income' AND date >= ? AND date <= ?`, userId, yearStart, yearEnd) as any).total;
 
-  const yearExpenses = (await db.get(`SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions
-     WHERE user_id = ? AND flow_type IN ('expense', 'interest_fee') AND date >= ? AND date <= ?`, userId, yearStart, yearEnd) as any).total;
+  const yearExpenses = (await db.get(`SELECT ${sqlExpenses()} as total FROM transactions
+     WHERE user_id = ? AND ${SQL_SPEND_FLOWS} AND date >= ? AND date <= ?`, userId, yearStart, yearEnd) as any).total;
 
   const annualRecurring = monthRecurring * 12;
   const yearNet = yearIncome - yearExpenses;

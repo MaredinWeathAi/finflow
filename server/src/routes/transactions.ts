@@ -8,6 +8,10 @@ import {
   reclassifyTransactionsFlow,
   handleTransactionFlowDeleted,
   classifyUserFlows,
+  sqlIncome,
+  sqlExpenses,
+  sqlRefunds,
+  sqlTransfers,
 } from '../engine/flow.js';
 
 const router = Router();
@@ -77,7 +81,10 @@ router.get('/', async (req: Request, res: Response) => {
     if (type === 'income') {
       conditions.push(`t.flow_type = 'income'`);
     } else if (type === 'expense') {
-      conditions.push(`t.flow_type IN ('expense', 'interest_fee')`);
+      // Refunds belong to the spending view: they net against it, and leaving
+      // them out here would make the filtered total gross while the unfiltered
+      // one is net.
+      conditions.push(`t.flow_type IN ('expense', 'interest_fee', 'refund')`);
     }
 
     if (isPending !== undefined && isPending !== '') {
@@ -108,14 +115,36 @@ router.get('/', async (req: Request, res: Response) => {
         break;
     }
 
-    // Get total count + aggregate income/expenses across ALL matching rows (not just page)
+    // Header totals, over ALL matching rows (not just the current page).
+    //
+    // The three cards have to reconcile against the list underneath them, so
+    // this also returns the two buckets that are deliberately in neither
+    // column: refunds (already netted out of totalExpenses) and internal
+    // transfers / card + loan payments (money moving between Marcelo's own
+    // accounts, which is not earning and not spending). Without those the
+    // header looks like it has simply lost ~500 rows.
     const countResult = await db.get(`SELECT COUNT(*) as total,
-                COALESCE(SUM(CASE WHEN t.flow_type = 'income' THEN t.amount ELSE 0 END), 0) as "totalIncome",
-                COALESCE(SUM(CASE WHEN t.flow_type IN ('expense', 'interest_fee') THEN ABS(t.amount) ELSE 0 END), 0) as "totalExpenses"
+                ${sqlIncome('t')} as "totalIncome",
+                ${sqlExpenses('t')} as "totalExpenses",
+                ${sqlRefunds('t')} as "totalRefunds",
+                ${sqlTransfers('t')} as "totalTransfers",
+                COUNT(CASE WHEN t.flow_type = 'income' THEN 1 END) as "incomeCount",
+                COUNT(CASE WHEN t.flow_type IN ('expense', 'interest_fee') THEN 1 END) as "expenseCount",
+                COUNT(CASE WHEN t.flow_type = 'refund' THEN 1 END) as "refundCount",
+                COUNT(CASE WHEN t.flow_type IN ('transfer', 'debt_payment') THEN 1 END) as "transferCount"
          FROM transactions t WHERE ${whereClause}`, ...params) as any;
-    const total = countResult.total;
-    const totalIncome = Math.round(countResult.totalIncome * 100) / 100;
-    const totalExpenses = Math.round(countResult.totalExpenses * 100) / 100;
+    // Postgres returns numeric/bigint aggregates as strings; SQLite returns numbers.
+    const num = (v: any) => Math.round((Number(v) || 0) * 100) / 100;
+    const int = (v: any) => Number(v) || 0;
+    const total = int(countResult.total);
+    const totalIncome = num(countResult.totalIncome);
+    const totalExpenses = num(countResult.totalExpenses);
+    const totalRefunds = num(countResult.totalRefunds);
+    const totalTransfers = num(countResult.totalTransfers);
+    const incomeCount = int(countResult.incomeCount);
+    const expenseCount = int(countResult.expenseCount);
+    const refundCount = int(countResult.refundCount);
+    const transferCount = int(countResult.transferCount);
     const totalPages = Math.ceil(total / limit);
 
     // Get paginated results with joined names
@@ -138,7 +167,13 @@ router.get('/', async (req: Request, res: Response) => {
         tags: JSON.parse(t.tags || '[]'),
       }));
 
-    res.json({ transactions, total, page, totalPages, totalIncome, totalExpenses });
+    res.json({
+      transactions, total, page, totalPages,
+      totalIncome, totalExpenses,
+      totalNet: Math.round((totalIncome - totalExpenses) * 100) / 100,
+      totalRefunds, totalTransfers,
+      incomeCount, expenseCount, refundCount, transferCount,
+    });
   } catch (error) {
     console.error('List transactions error:', error);
     res.status(500).json({ error: 'Failed to list transactions' });

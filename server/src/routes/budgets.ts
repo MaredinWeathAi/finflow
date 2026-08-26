@@ -1,7 +1,10 @@
 import { Router, Request, Response } from 'express';
 import crypto from 'crypto';
 import { db } from '../db/database.js';
-import { ensureFlowClassification } from '../engine/flow.js';
+import {
+  ensureFlowClassification,
+  sqlExpenses,
+} from '../engine/flow.js';
 
 const router = Router();
 
@@ -37,7 +40,7 @@ router.get('/', async (req: Request, res: Response) => {
     for (const budget of budgets) {
       // Real spending only (flow-classified, net of refunds) — transfers and
       // card payments never count as spent
-      const spentResult = await db.get(`SELECT COALESCE(SUM(CASE WHEN flow_type IN ('expense', 'interest_fee') THEN ABS(amount) ELSE -amount END), 0) as spent
+      const spentResult = await db.get(`SELECT ${sqlExpenses()} as spent
            FROM transactions
            WHERE user_id = ? AND category_id = ? AND flow_type IN ('expense', 'interest_fee', 'refund')
              AND date >= ? AND date <= ?`, userId, budget.category_id, monthStr, endDate) as any;
@@ -147,7 +150,7 @@ router.post('/rollover/:month', async (req: Request, res: Response) => {
     await db.tx(async (t) => {
       for (const prevBudget of prevBudgets) {
         // Calculate spent in previous month (flow-classified, net of refunds)
-        const spentResult = await t.get(`SELECT COALESCE(SUM(CASE WHEN flow_type IN ('expense', 'interest_fee') THEN ABS(amount) ELSE -amount END), 0) as spent
+        const spentResult = await t.get(`SELECT ${sqlExpenses()} as spent
              FROM transactions
              WHERE user_id = ? AND category_id = ? AND flow_type IN ('expense', 'interest_fee', 'refund')
                AND date >= ? AND date <= ?`, userId, prevBudget.category_id, prevMonth, prevEndDate) as any;
