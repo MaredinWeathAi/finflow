@@ -254,8 +254,11 @@ router.get('/clients/:clientId/report', async (req: Request, res: Response) => {
 
     if (reportType === 'monthly') {
       const month = (req.query.month as string) || new Date().toISOString().substring(0, 7);
-      const monthStart = month + '-01';
-      const [y, m] = month.split('-').map(Number);
+      // Accept YYYY-MM or YYYY-MM-DD. Appending '-01' to a full date produces
+      // '2026-07-01-01', which Postgres rejects outright as an invalid date.
+      const monthKey = String(month).slice(0, 7);
+      const monthStart = monthKey + '-01';
+      const [y, m] = monthKey.split('-').map(Number);
       const endOfMonth = new Date(y, m, 0);
       const monthEnd = `${y}-${String(m).padStart(2, '0')}-${String(endOfMonth.getDate()).padStart(2, '0')}`;
 

@@ -276,8 +276,13 @@ router.get('/summary', async (req: Request, res: Response) => {
     const userId = req.user!.id;
     await ensureFlowClassification(userId);
     const month = (req.query.month as string) || new Date().toISOString().substring(0, 7);
-    const monthStart = month + '-01';
-    const [year, mon] = month.split('-').map(Number);
+    // The client sends a full YYYY-MM-DD; older callers send YYYY-MM. Take the
+    // first seven characters either way, so appending '-01' cannot produce
+    // '2026-07-01-01' — which Postgres rejects as an invalid date, 500ing the
+    // whole endpoint.
+    const monthKey = String(month).slice(0, 7);
+    const monthStart = monthKey + '-01';
+    const [year, mon] = monthKey.split('-').map(Number);
     const endOfMonth = new Date(year, mon, 0);
     const monthEnd = `${year}-${String(mon).padStart(2, '0')}-${String(endOfMonth.getDate()).padStart(2, '0')}`;
 
@@ -353,9 +358,9 @@ router.get('/summary', async (req: Request, res: Response) => {
 
     // Top merchants (real spending only)
     const topMerchants = await db.all(`
-      SELECT name, COUNT(*) as count, SUM(ABS(amount)) as total
+      SELECT MIN(name) as name, COUNT(*) as count, ${sqlExpenses()} as total
       FROM transactions
-      WHERE user_id = ? AND flow_type IN ('expense', 'interest_fee') AND date >= ? AND date <= ?
+      WHERE user_id = ? AND ${SQL_SPEND_FLOWS} AND date >= ? AND date <= ?
       GROUP BY LOWER(TRIM(name))
       ORDER BY total DESC LIMIT 10
     `, userId, monthStart, monthEnd) as any[];
@@ -399,8 +404,13 @@ router.get('/dashboard-summary', async (req: Request, res: Response) => {
     const userId = req.user!.id;
     await ensureFlowClassification(userId);
     const month = (req.query.month as string) || new Date().toISOString().substring(0, 7);
-    const monthStart = month + '-01';
-    const [year, mon] = month.split('-').map(Number);
+    // The client sends a full YYYY-MM-DD; older callers send YYYY-MM. Take the
+    // first seven characters either way, so appending '-01' cannot produce
+    // '2026-07-01-01' — which Postgres rejects as an invalid date, 500ing the
+    // whole endpoint.
+    const monthKey = String(month).slice(0, 7);
+    const monthStart = monthKey + '-01';
+    const [year, mon] = monthKey.split('-').map(Number);
     const endOfMonth = new Date(year, mon, 0);
     const monthEnd = `${year}-${String(mon).padStart(2, '0')}-${String(endOfMonth.getDate()).padStart(2, '0')}`;
 
