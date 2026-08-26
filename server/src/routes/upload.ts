@@ -65,29 +65,57 @@ function enforceTotalSize(req: Request, res: Response, next: NextFunction): void
   next();
 }
 
-// Helper: detect if a transaction looks like a transfer
-function detectTransferType(name: string, amount: number): { isTransfer: boolean; transferType?: string } {
-  const lowerName = name.toLowerCase();
-  const transferKeywords = [
-    'transfer', 'xfer', 'tfr', 'payment to', 'payment from',
-    'zelle', 'venmo', 'paypal', 'wire', 'ach',
-    'credit card payment', 'cc payment', 'card payment',
-    'online payment', 'autopay', 'bill pay',
-    'from checking', 'from savings', 'to checking', 'to savings',
-    'internal transfer', 'between accounts'
-  ];
-  const isTransfer = transferKeywords.some(kw => lowerName.includes(kw));
+// A transfer moves money between accounts the household owns. Deciding that
+// from the descriptor needs EVIDENCE of an account on the other side — not a
+// keyword that happens to appear in the text.
+//
+// The previous implementation matched bare substrings, which produced:
+//   'ach'      inside "PUBLIX ... MIAMI BEACH FL", "COACH OUTLET", "PEACH COBBLER"
+//   'bill pay' inside "FLORIDA POWER & LIGHT (FPL) Bill Payment"  (a utility bill)
+//   'zelle'    on the owner's monthly pay from his own company
+// — roughly 39% of an imported bank export ended up filed as "Transfer".
+//
+// Zelle, Venmo, PayPal and Cash App are deliberately NOT transfer signals.
+// They are payment rails: this household receives most of its income and pays
+// its contractors over Zelle. The rail says nothing about what the money is.
+const INTERNAL_TRANSFER_RE = new RegExp(
+  [
+    // BofA / most US banks name the counterpart account explicitly
+    '\\btransfer (?:to|from) (?:chk|sav|checking|savings)\\b',
+    '\\bonline (?:banking |scheduled )?transfer\\b',
+    '\\bautomatic transfer\\b',
+    '\\boverdraft protection (?:to|from)\\b',
+    '\\bkeep the change\\b',
+    '\\binternal transfer\\b',
+    '\\bbetween accounts\\b',
+    '\\b(?:to|from) (?:my )?(?:checking|savings)\\b',
+  ].join('|'),
+  'i',
+);
 
-  if (!isTransfer) return { isTransfer: false };
+// Paying down a card or loan. Requires an issuer or an explicit card/loan
+// reference — never a bare "payment", because "Rent Payment" and "MTG PMT"
+// are ordinary expenses.
+const CARD_OR_LOAN_PAYMENT_RE = new RegExp(
+  [
+    '\\bpayment to (?:crd|card)\\b',
+    '\\bcredit card (?:bill )?payment\\b',
+    '\\b(?:cc|crd) (?:pmt|payment)\\b',
+    '(?:american express|amex|citibank|citi card|discover|barclay|synchrony|capital one|chase)\\b[^\\n]*\\b(?:bill payment|payment|pmt|pymt|ach pmt|autopay|e-?pay)\\b',
+  ].join('|'),
+  'i',
+);
 
-  // Determine transfer type
-  if (lowerName.includes('credit card') || lowerName.includes('cc payment') || lowerName.includes('card payment')) {
+function detectTransferType(name: string, _amount: number): { isTransfer: boolean; transferType?: string } {
+  // Card/loan payments are checked first: "Online Banking payment to CRD 7533"
+  // is a debt payment, not an internal shuffle, even though both are non-spending.
+  if (CARD_OR_LOAN_PAYMENT_RE.test(name)) {
     return { isTransfer: true, transferType: 'credit_card_payment' };
   }
-  if (lowerName.includes('zelle') || lowerName.includes('venmo') || lowerName.includes('paypal')) {
-    return { isTransfer: true, transferType: 'p2p' };
+  if (INTERNAL_TRANSFER_RE.test(name)) {
+    return { isTransfer: true, transferType: 'internal' };
   }
-  return { isTransfer: true, transferType: 'internal' };
+  return { isTransfer: false };
 }
 
 // Helper: classify income type
@@ -206,6 +234,23 @@ async function ensureDefaultCategories(userId: string): Promise<void> {
     { name: 'Freelance', icon: '💼', color: '#22D3EE', isIncome: true },
     { name: 'Other Income', icon: '💰', color: '#34D399', isIncome: true },
     { name: 'Transfer', icon: '🔄', color: '#94A3B8', isIncome: false },
+    // Debt and housing kept apart. "Housing" holding a mortgage, two vehicle
+    // leases and a child's college rent in one number answers no question
+    // anyone actually asks.
+    { name: 'Mortgage', icon: '🏦', color: '#4F46E5', isIncome: false },
+    { name: 'Auto Lease', icon: '🚙', color: '#2563EB', isIncome: false },
+    { name: 'CC PMT', icon: '💳', color: '#94A3B8', isIncome: false },
+    { name: 'Loan Payment', icon: '📉', color: '#78716C', isIncome: false },
+    { name: 'Loan Proceeds', icon: '📈', color: '#A8A29E', isIncome: false },
+    // Money set aside is not money consumed; it needs its own line so the
+    // savings rate is not read as spending.
+    { name: 'College Savings', icon: '🎓', color: '#0891B2', isIncome: false },
+    { name: 'Kids', icon: '🧒', color: '#F59E0B', isIncome: false },
+    { name: 'Home Services', icon: '🔧', color: '#65A30D', isIncome: false },
+    { name: 'Home Improvements', icon: '🛠️', color: '#CA8A04', isIncome: false },
+    { name: 'Taxes', icon: '🧾', color: '#DC2626', isIncome: false },
+    { name: 'Bank Fees', icon: '🏧', color: '#9F1239', isIncome: false },
+    { name: 'Cash', icon: '💵', color: '#57534E', isIncome: false },
     { name: 'Uncategorized', icon: '❓', color: '#64748B', isIncome: false },
   ];
 
@@ -304,37 +349,43 @@ router.post('/', upload.array('files', MAX_FILES), enforceTotalSize, async (req:
           // Detect transfer type
           const transferInfo = detectTransferType(row.name, row.amount);
 
-          // If it's a transfer, try to assign the Transfer category
+          // Route to the right bucket. Card and loan payments go to CC PMT, not
+          // to Transfer: the previous code computed the credit_card_payment
+          // subtype and then threw it away, which is why CC PMT held a single
+          // row against ~$189k of real card and loan principal.
+          //
+          // A merchant match that already identified the payee wins over a
+          // transfer guess. "FLORIDA POWER & LIGHT (FPL) Bill Payment" is a
+          // utility bill; the old override relabelled it Transfer and $9,554 of
+          // electricity vanished from spending.
           let finalCategoryId = catResult.categoryId;
           let finalCategoryName = catResult.categoryName;
-          if (transferInfo.isTransfer || row.isTransfer) {
-            const transferCat = await db.get(`SELECT id, name FROM categories WHERE user_id = ? AND LOWER(name) = 'transfer'`, userId) as any;
-            if (transferCat) {
-              finalCategoryId = transferCat.id;
-              finalCategoryName = transferCat.name;
+
+          const bucketFor = async (categoryName: string) => {
+            const cat = await db.get(
+              `SELECT id, name FROM categories WHERE user_id = ? AND LOWER(name) = ?`,
+              userId, categoryName.toLowerCase(),
+            ) as any;
+            if (cat) {
+              finalCategoryId = cat.id;
+              finalCategoryName = cat.name;
             }
+          };
+
+          if (transferInfo.transferType === 'credit_card_payment') {
+            await bucketFor('CC PMT');
+          } else if (transferInfo.transferType === 'internal' || row.isTransfer) {
+            if (!catResult.categoryId) await bucketFor('Transfer');
           }
 
-          // If a user rule specifies assign_type, override the amount sign
-          // This lets rules like "Zelle from Maredin → Income" flip negative to positive
-          let finalAmount = row.amount;
-          if (catResult.assignType) {
-            const absAmt = Math.abs(row.amount);
-            if (catResult.assignType === 'income') {
-              finalAmount = absAmt; // force positive
-            } else if (catResult.assignType === 'expense') {
-              finalAmount = -absAmt; // force negative
-            }
-            // 'transfer' keeps original sign
-            // Also override the transfer detection if rule says income/expense
-            if (catResult.assignType === 'income' || catResult.assignType === 'expense') {
-              // Rule explicitly says this is income/expense, not a transfer
-              // Don't let transfer detection override the rule's category
-              if (catResult.categoryId) {
-                finalCategoryId = catResult.categoryId;
-                finalCategoryName = catResult.categoryName;
-              }
-            }
+          // A rule's category wins outright. It does NOT rewrite the amount:
+          // forcing the sign to match an assign_type turned debits into credits
+          // and was how petrol stations ended up recorded as money coming in.
+          // The sign belongs to the bank, not to a categorisation rule.
+          const finalAmount = row.amount;
+          if (catResult.assignType && catResult.categoryId) {
+            finalCategoryId = catResult.categoryId;
+            finalCategoryName = catResult.categoryName;
           }
 
           // Classify income type

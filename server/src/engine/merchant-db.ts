@@ -640,29 +640,120 @@ const INCOME: MerchantEntry[] = [
 // ---------------------------------------------------------------------------
 // TRANSFER — Between own accounts, P2P, wire transfers
 // ---------------------------------------------------------------------------
+// NOTE: Zelle, Venmo, PayPal and Cash App are NOT here. They are payment
+// rails, not destinations — this household receives most of its income and
+// pays most of its contractors over Zelle. Filing the rail as a transfer hid
+// $220k of income and $20k of spending. What a P2P payment means is decided by
+// who is on the other end, which is a rule, not a keyword.
+//
+// Bank fees are not transfers either; they are a real cost and belong in
+// interest_fee so they show up in spending.
 const TRANSFER: MerchantEntry[] = [
-  'transfer', 'xfer', 'wire ', 'ach ',
-  'zelle', 'venmo', 'cash app', 'cashapp',
-  'paypal', 'apple pay', 'apple cash',
-  'google pay', 'samsung pay',
-  'western union', 'moneygram', 'remitly',
-  'wise.com', 'transferwise', 'worldremit',
-  'overdraft', 'nsf ', 'returned item',
-  'atm ', 'atm withdrawal', 'atm deposit',
+  'transfer', 'xfer', 'wire ',
+  'overdraft protection',
+  'atm withdrawal', 'atm deposit',
   'cash withdrawal', 'cash deposit',
-  'bank fee', 'service charge', 'monthly fee',
-  'maintenance fee', 'account fee',
 ].map(p => ({ pattern: p, category: 'Transfer', confidence: 0.75 }));
+
+const BANK_FEES: MerchantEntry[] = [
+  'overdraft item fee', 'nsf fee', 'returned item fee',
+  'bank fee', 'service charge', 'monthly fee',
+  'maintenance fee', 'account fee', 'international transaction fee',
+].map(p => ({ pattern: p, category: 'Bank Fees', confidence: 0.80 }));
+
+// ---------------------------------------------------------------------------
+// REAL BANK DESCRIPTORS
+// ---------------------------------------------------------------------------
+// The rest of this file is merchant *brands*. These are the ACH and bill-pay
+// descriptors US banks actually emit, which look nothing like a storefront
+// name and were the largest single source of miscategorisation: mortgage
+// servicers, lenders, lease companies, 529 plans and payroll originators all
+// arrived as unrecognised text and fell through to whatever generic keyword
+// happened to collide with them.
+//
+// High confidence because these are exact descriptor stems, not brand guesses.
+const US_BANK_DESCRIPTORS: MerchantEntry[] = [
+  // Mortgage servicers — kept out of "Housing" so debt service is visible
+  ['citizens des:mtg', 'Mortgage'], ['citizens home loans', 'Mortgage'],
+  ['third federal', 'Mortgage'], ['thfsla', 'Mortgage'],
+  ['mr. cooper', 'Mortgage'], ['rocket mortgage', 'Mortgage'],
+  ['wells fargo home mtg', 'Mortgage'], ['freedom mortgage', 'Mortgage'],
+  ['des:mtg pmt', 'Mortgage'], ['home loans bill payment', 'Mortgage'],
+
+  // Vehicle leases and finance
+  ['des:auto lease', 'Auto Lease'], ['stellantis', 'Auto Lease'],
+  ['infiniti', 'Auto Lease'], ['nissan motor accept', 'Auto Lease'],
+  ['toyota financial', 'Auto Lease'], ['honda financial', 'Auto Lease'],
+  ['ally auto', 'Auto Lease'], ['des:lease pmt', 'Auto Lease'],
+
+  // Consumer lenders — repayments
+  ['prosper marketpl', 'Loan Payment'], ['space coast credit union loans', 'Loan Payment'],
+  ['lending club', 'Loan Payment'], ['sofi lending', 'Loan Payment'],
+  ['upstart network', 'Loan Payment'], ['best egg', 'Loan Payment'],
+
+  // College savings — set aside, not spent
+  ['vgi 529', 'College Savings'], ['529 ach', 'College Savings'],
+  ['collegeadvantage', 'College Savings'], ['my529', 'College Savings'],
+  ['bright start', 'College Savings'], ['scholarshare', 'College Savings'],
+
+  // Kids — allowance cards and youth sports
+  ['greenlight', 'Kids'], ['gohenry', 'Kids'], ['famzoo', 'Kids'],
+  ['jfi*strikers', 'Kids'], ['jfi*fc prime', 'Kids'],
+  ['elite basketball', 'Kids'], ['miami breakers', 'Kids'],
+  ['us soccer 5', 'Kids'],
+
+  // Recurring home services, as distinct from capital improvements
+  ['pool service', 'Home Services'], ['poolserv', 'Home Services'],
+  ['alligator pool', 'Home Services'], ['terminix', 'Home Services'],
+  ['exterminating', 'Home Services'], ['lawn service', 'Home Services'],
+  ['pest control', 'Home Services'],
+
+  ['roofing', 'Home Improvements'], ['bill.com', 'Home Improvements'],
+
+  // Taxes and government
+  ['us treasury irs', 'Taxes'], ['irs des:usataxpymt', 'Taxes'],
+  ['dept of revenue', 'Taxes'], ['franchise tax', 'Taxes'],
+  ['property appraiser', 'Taxes'], ['tax collector', 'Taxes'],
+
+  // Utilities that arrive as bill-pay descriptors
+  ['florida power & light', 'Utilities'], ['florida power and light', 'Utilities'],
+  ['comed', 'Utilities'], ['des:m-dwasdpmt', 'Utilities'],
+  ['miami-dade water', 'Utilities'], ['att des:payment', 'Utilities'],
+
+  // Payroll and business income originators
+  ['des:payroll', 'Salary'], ['des:direct dep', 'Salary'],
+  ['fifth generation', 'Salary'],
+  // Brokerage withdrawals to checking. Matched on the full ACH descriptor so
+  // it cannot catch a cheque written INTO the brokerage, which is a deposit
+  // going the other way. Whether these are realised gains or a return of
+  // capital changes whether they are income at all — owner-confirmed as income.
+  ['interactive brok des:ach transf', 'Other Income'],
+
+  // Insurance premiums paid by ACH
+  ['northwestern mu', 'Insurance'], ['des:isa pyment', 'Insurance'],
+].map(([pattern, category]) => ({ pattern, category, confidence: 0.92 }));
 
 // ---------------------------------------------------------------------------
 // CC PMT — Credit card payments
 // ---------------------------------------------------------------------------
+// Real bank descriptors, not idealised ones. Bank of America writes
+// "CITIBANK CREDIT CARD Bill Payment" and "Online Banking payment to CRD 7533";
+// none of the old entries ("card payment", "cc pmt") matched either, which is
+// why every card payment fell through to Transfer.
+//
+// Bare 'autopay' and 'auto pay' are gone: they matched utilities and insurance
+// on autopay and quietly removed them from spending.
 const CC_PMT: MerchantEntry[] = [
-  'credit card payment', 'cc payment', 'cc pmt',
-  'autopay', 'auto pay', 'minimum payment',
-  'payment thank you', 'online payment thank',
-  'payment received', 'card payment',
+  'credit card payment', 'credit card bill payment',
+  'cc payment', 'cc pmt', 'crd pmt',
+  'payment to crd', 'payment to card',
+  'minimum payment', 'payment thank you', 'online payment thank',
   'balance payment', 'statement payment',
+  'american express bill payment', 'american express des:ach pmt',
+  'citibank credit card bill payment', 'citi card payment',
+  'discover e-payment', 'discover des:e-payment',
+  'synchrony bank payment', 'barclaycard payment',
+  'capital one des:cardpymt', 'chase credit crd',
 ].map(p => ({ pattern: p, category: 'CC PMT', confidence: 0.80 }));
 
 // ---------------------------------------------------------------------------
@@ -689,6 +780,8 @@ export const MERCHANT_DATABASE: MerchantEntry[] = [
   ...INCOME,
   ...CC_PMT,
   ...TRANSFER,
+  ...BANK_FEES,
+  ...US_BANK_DESCRIPTORS,
 ];
 
 // ---------------------------------------------------------------------------
@@ -696,8 +789,13 @@ export const MERCHANT_DATABASE: MerchantEntry[] = [
 // ---------------------------------------------------------------------------
 
 // Sorted by pattern length (longest first) for specificity — "uber eats" before "uber"
+// Confidence first, then length. Sorting by length alone let a long generic
+// pattern outrank a short exact one — 'greenlight' (the kids' card) losing to
+// whatever longer brand string happened to collide. Exact bank descriptors
+// carry 0.92 and now win outright; generic words like 'grocery' and 'store'
+// sit lowest and only apply when nothing specific matched.
 const SORTED_MERCHANTS = [...MERCHANT_DATABASE].sort(
-  (a, b) => b.pattern.length - a.pattern.length
+  (a, b) => (b.confidence - a.confidence) || (b.pattern.length - a.pattern.length)
 );
 
 /**
@@ -730,12 +828,38 @@ const POS_PREFIXES = [
   'cko*',                                       // Checkout.com
 ];
 
+/**
+ * Patterns must match whole words, not substrings.
+ *
+ * Plain `.includes()` matched 'ach' inside "PUBLIX ... MIAMI BEACH FL",
+ * "COACH OUTLET" and "THE PEACH COBBLER"; 'spa' inside "SPACE COAST CREDIT
+ * UNION"; 'ira' inside "CACHOEIRA"; 'ssi' inside "HAMILTON'S CONCESSION".
+ * Every one of those was filed under the wrong category, and the short
+ * patterns did the most damage because they collide with the most words.
+ *
+ * A boundary is only added where the pattern's own edge is a word character,
+ * so entries that deliberately carry punctuation or a trailing space —
+ * 'amzn mktp ', 'goo*', 'apple.com/bill' — keep working unchanged.
+ */
+const BOUNDARY_CACHE = new Map<string, RegExp>();
+
+function patternRegex(pattern: string): RegExp {
+  let re = BOUNDARY_CACHE.get(pattern);
+  if (re) return re;
+  const escaped = pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const openBoundary = /^\w/.test(pattern) ? '\\b' : '';
+  const closeBoundary = /\w$/.test(pattern) ? '\\b' : '';
+  re = new RegExp(openBoundary + escaped + closeBoundary, 'i');
+  BOUNDARY_CACHE.set(pattern, re);
+  return re;
+}
+
 export function lookupMerchant(transactionName: string): MerchantEntry | null {
   const lower = transactionName.toLowerCase().trim();
 
   // Try matching directly first
   for (const entry of SORTED_MERCHANTS) {
-    if (lower.includes(entry.pattern)) {
+    if (patternRegex(entry.pattern).test(lower)) {
       return entry;
     }
   }
@@ -751,7 +875,7 @@ export function lookupMerchant(transactionName: string): MerchantEntry | null {
 
   if (stripped !== lower && stripped.length >= 3) {
     for (const entry of SORTED_MERCHANTS) {
-      if (stripped.includes(entry.pattern)) {
+      if (patternRegex(entry.pattern).test(stripped)) {
         return entry;
       }
     }

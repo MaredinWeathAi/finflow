@@ -21,12 +21,12 @@ export interface CategorizationResult {
 const KEYWORD_CATEGORY_MAP: Record<string, string> = {
   // Housing
   'rent': 'Housing',
-  'mortgage': 'Housing',
+  'mortgage': 'Mortgage',
   'airbnb': 'Housing',
   'hoa': 'Housing',
   'property tax': 'Housing',
   'apartment': 'Housing',
-  'lease': 'Housing',
+  'auto lease': 'Auto Lease',
   'landlord': 'Housing',
 
   // Groceries
@@ -275,7 +275,7 @@ export async function categorizeItem(
   }
 
   // 3. Fall back to built-in keyword map (generic terms like "restaurant", "gas")
-  const keywordResult = await matchKeywordMap(lowerName, userId);
+  const keywordResult = await matchKeywordMap(lowerName, userId, amount);
   if (keywordResult) {
     return keywordResult;
   }
@@ -365,7 +365,26 @@ async function matchMerchantDb(lowerName: string, userId: string): Promise<Categ
 // Built-in keyword matching
 // ---------------------------------------------------------------------------
 
-async function matchKeywordMap(lowerName: string, userId: string): Promise<CategorizationResult | null> {
+/**
+ * Whole-word keyword match. Plain `.includes()` matched 'spa' inside "SPACE
+ * COAST CREDIT UNION" (a loan payment filed under Personal Care) and 'gas'
+ * inside any word containing those letters. Short keywords collide with the
+ * most words and did the most damage.
+ */
+const KEYWORD_RE_CACHE = new Map<string, RegExp>();
+
+function keywordRegex(keyword: string): RegExp {
+  let re = KEYWORD_RE_CACHE.get(keyword);
+  if (re) return re;
+  const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const open = /^\w/.test(keyword) ? '\\b' : '';
+  const close = /\w$/.test(keyword) ? '\\b' : '';
+  re = new RegExp(open + escaped + close, 'i');
+  KEYWORD_RE_CACHE.set(keyword, re);
+  return re;
+}
+
+async function matchKeywordMap(lowerName: string, userId: string, amount: number): Promise<CategorizationResult | null> {
   // Sort keywords by length descending so more specific matches win first
   // e.g., "uber eats" should match before "uber"
   const sortedKeywords = Object.keys(KEYWORD_CATEGORY_MAP).sort(
@@ -373,8 +392,13 @@ async function matchKeywordMap(lowerName: string, userId: string): Promise<Categ
   );
 
   for (const keyword of sortedKeywords) {
-    if (lowerName.includes(keyword)) {
+    if (keywordRegex(keyword).test(lowerName)) {
       const categoryName = KEYWORD_CATEGORY_MAP[keyword];
+      // An income keyword on money going OUT is a false match, not income.
+      // 'treasury' matched "US TREASURY IRS DES:PAYMENT" — a $6,598 tax
+      // payment filed as Other Income — and 'deposit'/'refund' do the same to
+      // any debit that happens to contain the word.
+      if (categoryName === 'Income' && amount < 0) continue;
       const categoryId = await getCategoryByKeyword(categoryName, userId);
 
       return {

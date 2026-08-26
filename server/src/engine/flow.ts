@@ -83,11 +83,20 @@ export function liabilityOwed(accountType: string, balance: number): number {
 // Name pattern library (the ONE place transfer/fee/refund keywords live)
 // ---------------------------------------------------------------------------
 
+// Zelle, Venmo and PayPal are NOT here. They are payment rails: this household
+// receives ~$220k of income and pays ~$20k of contractors, coaches and
+// therapists over Zelle. Treating the rail as the meaning classified the
+// owner's own salary as a transfer and made every hand-correction revert.
+//
+// "wire" is also gone as a bare word — an inbound wire is as likely to be a
+// vehicle sale or a client payment as an internal move, so it falls through to
+// the income/refund logic and gets confirmed rather than silently buried.
 const TRANSFER_RE = new RegExp(
   [
-    '\\btransfer\\b', '\\bxfer\\b', '\\bzelle\\b', '\\bvenmo\\b', '\\bwire\\b',
-    'paypal transfer', 'internal transfer', 'funds transfer', 'mobile transfer',
-    'online banking transfer', 'ach transfer',
+    '\\btransfer\\b', '\\bxfer\\b',
+    'internal transfer', 'funds transfer', 'mobile transfer',
+    'online banking transfer', 'online scheduled transfer', 'automatic transfer',
+    'overdraft protection',
     '\\b(?:to|from) (?:savings|checking|chk|sav)\\b',
   ].join('|'),
 );
@@ -96,12 +105,16 @@ const TRANSFER_RE = new RegExp(
  * Card-payment shapes. Deliberately does NOT match a bare "payment" —
  * "Rent Payment" is a real expense. Requires an explicit card/issuer signal.
  */
+// Bare 'autopay', 'pymt', 'epay' and 'ach pmt' are gone. They matched a
+// mortgage descriptor containing "PYMT", insurance on autopay, and utilities on
+// autopay — silently removing the household's two largest fixed costs from
+// spending. A card payment now needs a card, a loan, or a named issuer.
 const CARD_PAYMENT_RE = new RegExp(
   [
     'payment thank you', 'thank you.*payment',
-    '\\bauto-?pay\\b', '\\be-?payment\\b', '\\bepay\\b', '\\bach pmt\\b',
+    '\\bpayment to (?:crd|card)\\b',
     '\\b(?:crd|card|cc) ?(?:pmt|payment)\\b', 'crcardpmt', 'cardmember (?:pmt|payment)',
-    '\\bpayment received\\b', '\\bpymt\\b',
+    'credit card (?:bill )?payment',
     // card-only issuers + a payment word; deposit/mortgage megabanks are deliberately
     // NOT listed here ("WELLS FARGO HOME MTG PAYMENT" must stay an expense) — their
     // card-payment descriptors carry crd/autopay/epay/pymt and match above.
@@ -175,6 +188,31 @@ function hasComparablePriorDebit(t: TxnRow, ctx: ClassifyContext): boolean {
   return false;
 }
 
+/**
+ * Categories that settle a balance rather than buy anything. Money leaving the
+ * checking account toward one of these is principal, not spending — the
+ * spending was recorded when the card was charged.
+ */
+const DEBT_CATEGORIES = new Set(['cc pmt', 'loan payment', 'mortgage']);
+
+/**
+ * Categories that name real consumption. When one of these is set, it beats
+ * any guess the classifier would make from the descriptor.
+ *
+ * This is the fix for the correction that would not stick: a Zelle payment to
+ * a soccer coach, re-categorised by hand as "Kids", used to be read back as
+ * "zelle" → transfer and dropped straight out of the spending total again.
+ * An explicit category is evidence about meaning; a payment rail in the
+ * descriptor is not.
+ */
+function isSpendingCategory(cat: string): boolean {
+  if (!cat) return false;
+  return cat !== 'transfer' && !DEBT_CATEGORIES.has(cat) && !cat.includes('income');
+}
+
+/** Lenders whose inbound money is borrowing, not earnings. */
+const LOAN_PROCEEDS_RE = /\b(?:prosper|sofi|lending ?club|upstart|best ?egg|avant|marcus|happy money|discover personal loan)\b/i;
+
 /** Classify one transaction that did NOT match a transfer pair. */
 export function classifyUnpaired(t: TxnRow, ctx: ClassifyContext): FlowType {
   const name = String(t.name || '').toLowerCase();
@@ -182,8 +220,17 @@ export function classifyUnpaired(t: TxnRow, ctx: ClassifyContext): FlowType {
   const cat = categoryOf(t, ctx);
 
   if (t.amount < 0) {
+    // A named debt category settles a balance. Checked before everything else
+    // so a mortgage or card payment can never be read as spending.
+    if (DEBT_CATEGORIES.has(cat)) return cat === 'mortgage' ? 'expense' : 'transfer';
+    // A real spending category outranks the descriptor. Without this, anything
+    // paid over Zelle or Venmo stays a transfer no matter how it is labelled.
+    if (isSpendingCategory(cat)) return 'expense';
+    // Transfer shape is tested BEFORE the fee library: "OVERDRAFT PROTECTION TO
+    // CHK 4301" is an internal sweep, and \boverdraft\b in the fee patterns
+    // used to book 88 of those as bank charges.
+    if (TRANSFER_RE.test(name) || cat === 'transfer') return 'transfer';
     if (INTEREST_FEE_RE.test(name)) return 'interest_fee';
-    if (TRANSFER_RE.test(name) || cat === 'transfer' || cat === 'cc pmt') return 'transfer';
     if (acctIsLiability) return 'expense'; // purchases charged to the card
     if (CARD_PAYMENT_RE.test(name) && ctx.userHasLiabilityAccount) return 'transfer';
     return 'expense';
@@ -195,6 +242,10 @@ export function classifyUnpaired(t: TxnRow, ctx: ClassifyContext): FlowType {
       return 'debt_payment'; // a positive amount on a credit/loan account is never income
     }
     if (REFUND_RE.test(name)) return 'refund';
+    // Borrowing raises the balance and the debt by the same amount. A $43,000
+    // loan drawdown counted as income hides a deficit outright.
+    if (LOAN_PROCEEDS_RE.test(name) || cat === 'loan proceeds') return 'transfer';
+    if (cat.includes('income')) return 'income';
     if (TRANSFER_RE.test(name) || cat === 'transfer') return 'transfer';
     if (hasComparablePriorDebit(t, ctx)) return 'refund';
     return 'income';
