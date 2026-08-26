@@ -251,6 +251,7 @@ async function ensureDefaultCategories(userId: string): Promise<void> {
     { name: 'CC PMT', icon: '💳', color: '#94A3B8', isIncome: false },
     { name: 'Loan Payment', icon: '📉', color: '#78716C', isIncome: false },
     { name: 'Loan Proceeds', icon: '📈', color: '#A8A29E', isIncome: false },
+    { name: 'Asset Sale', icon: '🔁', color: '#0D9488', isIncome: false },
     // Money set aside is not money consumed; it needs its own line so the
     // savings rate is not read as spending.
     { name: 'College Savings', icon: '🎓', color: '#0891B2', isIncome: false },

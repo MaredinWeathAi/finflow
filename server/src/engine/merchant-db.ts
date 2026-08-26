@@ -686,8 +686,11 @@ const US_BANK_DESCRIPTORS: MerchantEntry[] = [
   ['toyota financial', 'Auto Lease'], ['honda financial', 'Auto Lease'],
   ['ally auto', 'Auto Lease'], ['des:lease pmt', 'Auto Lease'],
 
-  // Consumer lenders — repayments
-  ['prosper marketpl', 'Loan Payment'], ['space coast credit union loans', 'Loan Payment'],
+  // Consumer lenders. Repayments and drawdowns are opposite events and must
+  // not share a category: the drawdown raises cash and debt together, so
+  // counting it as income hides the borrowing entirely.
+  ['prosper marketpl', 'Loan Payment'],
+  ['prosper market p', 'Loan Proceeds'], ['space coast credit union loans', 'Loan Payment'],
   ['lending club', 'Loan Payment'], ['sofi lending', 'Loan Payment'],
   ['upstart network', 'Loan Payment'], ['best egg', 'Loan Payment'],
 
@@ -731,6 +734,10 @@ const US_BANK_DESCRIPTORS: MerchantEntry[] = [
 
   // Insurance premiums paid by ACH
   ['northwestern mu', 'Insurance'], ['des:isa pyment', 'Insurance'],
+
+  // Selling an asset converts one thing you own into another. It is not
+  // earnings, and folding it into income overstates what the household makes.
+  ['carvana', 'Asset Sale'], ['carmax', 'Asset Sale'], ['vroom', 'Asset Sale'],
 ].map(([pattern, category]) => ({ pattern, category, confidence: 0.92 }));
 
 // ---------------------------------------------------------------------------

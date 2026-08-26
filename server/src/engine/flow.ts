@@ -244,7 +244,7 @@ export function classifyUnpaired(t: TxnRow, ctx: ClassifyContext): FlowType {
     if (REFUND_RE.test(name)) return 'refund';
     // Borrowing raises the balance and the debt by the same amount. A $43,000
     // loan drawdown counted as income hides a deficit outright.
-    if (LOAN_PROCEEDS_RE.test(name) || cat === 'loan proceeds') return 'transfer';
+    if (LOAN_PROCEEDS_RE.test(name) || cat === 'loan proceeds' || cat === 'asset sale') return 'transfer';
     if (cat.includes('income')) return 'income';
     if (TRANSFER_RE.test(name) || cat === 'transfer') return 'transfer';
     if (hasComparablePriorDebit(t, ctx)) return 'refund';
