@@ -8,15 +8,23 @@ import { useCategories } from '@/hooks/useCategories'
 import { PageHeader } from '@/components/shared/PageHeader'
 import { api } from '@/lib/api'
 import { toast } from 'sonner'
+import { frequencyLabel } from '@/lib/utils'
 import type { RecurringExpense } from '@/types'
 
-const freqLabels: Record<string, string> = {
-  weekly: 'Weekly',
-  biweekly: 'Bi-weekly',
-  monthly: 'Monthly',
-  quarterly: 'Quarterly',
-  annually: 'Annually',
-}
+// The values the picker offers. These are what the auto-detector writes, so a
+// detected item and a hand-entered one now speak the same vocabulary — the old
+// table offered 'annually' while detection wrote 'annual', 'semi-annual' and
+// 'semi-monthly', which rendered as blank labels and were mis-multiplied
+// everywhere downstream.
+const FREQUENCY_OPTIONS: { value: string; label: string }[] = [
+  { value: 'weekly', label: 'Weekly' },
+  { value: 'biweekly', label: 'Every 2 weeks' },
+  { value: 'semi-monthly', label: 'Twice a month' },
+  { value: 'monthly', label: 'Monthly' },
+  { value: 'quarterly', label: 'Quarterly' },
+  { value: 'semi-annual', label: 'Twice a year' },
+  { value: 'annual', label: 'Yearly' },
+]
 
 function PriceChangeBadge({ expense }: { expense: RecurringExpense }) {
   const history = expense.price_history || []
@@ -82,7 +90,7 @@ function RecurringRow({ expense, onEdit }: { expense: RecurringExpense; onEdit: 
           )}
         </div>
         <p className="text-xs text-muted-foreground mt-0.5">
-          {freqLabels[expense.frequency]} &middot; {expense.category_name || 'Uncategorized'}
+          {frequencyLabel(expense.frequency)} &middot; {expense.category_name || 'Uncategorised'}
         </p>
       </div>
 
@@ -168,7 +176,7 @@ function AddRecurringModal({ open, onClose, expense, categories, onSave }: {
             <div>
               <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Frequency</label>
               <select value={form.frequency} onChange={e => setForm(f => ({ ...f, frequency: e.target.value as any }))} className="mt-1 w-full h-10 rounded-lg border border-input bg-background px-3 text-sm">
-                {Object.entries(freqLabels).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                {FREQUENCY_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
               </select>
             </div>
           </div>
@@ -200,7 +208,7 @@ function AddRecurringModal({ open, onClose, expense, categories, onSave }: {
 }
 
 export function RecurringPage() {
-  const { recurring, isLoading, totalMonthly, totalAnnual, refetch } = useRecurring()
+  const { recurring, isLoading, totalMonthly, totalAnnual, unknownFrequency, refetch } = useRecurring()
   const { categories } = useCategories()
   const [showModal, setShowModal] = useState(false)
   const [editExpense, setEditExpense] = useState<RecurringExpense | null>(null)
@@ -305,6 +313,14 @@ export function RecurringPage() {
         <div className="bg-card rounded-xl border border-border/50 p-4">
           <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Monthly Total</p>
           <p className="text-xl font-bold mt-1">{formatCurrency(totalMonthly)}</p>
+          {/* An item whose frequency can't be read contributes 0 rather than a
+              guess — but say so, so the total is never quietly short. */}
+          {unknownFrequency > 0 && (
+            <p className="text-xs text-muted-foreground mt-1">
+              {unknownFrequency} item{unknownFrequency === 1 ? '' : 's'} with an unreadable
+              frequency {unknownFrequency === 1 ? 'is' : 'are'} not counted
+            </p>
+          )}
         </div>
         <div className="bg-card rounded-xl border border-border/50 p-4">
           <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Annual Estimate</p>
