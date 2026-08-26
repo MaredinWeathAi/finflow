@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { BarChart, Bar, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts'
-import { cn, formatCurrency, formatPercent } from '@/lib/utils'
+import { cn, formatCurrency } from '@/lib/utils'
 import { PageHeader } from '@/components/shared/PageHeader'
 import { api } from '@/lib/api'
 import type { CashFlowData } from '@/types'
@@ -9,8 +9,17 @@ const periods = [
   { value: '3m', label: '3 Months' },
   { value: '6m', label: '6 Months' },
   { value: '12m', label: '12 Months' },
+  { value: '24m', label: '24 Months' },
   { value: 'ytd', label: 'Year to Date' },
 ]
+
+// "2026-08" -> "Aug 2026". The API keys months as YYYY-MM; showing that raw
+// makes the range line and the table needlessly hard to read.
+function monthLabel(key: string): string {
+  const [y, m] = key.split('-').map(Number)
+  if (!y || !m) return key
+  return `${new Date(y, m - 1, 1).toLocaleString('en-US', { month: 'short' })} ${y}`
+}
 
 export function CashFlowPage() {
   const [period, setPeriod] = useState('6m')
@@ -25,16 +34,25 @@ export function CashFlowPage() {
       .finally(() => setIsLoading(false))
   }, [period])
 
-  const currentMonth = data[data.length - 1]
-  const prevMonth = data[data.length - 2]
-
+  // Every card below is a total over the SELECTED period. They used to read
+  // data[data.length - 1] — the most recent month only — so switching between
+  // 3m / 6m / 12m / YTD changed the charts underneath but left three of the
+  // four numbers identical, which is what made the header look broken.
+  const months = data.length
   const totalIncome = data.reduce((s, d) => s + d.income, 0)
   const totalExpenses = data.reduce((s, d) => s + d.expenses, 0)
-  const avgSavingsRate = totalIncome > 0 ? ((totalIncome - totalExpenses) / totalIncome) * 100 : 0
+  const totalNet = totalIncome - totalExpenses
+  const savingsRate = totalIncome > 0 ? (totalNet / totalIncome) * 100 : 0
 
-  const incomeChange = currentMonth && prevMonth && prevMonth.income > 0
-    ? ((currentMonth.income - prevMonth.income) / prevMonth.income) * 100
-    : 0
+  const avgIncome = months > 0 ? totalIncome / months : 0
+  const avgExpenses = months > 0 ? totalExpenses / months : 0
+  const avgNet = months > 0 ? totalNet / months : 0
+
+  // The API only returns COMPLETE months, so the current partial month is not
+  // in here. Say so, rather than letting the totals quietly undercount.
+  const rangeLabel = months > 0
+    ? `${monthLabel(data[0].month)} – ${monthLabel(data[months - 1].month)} · ${months} complete month${months === 1 ? '' : 's'}`
+    : ''
 
   return (
     <div>
@@ -58,37 +76,59 @@ export function CashFlowPage() {
         ))}
       </div>
 
-      {/* Summary Cards */}
+      {/* Exactly which months the numbers below cover. Complete months only —
+          the current partial month is deliberately excluded so a half-finished
+          August cannot masquerade as a bad month. */}
+      {rangeLabel && (
+        <p className="text-xs text-muted-foreground -mt-4 mb-5 px-1">{rangeLabel}</p>
+      )}
+
+      {/* Summary Cards — totals over the selected period, not the latest month */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
         <div className="bg-card rounded-xl border border-border/50 p-4">
-          <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Net Income</p>
-          <p className={cn('text-xl font-bold mt-1', (currentMonth?.net || 0) >= 0 ? 'text-success' : 'text-danger')}>
-            {formatCurrency(currentMonth?.net || 0)}
+          <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Net</p>
+          <p className={cn('text-xl font-bold mt-1', totalNet >= 0 ? 'text-success' : 'text-danger')}>
+            {formatCurrency(totalNet)}
           </p>
-          <p className="text-xs text-muted-foreground mt-0.5">This month</p>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            {months > 0 ? `${formatCurrency(avgNet)}/mo average` : '—'}
+          </p>
         </div>
         <div className="bg-card rounded-xl border border-border/50 p-4">
           <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Income</p>
-          <p className="text-xl font-bold text-success mt-1">{formatCurrency(currentMonth?.income || 0)}</p>
-          {incomeChange !== 0 && (
-            <p className={cn('text-xs mt-0.5', incomeChange > 0 ? 'text-success' : 'text-danger')}>
-              {formatPercent(incomeChange)} vs last month
-            </p>
-          )}
+          <p className="text-xl font-bold text-success mt-1">{formatCurrency(totalIncome)}</p>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            {months > 0 ? `${formatCurrency(avgIncome)}/mo average` : '—'}
+          </p>
         </div>
         <div className="bg-card rounded-xl border border-border/50 p-4">
           <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Expenses</p>
-          <p className="text-xl font-bold text-danger mt-1">{formatCurrency(currentMonth?.expenses || 0)}</p>
+          <p className="text-xl font-bold text-danger mt-1">{formatCurrency(totalExpenses)}</p>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            {months > 0 ? `${formatCurrency(avgExpenses)}/mo average` : '—'}
+          </p>
         </div>
         <div className="bg-card rounded-xl border border-border/50 p-4">
           <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Savings Rate</p>
-          <p className="text-xl font-bold mt-1">{avgSavingsRate.toFixed(1)}%</p>
-          <p className="text-xs text-muted-foreground mt-0.5">Average</p>
+          <p className={cn('text-xl font-bold mt-1', savingsRate >= 0 ? '' : 'text-danger')}>
+            {totalIncome > 0 ? `${savingsRate.toFixed(1)}%` : '—'}
+          </p>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            {totalIncome > 0 ? `kept from ${formatCurrency(totalIncome)} earned` : 'no income in range'}
+          </p>
         </div>
       </div>
 
       {isLoading ? (
         <div className="bg-card rounded-2xl border border-border/50 p-8 text-center text-muted-foreground">Loading...</div>
+      ) : months === 0 ? (
+        <div className="bg-card rounded-2xl border border-border/50 p-8 text-center">
+          <p className="font-medium">No complete months in this range</p>
+          <p className="text-sm text-muted-foreground mt-1">
+            Cash flow only counts months with full statement coverage, so a month still in
+            progress is left out. Try a longer period, or import the missing statements.
+          </p>
+        </div>
       ) : (
         <>
           {/* Cash Flow Bar Chart */}
@@ -98,7 +138,7 @@ export function CashFlowPage() {
               <ResponsiveContainer>
                 <BarChart data={data} barGap={4}>
                   <CartesianGrid strokeDasharray="3 3" stroke="hsl(240 10% 18%)" />
-                  <XAxis dataKey="month" tick={{ fill: 'hsl(240 5% 55%)', fontSize: 12 }} />
+                  <XAxis dataKey="month" tickFormatter={monthLabel} tick={{ fill: 'hsl(240 5% 55%)', fontSize: 12 }} />
                   <YAxis tick={{ fill: 'hsl(240 5% 55%)', fontSize: 12 }} />
                   <Tooltip
                     contentStyle={{
@@ -107,6 +147,7 @@ export function CashFlowPage() {
                       borderRadius: 8,
                     }}
                     formatter={(value: number) => formatCurrency(value)}
+                    labelFormatter={(label: string) => monthLabel(label)}
                   />
                   <Legend />
                   <Bar dataKey="income" fill="#34D399" radius={[4, 4, 0, 0]} name="Income" />
@@ -129,7 +170,7 @@ export function CashFlowPage() {
                     </linearGradient>
                   </defs>
                   <CartesianGrid strokeDasharray="3 3" stroke="hsl(240 10% 18%)" />
-                  <XAxis dataKey="month" tick={{ fill: 'hsl(240 5% 55%)', fontSize: 12 }} />
+                  <XAxis dataKey="month" tickFormatter={monthLabel} tick={{ fill: 'hsl(240 5% 55%)', fontSize: 12 }} />
                   <YAxis tick={{ fill: 'hsl(240 5% 55%)', fontSize: 12 }} />
                   <Tooltip
                     contentStyle={{
@@ -138,6 +179,7 @@ export function CashFlowPage() {
                       borderRadius: 8,
                     }}
                     formatter={(value: number) => formatCurrency(value)}
+                    labelFormatter={(label: string) => monthLabel(label)}
                   />
                   <Area type="monotone" dataKey="net" stroke="#A78BFA" fill="url(#netGrad)" strokeWidth={2} name="Net Income" />
                 </AreaChart>
@@ -166,7 +208,7 @@ export function CashFlowPage() {
                     const sr = d.income > 0 ? ((d.net) / d.income) * 100 : 0
                     return (
                       <tr key={d.month} className="text-sm hover:bg-accent/20">
-                        <td className="px-5 py-3 font-medium">{d.month}</td>
+                        <td className="px-5 py-3 font-medium">{monthLabel(d.month)}</td>
                         <td className="px-5 py-3 text-right text-success tabular-nums">{formatCurrency(d.income)}</td>
                         <td className="px-5 py-3 text-right text-danger tabular-nums">{formatCurrency(d.expenses)}</td>
                         <td className={cn('px-5 py-3 text-right font-semibold tabular-nums', d.net >= 0 ? 'text-success' : 'text-danger')}>
