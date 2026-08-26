@@ -543,11 +543,30 @@ router.post('/bulk-categorize', async (req: Request, res: Response) => {
 // re-decides what they are.
 router.post('/recategorize-all', async (req: Request, res: Response) => {
   try {
-    const summary = await recategorizeAll(req.user!.id);
-    // Categories feed the flow classifier (Transfer, CC PMT and Mortgage all
-    // change what a row IS), so the whole user is re-classified afterwards.
-    await classifyUserFlows(db, req.user!.id);
-    res.json(summary);
+    const userId = req.user!.id;
+    const summary = await recategorizeAll(userId);
+
+    // Categories feed the flow classifier (Transfer, CC PMT, Mortgage and Asset
+    // Transfer all change what a row IS), so the whole user is re-classified
+    // afterwards.
+    //
+    // classifyUserFlows only touches rows whose flow_type is NULL — that is what
+    // makes it cheap and idempotent on every request. The consequence was that
+    // shipping an improvement to the classifier changed nothing for data already
+    // in the app: the card-payment ruling, the Interactive Brokers
+    // reclassification and the tightened pairing rules would all have sat there
+    // inert against 2,414 existing rows. Clearing flow_type first is what makes
+    // "Re-categorise All" mean what its name says.
+    //
+    // transfer_pair_id goes too. A pair is a decision about two rows; leaving
+    // the links behind would preserve pairings the new rules would refuse to
+    // make, including the false ones that were eating real expenses.
+    await db.run(
+      `UPDATE transactions SET flow_type = NULL, transfer_pair_id = NULL WHERE user_id = ?`,
+      userId,
+    );
+    const flow = await classifyUserFlows(db, userId);
+    res.json({ ...summary, reclassified: flow.rowsClassified });
   } catch (error) {
     console.error('Recategorize-all error:', error);
     res.status(500).json({ error: 'Failed to re-categorize transactions' });
