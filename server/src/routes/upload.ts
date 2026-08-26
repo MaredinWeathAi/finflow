@@ -834,7 +834,22 @@ router.post('/sessions/:id/import', async (req: Request, res: Response) => {
       // status) after correcting the date.
       items = await db.all(`SELECT * FROM pending_items WHERE session_id = ? AND user_id = ? AND status NOT IN ('skipped', 'imported', 'flagged')`, id, userId) as any[];
     } else {
-      items = await db.all(`SELECT * FROM pending_items WHERE session_id = ? AND user_id = ? AND (status = 'approved' OR (status = 'pending' AND matched_category_id IS NOT NULL AND matched_category_id != ''))`, id, userId) as any[];
+      // Import approved items and every remaining pending one.
+      //
+      // This used to require a pending item to already carry a category —
+      // `matched_category_id IS NOT NULL AND != ''` — which meant the import
+      // silently left behind precisely the transactions the categoriser
+      // understood least. On Marcelo's clean import that was 219 rows out of
+      // 2,638: $17,908 of real spending and the $43,000 Prosper drawdown that
+      // funded the roof, all parsed correctly, all shown in the review list,
+      // none of them imported, and nothing said so. Expenses were understated
+      // and the monthly deficit read $700 better than it was.
+      //
+      // An unrecognised merchant is a categorisation gap, not a reason to
+      // discard a bank transaction. Uncategorised rows import as uncategorised
+      // — the reports give them their own visible line — and the count is
+      // reported back so the gap is stated rather than hidden.
+      items = await db.all(`SELECT * FROM pending_items WHERE session_id = ? AND user_id = ? AND status IN ('approved', 'pending')`, id, userId) as any[];
     }
 
     if (items.length === 0) {
@@ -849,6 +864,11 @@ router.post('/sessions/:id/import', async (req: Request, res: Response) => {
     // status, because review edits (PUT /items/:id) can change parsed_date
     // without re-running the upload-time guard. Violations flip back to
     // 'flagged' with a clarification instead of quietly entering history.
+    // Stated in the response rather than left to be discovered: how many rows
+    // arrived without a category. They ARE imported — see the query above —
+    // but a silent gap is how 219 transactions went missing in the first place.
+    const uncategorisedCount = items.filter((i: any) => !i.matched_category_id).length;
+
     const guardNow = new Date().toISOString();
     const periodByFile = new Map<string, StatementPeriodRow | undefined>();
     const importable: any[] = [];
@@ -934,8 +954,11 @@ router.post('/sessions/:id/import', async (req: Request, res: Response) => {
     await db.run(`UPDATE upload_sessions SET status = 'completed', imported_items = ?, completed_at = ? WHERE id = ?`, importedCount, now, id);
 
     res.json({
-      message: `Successfully imported ${importedCount} transactions${skippedDateGuard > 0 ? ` (${skippedDateGuard} blocked by the statement-period date guard)` : ''}`,
+      message: `Successfully imported ${importedCount} transactions`
+        + (uncategorisedCount > 0 ? ` — ${uncategorisedCount} could not be categorised and came in as Uncategorised` : '')
+        + (skippedDateGuard > 0 ? ` (${skippedDateGuard} blocked by the statement-period date guard)` : ''),
       imported: importedCount,
+      uncategorised: uncategorisedCount,
       skippedDateGuard,
     });
   } catch (error) {
