@@ -236,8 +236,11 @@ function hasComparablePriorDebit(t: TxnRow, ctx: ClassifyContext): boolean {
 
 /**
  * Categories that settle a balance rather than buy anything. Money leaving the
- * checking account toward one of these is principal, not spending — the
- * spending was recorded when the card was charged.
+ * checking account toward one of these settles a balance rather than buying
+ * something new. Whether it still counts as money out depends on whether the
+ * liability account is loaded — see classifyUnpaired(). With no card account
+ * in the database the purchases were never recorded, so the payment is the
+ * only evidence the spending happened, and it counts.
  */
 const DEBT_CATEGORIES = new Set(['cc pmt', 'loan payment', 'mortgage']);
 
@@ -266,9 +269,27 @@ export function classifyUnpaired(t: TxnRow, ctx: ClassifyContext): FlowType {
   const cat = categoryOf(t, ctx);
 
   if (t.amount < 0) {
-    // A named debt category settles a balance. Checked before everything else
-    // so a mortgage or card payment can never be read as spending.
-    if (DEBT_CATEGORIES.has(cat)) return cat === 'mortgage' ? 'expense' : 'transfer';
+    // Debt service — card payments, mortgages, loan payments.
+    //
+    // Owner's ruling (26 Aug 2026): "Make sure every CC PMT is an expense and
+    // is treated as such, not a transfer."
+    //
+    // This used to send card and loan payments to `transfer`, on the theory
+    // that the purchases they settle are already counted as expenses on the
+    // card account. That theory only holds if the card account EXISTS. With no
+    // liability accounts loaded, the purchases were never recorded either, so
+    // both ends vanished and $184,812.54 of real outflow over 18 months landed
+    // in no column at all.
+    //
+    // So: when the user owns no liability account, the payment leaving checking
+    // is the only visible evidence of that spending, and it counts as spending.
+    // When they DO own one, the purchases are visible and counting the payment
+    // as well would double-count, so it stays out of expenses as `debt_payment`
+    // (a paired payment already becomes debt_payment above, in rule 1).
+    if (DEBT_CATEGORIES.has(cat)) {
+      if (cat === 'mortgage') return 'expense';
+      return ctx.userHasLiabilityAccount ? 'debt_payment' : 'expense';
+    }
     // A real spending category outranks the descriptor. Without this, anything
     // paid over Zelle or Venmo stays a transfer no matter how it is labelled.
     if (isSpendingCategory(cat)) return 'expense';
@@ -278,7 +299,12 @@ export function classifyUnpaired(t: TxnRow, ctx: ClassifyContext): FlowType {
     if (TRANSFER_RE.test(name) || cat === 'transfer') return 'transfer';
     if (INTEREST_FEE_RE.test(name)) return 'interest_fee';
     if (acctIsLiability) return 'expense'; // purchases charged to the card
-    if (CARD_PAYMENT_RE.test(name) && ctx.userHasLiabilityAccount) return 'transfer';
+    // Same rule as the debt categories above, for a card payment recognised by
+    // its descriptor alone (no CC PMT category attached — e.g. a hand-entered
+    // row, which never runs through the categoriser).
+    if (CARD_PAYMENT_RE.test(name)) {
+      return ctx.userHasLiabilityAccount ? 'debt_payment' : 'expense';
+    }
     return 'expense';
   }
 
@@ -290,7 +316,19 @@ export function classifyUnpaired(t: TxnRow, ctx: ClassifyContext): FlowType {
     if (REFUND_RE.test(name)) return 'refund';
     // Borrowing raises the balance and the debt by the same amount. A $43,000
     // loan drawdown counted as income hides a deficit outright.
-    if (LOAN_PROCEEDS_RE.test(name) || cat === 'loan proceeds' || cat === 'asset sale') return 'transfer';
+    // Three ways money arrives that are NOT earnings, all owner-confirmed:
+    //   loan proceeds  — borrowing raises the balance and the debt equally
+    //                    (the $43,000 Prosper drawdown that funded the roof)
+    //   asset sale     — selling something you owned converts value, not creates
+    //                    it (the $19,675 Carvana wire for the car)
+    //   asset transfer — moving your own money between accounts you own
+    //                    (the $39,200 of Interactive Brokers ACH withdrawals)
+    if (
+      LOAN_PROCEEDS_RE.test(name) ||
+      cat === 'loan proceeds' ||
+      cat === 'asset sale' ||
+      cat === 'asset transfer'
+    ) return 'transfer';
     if (cat.includes('income')) return 'income';
     if (TRANSFER_RE.test(name) || cat === 'transfer') return 'transfer';
     if (hasComparablePriorDebit(t, ctx)) return 'refund';

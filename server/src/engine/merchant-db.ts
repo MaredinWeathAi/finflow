@@ -728,9 +728,13 @@ const US_BANK_DESCRIPTORS: MerchantEntry[] = [
   ['fifth generation', 'Salary'],
   // Brokerage withdrawals to checking. Matched on the full ACH descriptor so
   // it cannot catch a cheque written INTO the brokerage, which is a deposit
-  // going the other way. Whether these are realised gains or a return of
-  // capital changes whether they are income at all — owner-confirmed as income.
-  ['interactive brok des:ach transf', 'Other Income'],
+  // going the other way.
+  //
+  // Owner's ruling (26 Aug 2026): "The money from IB is an asset transfer, not
+  // income." Moving money out of his own brokerage account does not make the
+  // household any richer — it converts one asset into another. Booking it as
+  // income overstated earnings by $39,200 over 18 months.
+  ['interactive brok des:ach transf', 'Asset Transfer'],
 
   // Insurance premiums paid by ACH
   ['northwestern mu', 'Insurance'], ['des:isa pyment', 'Insurance'],

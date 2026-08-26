@@ -252,6 +252,10 @@ async function ensureDefaultCategories(userId: string): Promise<void> {
     { name: 'Loan Payment', icon: '📉', color: '#78716C', isIncome: false },
     { name: 'Loan Proceeds', icon: '📈', color: '#A8A29E', isIncome: false },
     { name: 'Asset Sale', icon: '🔁', color: '#0D9488', isIncome: false },
+    // Money moved out of an account the household already owns (brokerage
+    // withdrawal, IRA distribution to checking). Not earnings — it converts
+    // one asset into another, so it belongs in neither income nor expenses.
+    { name: 'Asset Transfer', icon: '🏦', color: '#64748B', isIncome: false },
     // Money set aside is not money consumed; it needs its own line so the
     // savings rate is not read as spending.
     { name: 'College Savings', icon: '🎓', color: '#0891B2', isIncome: false },
