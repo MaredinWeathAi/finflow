@@ -1,6 +1,6 @@
 import { db } from '../db/database.js';
 import crypto from 'crypto';
-import { lookupMerchant, getMerchantDbStats } from './merchant-db.js';
+import { lookupMerchant, lookupAuthoritativeMerchant, getMerchantDbStats } from './merchant-db.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -262,6 +262,16 @@ export async function categorizeItem(
   accountId?: string | null,
 ): Promise<CategorizationResult> {
   const lowerName = name.toLowerCase().trim();
+
+  // 0. Owner-ruled merchants beat everything, including the user's own rules.
+  //    See MerchantEntry.authoritative — rules are learned from whatever the
+  //    engine guessed at the time, so a stale one can quietly undo a decision
+  //    the owner has since made.
+  const ruled = lookupAuthoritativeMerchant(lowerName);
+  if (ruled) {
+    const categoryId = await getCategoryByKeyword(ruled.category, userId);
+    if (categoryId) return { categoryId, confidence: ruled.confidence, categoryName: ruled.category };
+  }
 
   // 1. Check user's custom category_rules table (highest priority — user overrides)
   const userRuleResult = await matchUserRules(lowerName, userId, amount, accountId);
@@ -683,6 +693,12 @@ export async function recategorizeAll(userId: string): Promise<RecategorizeSumma
   // ---- Pass 1: the deterministic pipeline -------------------------------
   for (const r of rows) {
     const lower = String(r.name || '').toLowerCase().trim();
+
+    const ruled = lookupAuthoritativeMerchant(lower);
+    if (ruled) {
+      const id = resolveCategory(ruled.category);
+      if (id) { decided.set(r.id, id); byMerchant++; continue; }
+    }
 
     const ruleHit = matchRuleList(lower, rules, r.amount, r.accountId);
     if (ruleHit?.categoryId) { decided.set(r.id, ruleHit.categoryId); byRule++; continue; }

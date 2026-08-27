@@ -1470,6 +1470,37 @@ router.get('/committed', async (req: Request, res: Response) => {
 // actually spent, and the refund is visible beside it. The tier subtotal is
 // gross spending minus refunds, so every total still ties out.
 // ---------------------------------------------------------------------------
+/**
+ * Who actually paid, for splitting one Salary row into one row per employer.
+ *
+ * merchantStem() alone is not enough here: it leaves the payment rail in the
+ * name, so two employers came out as "Fifth Generation W Ppd" and "Zelle From
+ * Maredin Corporation", and the Zelle deposits that carry no payee at all
+ * ("Zelle payment from Conf# zeu2vd6nb") collapsed into a row called
+ * "Zelle From". Rail words are stripped; when nothing identifying is left the
+ * row says so rather than inventing an employer.
+ */
+const RAIL_WORDS = new Set([
+  'zelle', 'from', 'payment', 'payments', 'des', 'ach', 'ppd', 'web', 'id',
+  'indn', 'co', 'conf', 'transfer', 'deposit', 'direct', 'dep', 'payroll',
+  'w', 'the', 'inc', 'llc', 'scheduled', 'type', 'trn', 'ref',
+]);
+
+function payeeLabel(descriptor: string): string {
+  const stem = merchantStem(descriptor) || descriptor.toLowerCase();
+  const words = stem
+    .split(/[^a-z0-9&']+/i)
+    .filter((w) => w.length > 1 && !RAIL_WORDS.has(w.toLowerCase()) && !/^\d+$/.test(w));
+  if (words.length === 0) return 'sender not named by the bank';
+  // Two words, not three: the ACH descriptor carries the EMPLOYEE name after
+  // INDN:, so a third word split one employer into "Fifth Generation" and
+  // "Fifth Generation Zinn" — two rows for one payer, which is exactly what
+  // splitting the salary line was meant to avoid.
+  return words.slice(0, 2)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+    .join(' ');
+}
+
 const TIER_LABELS: Record<string, string> = {
   debt: 'Debt service',
   committed: 'Committed',
@@ -1571,10 +1602,7 @@ router.get('/matrix', async (req: Request, res: Response) => {
     }
     for (const r of incomeRows) {
       const isSalary = String(r.name).toLowerCase() === 'salary';
-      const payee = isSalary ? (merchantStem(String(r.txnName || '')) || 'Other') : '';
-      const label = isSalary && payee
-        ? `Salary — ${payee.replace(/\b\w/g, (ch: string) => ch.toUpperCase())}`
-        : r.name;
+      const label = isSalary ? `Salary — ${payeeLabel(String(r.txnName || ''))}` : r.name;
       put(`i:${label}`, label, r.icon, 'Income', 'income', r.month, r2(r.total));
     }
 

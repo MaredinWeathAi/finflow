@@ -18,6 +18,41 @@ export interface MerchantEntry {
   category: string;      // target category name
   confidence: number;    // 0.0–1.0 how confident we are
   subcategory?: string;  // optional finer classification
+  /**
+   * Beats the user's own auto-learned rules.
+   *
+   * Normally a user rule wins over the merchant database, and it should: a
+   * deliberate correction is better evidence than a lookup table. But rules
+   * are also learned automatically from whatever the engine guessed at the
+   * time, so a rule can encode an answer the owner has since overruled — and
+   * because rules run first, the correction silently does nothing.
+   *
+   * This has now happened twice. Interactive Brokers stayed booked as income
+   * after being ruled an asset transfer, and $37,494 of roofing stayed filed
+   * as a home improvement after being ruled capital, both because a stale
+   * auto-learned rule outranked the corrected entry. Only entries that come
+   * from an explicit owner decision carry this flag.
+   */
+  authoritative?: boolean;
+}
+
+/**
+ * Patterns set by an explicit owner ruling. Checked before user rules.
+ * Keep this list short and keep every entry traceable to a decision.
+ */
+export const AUTHORITATIVE_PATTERNS: string[] = [
+  'interactive brok des:ach transf',  // 26 Aug 2026 — "an asset transfer, not income"
+  'carvana',                          // 26 Aug 2026 — "a sale. proceeds, not income"
+  'prosper market p',                 // 26 Aug 2026 — "that came from Prosper debt"
+  'roofing',                          // 27 Aug 2026 — "the roof specifically ... a different category"
+  't&s roofing',
+  're-pipe',
+  'repipe',
+];
+
+/** Is this entry one the owner has ruled on directly? */
+export function isAuthoritative(entry: MerchantEntry): boolean {
+  return AUTHORITATIVE_PATTERNS.includes(entry.pattern);
 }
 
 // ---------------------------------------------------------------------------
@@ -869,6 +904,16 @@ function patternRegex(pattern: string): RegExp {
   re = new RegExp(openBoundary + escaped + closeBoundary, 'i');
   BOUNDARY_CACHE.set(pattern, re);
   return re;
+}
+
+/**
+ * Look up ONLY the owner-ruled patterns. Used by the categoriser before it
+ * consults the user's rules, so a ruling cannot be silently overridden by a
+ * rule learned before the ruling existed.
+ */
+export function lookupAuthoritativeMerchant(transactionName: string): MerchantEntry | null {
+  const m = lookupMerchant(transactionName);
+  return m && isAuthoritative(m) ? m : null;
 }
 
 export function lookupMerchant(transactionName: string): MerchantEntry | null {
