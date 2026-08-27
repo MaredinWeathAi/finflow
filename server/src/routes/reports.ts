@@ -1486,7 +1486,28 @@ const RAIL_WORDS = new Set([
   'w', 'the', 'inc', 'llc', 'scheduled', 'type', 'trn', 'ref',
 ]);
 
+/**
+ * Owner-confirmed payee aliases, for descriptors the bank does not name.
+ *
+ * Bank of America stopped printing the payee on Marcelo's business Zelle
+ * deposits: through February 2026 they arrive as "Zelle payment from Conf#
+ * zeu2vd6nb" with no sender at all, and from March they carry MAREDIN
+ * CORPORATION. Same income stream, two descriptors, so the salary line split
+ * into two rows divided by date rather than by payer — $84,290 of "sender not
+ * named by the bank" and $63,400 of "Maredin Corporation", which together are
+ * the $147,690 he actually received.
+ *
+ * Owner ruling, 27 Aug 2026: "Sender not named at bank is also Maredin."
+ * This only renames the row; it changes no classification and no total.
+ */
+const PAYEE_ALIASES: Array<{ match: RegExp; label: string }> = [
+  { match: /^zelle\s+(?:scheduled\s+)?payment\s+from\s+conf#/i, label: 'Maredin Corporation' },
+];
+
 function payeeLabel(descriptor: string): string {
+  for (const a of PAYEE_ALIASES) {
+    if (a.match.test(descriptor.trim())) return a.label;
+  }
   const stem = merchantStem(descriptor) || descriptor.toLowerCase();
   const words = stem
     .split(/[^a-z0-9&']+/i)
