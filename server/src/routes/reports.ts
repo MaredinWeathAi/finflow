@@ -54,7 +54,7 @@ router.get('/monthly', async (req: Request, res: Response) => {
     const savingsRate = income > 0 ? Math.round(((income - expenses) / income) * 10000) / 100 : 0;
 
     // Top expense categories (refunds net against their category)
-    const topCategories = await db.all(`SELECT c.id, COALESCE(c.name, 'Uncategorised') as name, COALESCE(c.icon, '❓') as icon, COALESCE(c.color, '#94A3B8') as color,
+    const topCategories = await db.all(`SELECT c.id, COALESCE(c.name, 'Uncategorized') as name, COALESCE(c.icon, '❓') as icon, COALESCE(c.color, '#94A3B8') as color,
                 ${sqlExpenses('t')} as total,
                 COUNT(t.id) as transaction_count
          FROM transactions t
@@ -154,7 +154,7 @@ router.get('/annual', async (req: Request, res: Response) => {
     const avgMonthlyExpenses = Math.round((completeExpenses / completeMonthCount) * 100) / 100;
 
     // Top categories for the year (refunds net against their category)
-    const topCategories = await db.all(`SELECT c.id, COALESCE(c.name, 'Uncategorised') as name, COALESCE(c.icon, '❓') as icon, COALESCE(c.color, '#94A3B8') as color,
+    const topCategories = await db.all(`SELECT c.id, COALESCE(c.name, 'Uncategorized') as name, COALESCE(c.icon, '❓') as icon, COALESCE(c.color, '#94A3B8') as color,
                 ${sqlExpenses('t')} as total,
                 COUNT(t.id) as transaction_count
          FROM transactions t
@@ -297,7 +297,7 @@ router.get('/summary', async (req: Request, res: Response) => {
 
     // Category breakdown (expenses; refunds net against their category)
     const expenseCategories = await db.all(`
-      SELECT c.id, COALESCE(c.name, 'Uncategorised') as name, COALESCE(c.icon, '❓') as icon, COALESCE(c.color, '#94A3B8') as color,
+      SELECT c.id, COALESCE(c.name, 'Uncategorized') as name, COALESCE(c.icon, '❓') as icon, COALESCE(c.color, '#94A3B8') as color,
         ${sqlExpenses('t')} as total,
         COUNT(t.id) as count
       FROM transactions t
@@ -308,7 +308,7 @@ router.get('/summary', async (req: Request, res: Response) => {
 
     // Category breakdown (income)
     const incomeCategories = await db.all(`
-      SELECT c.id, COALESCE(c.name, 'Uncategorised') as name, COALESCE(c.icon, '❓') as icon, COALESCE(c.color, '#94A3B8') as color,
+      SELECT c.id, COALESCE(c.name, 'Uncategorized') as name, COALESCE(c.icon, '❓') as icon, COALESCE(c.color, '#94A3B8') as color,
         COALESCE(SUM(t.amount), 0) as total,
         COUNT(t.id) as count
       FROM transactions t
@@ -475,7 +475,7 @@ router.get('/dashboard-summary', async (req: Request, res: Response) => {
     const totalCash = cashAccounts.reduce((sum, acc) => sum + (acc.balance || 0), 0);
 
     // Top expense categories (refunds net against their category)
-    const topExpenses = await db.all(`SELECT c.id, COALESCE(c.name, 'Uncategorised') as name, COALESCE(c.icon, '❓') as icon, COALESCE(c.color, '#94A3B8') as color,
+    const topExpenses = await db.all(`SELECT c.id, COALESCE(c.name, 'Uncategorized') as name, COALESCE(c.icon, '❓') as icon, COALESCE(c.color, '#94A3B8') as color,
               ${sqlExpenses('t')} as total,
               COUNT(t.id) as transaction_count
        FROM transactions t
@@ -487,7 +487,7 @@ router.get('/dashboard-summary', async (req: Request, res: Response) => {
        LIMIT 10`, userId, monthStart, monthEnd) as any[];
 
     // Top income categories (this month)
-    const topIncome = await db.all(`SELECT c.id, COALESCE(c.name, 'Uncategorised') as name, COALESCE(c.icon, '❓') as icon, COALESCE(c.color, '#94A3B8') as color,
+    const topIncome = await db.all(`SELECT c.id, COALESCE(c.name, 'Uncategorized') as name, COALESCE(c.icon, '❓') as icon, COALESCE(c.color, '#94A3B8') as color,
               COALESCE(SUM(t.amount), 0) as total,
               COUNT(t.id) as transaction_count
        FROM transactions t
@@ -584,7 +584,7 @@ router.get('/dashboard-summary', async (req: Request, res: Response) => {
     const lastMonthSavings = Math.round((lastMonthIncome - lastMonthExpenses) * 100) / 100;
 
     // Top 10 expense categories (complete months only; refunds net against their category)
-    const topExpenses6Mo = recentMonths.length === 0 ? [] : await db.all(`SELECT c.id, COALESCE(c.name, 'Uncategorised') as name, COALESCE(c.icon, '❓') as icon, COALESCE(c.color, '#94A3B8') as color,
+    const topExpenses6Mo = recentMonths.length === 0 ? [] : await db.all(`SELECT c.id, COALESCE(c.name, 'Uncategorized') as name, COALESCE(c.icon, '❓') as icon, COALESCE(c.color, '#94A3B8') as color,
               ${sqlExpenses('t')} as total,
               COUNT(t.id) as transaction_count
        FROM transactions t
@@ -596,7 +596,7 @@ router.get('/dashboard-summary', async (req: Request, res: Response) => {
        LIMIT 10`, userId, ...recentMonths) as any[];
 
     // Top income categories (complete months only)
-    const topIncome6Mo = recentMonths.length === 0 ? [] : await db.all(`SELECT c.id, COALESCE(c.name, 'Uncategorised') as name, COALESCE(c.icon, '❓') as icon, COALESCE(c.color, '#94A3B8') as color,
+    const topIncome6Mo = recentMonths.length === 0 ? [] : await db.all(`SELECT c.id, COALESCE(c.name, 'Uncategorized') as name, COALESCE(c.icon, '❓') as icon, COALESCE(c.color, '#94A3B8') as color,
               COALESCE(SUM(t.amount), 0) as total,
               COUNT(t.id) as transaction_count
        FROM transactions t
@@ -809,7 +809,7 @@ router.get('/statement', async (req: Request, res: Response) => {
 
     const expenseRows = await db.all(
       `SELECT c.id as "categoryId",
-              COALESCE(c.name, 'Uncategorised') as name,
+              COALESCE(c.name, 'Uncategorized') as name,
               COALESCE(c.icon, '❓') as icon,
               ${sqlExpenses('t')} as total,
               COUNT(t.id) as "txnCount"
@@ -824,7 +824,7 @@ router.get('/statement', async (req: Request, res: Response) => {
 
     const incomeRows = await db.all(
       `SELECT c.id as "categoryId",
-              COALESCE(c.name, 'Uncategorised') as name,
+              COALESCE(c.name, 'Uncategorized') as name,
               COALESCE(c.icon, '❓') as icon,
               COALESCE(SUM(t.amount), 0) as total,
               COUNT(t.id) as "txnCount"
@@ -967,7 +967,7 @@ router.get('/statement', async (req: Request, res: Response) => {
     const transactions = (await db.all(
       `SELECT t.id, t.date, t.name, t.notes, t.amount, t.flow_type as "flowType",
               t.is_pending as "isPending", t.category_id as "categoryId",
-              COALESCE(c.name, 'Uncategorised') as "categoryName",
+              COALESCE(c.name, 'Uncategorized') as "categoryName",
               a.name as "accountName"
        FROM transactions t
        LEFT JOIN categories c ON t.category_id = c.id
@@ -1247,7 +1247,7 @@ router.get('/debt-service', async (req: Request, res: Response) => {
     const debtFilter = `LOWER(COALESCE(c.name, '')) IN (${catPlaceholders})`;
 
     const rows = await db.all(
-      `SELECT t.name, t.amount, t.date, COALESCE(c.name, 'Uncategorised') as "categoryName"
+      `SELECT t.name, t.amount, t.date, COALESCE(c.name, 'Uncategorized') as "categoryName"
        FROM transactions t
        LEFT JOIN categories c ON t.category_id = c.id
        WHERE t.user_id = ? AND t.flow_type IN ('expense', 'interest_fee', 'debt_payment')
@@ -1355,6 +1355,7 @@ const COMMITMENT_TIERS: Record<string, 'debt' | 'committed' | 'discretionary'> =
   'housing': 'committed', 'utilities': 'committed', 'insurance': 'committed',
   'healthcare': 'committed', 'education': 'committed', 'taxes': 'committed',
   'college savings': 'committed', 'kids': 'committed', 'groceries': 'committed',
+  'capital improvements': 'committed',
   'bank fees': 'committed', 'subscriptions': 'committed', 'home services': 'committed',
   'transportation': 'committed', 'pets': 'committed',
 };
@@ -1370,7 +1371,7 @@ router.get('/committed', async (req: Request, res: Response) => {
     const { start, end, scopeIds, scopeSql } = scope;
 
     const catRows = await db.all(
-      `SELECT COALESCE(c.name, 'Uncategorised') as name,
+      `SELECT COALESCE(c.name, 'Uncategorized') as name,
               COALESCE(c.icon, '❓') as icon,
               substr(t.date, 1, 7) as month,
               ${sqlExpenses('t')} as total,
@@ -1453,6 +1454,192 @@ router.get('/committed', async (req: Request, res: Response) => {
   } catch (error) {
     console.error('Committed report error:', error);
     res.status(500).json({ error: 'Failed to generate committed spending report' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /matrix - categories down, months across
+//
+// The shape you pivot and chart in Excel: one row per category, one column per
+// month, plus Total and Monthly Average. Grouped by tier with a subtotal each,
+// then the income / expense / net summary.
+//
+// Refunds are NOT netted into the category they came from. They get their own
+// row per tier, so a single $4,249 insurance refund no longer puts a crater in
+// the middle of a twelve-month Insurance line — the category shows what was
+// actually spent, and the refund is visible beside it. The tier subtotal is
+// gross spending minus refunds, so every total still ties out.
+// ---------------------------------------------------------------------------
+const TIER_LABELS: Record<string, string> = {
+  debt: 'Debt service',
+  committed: 'Committed',
+  discretionary: 'Discretionary',
+};
+
+router.get('/matrix', async (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.id;
+    await ensureFlowClassification(userId);
+    const scope = await resolveScope(req, userId);
+    if ('error' in scope) { res.status(400).json({ error: scope.error }); return; }
+    const { start, end, scopeIds, scopeSql } = scope;
+
+    // Complete months only unless asked otherwise: a month you hold half a
+    // statement for looks like a very good month.
+    const includePartial = String(req.query.includePartial || '') === '1';
+    const monthKeys = (includePartial ? scope.months : scope.completeMonths).slice().sort();
+    if (monthKeys.length === 0) {
+      res.json({
+        report: 'matrix', period: { start, end, label: scope.label },
+        scope: { allAccounts: scope.allAccounts, accountNames: scope.scopeNames },
+        monthKeys: [], partialIncluded: includePartial,
+        coverage: { completeMonths: scope.completeMonths, partialMonths: scope.partialMonths },
+        rows: [], summary: [], totals: { income: 0, expenses: 0, refunds: 0, net: 0 },
+      });
+      return;
+    }
+    const mph = monthKeys.map(() => '?').join(', ');
+    const inMonths = `AND substr(t.date, 1, 7) IN (${mph})`;
+
+    // ---- gross spending by category and month (refunds excluded) ---------
+    const expenseRows = await db.all(
+      `SELECT COALESCE(c.name, 'Uncategorized') as name,
+              COALESCE(c.icon, '❓') as icon,
+              substr(t.date, 1, 7) as month,
+              COALESCE(SUM(ABS(t.amount)), 0) as total
+       FROM transactions t
+       LEFT JOIN categories c ON t.category_id = c.id
+       WHERE t.user_id = ? AND t.flow_type IN ('expense', 'interest_fee')
+         ${inMonths} ${scopeSql}
+       GROUP BY c.name, c.icon, substr(t.date, 1, 7)`,
+      userId, ...monthKeys, ...scopeIds,
+    ) as any[];
+
+    // ---- refunds, by the TIER of the category they belong to -------------
+    const refundRows = await db.all(
+      `SELECT COALESCE(c.name, 'Uncategorized') as name,
+              substr(t.date, 1, 7) as month,
+              COALESCE(SUM(ABS(t.amount)), 0) as total
+       FROM transactions t
+       LEFT JOIN categories c ON t.category_id = c.id
+       WHERE t.user_id = ? AND t.flow_type = 'refund'
+         ${inMonths} ${scopeSql}
+       GROUP BY c.name, substr(t.date, 1, 7)`,
+      userId, ...monthKeys, ...scopeIds,
+    ) as any[];
+
+    // ---- income, by category; Salary split by payee ----------------------
+    // Two employers in one "Salary" row cannot be trended separately, and they
+    // are the two figures most worth trending.
+    const incomeRows = await db.all(
+      `SELECT COALESCE(c.name, 'Uncategorized') as name,
+              COALESCE(c.icon, '💰') as icon,
+              COALESCE(c.is_income, 0) as "isIncome",
+              t.name as "txnName",
+              substr(t.date, 1, 7) as month,
+              COALESCE(SUM(t.amount), 0) as total
+       FROM transactions t
+       LEFT JOIN categories c ON t.category_id = c.id
+       WHERE t.user_id = ? AND t.flow_type = 'income'
+         ${inMonths} ${scopeSql}
+       GROUP BY c.name, c.icon, c.is_income, t.name, substr(t.date, 1, 7)`,
+      userId, ...monthKeys, ...scopeIds,
+    ) as any[];
+
+    const blank = () => Object.fromEntries(monthKeys.map((m) => [m, 0])) as Record<string, number>;
+    const bucket = new Map<string, {
+      name: string; icon: string; type: 'Income' | 'Expense' | 'Refund'; tier: string;
+      byMonth: Record<string, number>;
+    }>();
+    const put = (
+      key: string, name: string, icon: string,
+      type: 'Income' | 'Expense' | 'Refund', tier: string,
+      month: string, amount: number,
+    ) => {
+      if (!bucket.has(key)) bucket.set(key, { name, icon, type, tier, byMonth: blank() });
+      const b = bucket.get(key)!;
+      b.byMonth[month] = r2((b.byMonth[month] ?? 0) + amount);
+    };
+
+    for (const r of expenseRows) {
+      put(`e:${r.name}`, r.name, r.icon, 'Expense', tierOf(r.name), r.month, r2(r.total));
+    }
+    // Refunds collapse to one row per tier — negative, because they came back.
+    for (const r of refundRows) {
+      const tier = tierOf(r.name);
+      put(`r:${tier}`, `Refunds — ${TIER_LABELS[tier] ?? tier}`, '↩️', 'Refund', tier, r.month, -r2(r.total));
+    }
+    for (const r of incomeRows) {
+      const isSalary = String(r.name).toLowerCase() === 'salary';
+      const payee = isSalary ? (merchantStem(String(r.txnName || '')) || 'Other') : '';
+      const label = isSalary && payee
+        ? `Salary — ${payee.replace(/\b\w/g, (ch: string) => ch.toUpperCase())}`
+        : r.name;
+      put(`i:${label}`, label, r.icon, 'Income', 'income', r.month, r2(r.total));
+    }
+
+    const TIER_RANK: Record<string, number> = { debt: 0, committed: 1, discretionary: 2, income: 3 };
+    const rows = Array.from(bucket.values())
+      .map((b) => {
+        const total = r2(monthKeys.reduce((s, m) => s + (b.byMonth[m] ?? 0), 0));
+        return {
+          name: b.name, icon: b.icon, type: b.type,
+          tier: b.tier === 'income' ? '' : (TIER_LABELS[b.tier] ?? b.tier),
+          tierKey: b.tier,
+          byMonth: b.byMonth,
+          total,
+          monthlyAverage: r2(total / monthKeys.length),
+        };
+      })
+      // Refund rows sort to the bottom of their tier; everything else by size.
+      .sort((a, b) =>
+        (TIER_RANK[a.tierKey] ?? 9) - (TIER_RANK[b.tierKey] ?? 9)
+        || (a.type === 'Refund' ? 1 : 0) - (b.type === 'Refund' ? 1 : 0)
+        || Math.abs(b.total) - Math.abs(a.total));
+
+    // ---- summary --------------------------------------------------------
+    const sumOver = (pred: (r: typeof rows[number]) => boolean) => {
+      const byMonth = blank();
+      for (const r of rows.filter(pred)) {
+        for (const m of monthKeys) byMonth[m] = r2((byMonth[m] ?? 0) + (r.byMonth[m] ?? 0));
+      }
+      const total = r2(monthKeys.reduce((s, m) => s + byMonth[m], 0));
+      return { byMonth, total, monthlyAverage: r2(total / monthKeys.length) };
+    };
+
+    const income = sumOver((r) => r.type === 'Income');
+    // Spending net of refunds — the same definition every other report uses.
+    const expenses = sumOver((r) => r.type === 'Expense' || r.type === 'Refund');
+    const refunds = sumOver((r) => r.type === 'Refund');
+    const netByMonth = blank();
+    for (const m of monthKeys) netByMonth[m] = r2(income.byMonth[m] - expenses.byMonth[m]);
+    const netTotal = r2(income.total - expenses.total);
+
+    const tierSubtotals = (['debt', 'committed', 'discretionary'] as const).map((t) => {
+      const s = sumOver((r) => r.tierKey === t);
+      return { tierKey: t, name: `Subtotal — ${TIER_LABELS[t]}`, ...s };
+    });
+
+    res.json({
+      report: 'matrix',
+      period: { start, end, label: scope.label },
+      scope: { allAccounts: scope.allAccounts, accountNames: scope.scopeNames },
+      coverage: { completeMonths: scope.completeMonths, partialMonths: scope.partialMonths },
+      monthKeys,
+      partialIncluded: includePartial,
+      rows,
+      tierSubtotals,
+      summary: {
+        income: { name: 'TOTAL INCOME', ...income },
+        expenses: { name: 'TOTAL EXPENSES', ...expenses },
+        refunds: { name: 'of which refunds', ...refunds },
+        net: { name: 'NET', byMonth: netByMonth, total: netTotal, monthlyAverage: r2(netTotal / monthKeys.length) },
+      },
+      data_notes: await getFlowDataNotes(db, userId),
+    });
+  } catch (error) {
+    console.error('Matrix report error:', error);
+    res.status(500).json({ error: 'Failed to generate the monthly matrix' });
   }
 });
 

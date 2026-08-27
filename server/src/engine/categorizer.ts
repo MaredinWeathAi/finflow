@@ -650,6 +650,24 @@ export async function recategorizeAll(userId: string): Promise<RecategorizeSumma
     return null;
   };
 
+  // Collapse the legacy "Uncategorized" CATEGORY into the NULL bucket.
+  //
+  // A category that means "no category" gave every report two adjacent rows for
+  // the same idea — the real category and the NULL bucket — which the monthly
+  // matrix made impossible to miss. A row with no category IS uncategorised;
+  // reports label the NULL bucket for display. Safe to run repeatedly, and it
+  // leaves the empty category in place rather than risking a foreign key.
+  const legacyUncat = await db.all(
+    `SELECT id FROM categories WHERE user_id = ? AND LOWER(name) IN ('uncategorized', 'uncategorised')`,
+    userId,
+  ) as Array<{ id: string }>;
+  for (const c of legacyUncat) {
+    await db.run(
+      'UPDATE transactions SET category_id = NULL WHERE user_id = ? AND category_id = ?',
+      userId, c.id,
+    );
+  }
+
   const rows = await db.all(
     'SELECT id, name, amount, category_id as "categoryId", date, account_id as "accountId" FROM transactions WHERE user_id = ?',
     userId,

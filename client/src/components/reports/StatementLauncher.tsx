@@ -3,8 +3,11 @@ import {
   format, startOfMonth, endOfMonth, startOfQuarter, endOfQuarter,
   startOfYear, endOfYear, subMonths, subQuarters, subYears,
 } from 'date-fns'
-import { Printer } from 'lucide-react'
+import { Printer, Download } from 'lucide-react'
+import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
+import { api } from '@/lib/api'
+import { downloadCsv, type Matrix } from '@/components/reports/CategoryMatrix'
 
 /**
  * Period picker for the printable Category Statement.
@@ -32,6 +35,11 @@ const REPORTS = [
   {
     id: 'committed', path: '/reports/print/committed', name: 'Committed vs Discretionary',
     blurb: 'Income down through debt service and commitments to the part you can actually change.',
+  },
+  {
+    id: 'matrix', path: '/reports/matrix', name: 'Monthly Matrix (CSV)',
+    blurb: 'Categories down, months across — the shape you pivot and chart in Excel. Downloads as CSV instead of opening a printable page.',
+    csv: true,
   },
 ] as const
 
@@ -74,8 +82,27 @@ export function StatementLauncher() {
 
   const report = REPORTS.find(r => r.id === reportId) ?? REPORTS[0]
 
-  const open = () => {
+  const [busy, setBusy] = useState(false)
+
+  const open = async () => {
     const qs = new URLSearchParams({ start: range.start, end: range.end, label: range.label })
+    // The matrix is a file, not a page: fetch it and hand over the CSV.
+    if ('csv' in report && report.csv) {
+      setBusy(true)
+      try {
+        const d = await api.get<Matrix>(`/reports/matrix?${qs.toString()}`)
+        if (d.monthKeys.length === 0) {
+          toast.error('No complete months in that range — try a longer period.')
+        } else {
+          downloadCsv(d)
+        }
+      } catch {
+        toast.error('Could not build the matrix for that range.')
+      } finally {
+        setBusy(false)
+      }
+      return
+    }
     window.open(`${report.path}?${qs.toString()}`, '_blank', 'noopener')
   }
 
@@ -100,14 +127,16 @@ export function StatementLauncher() {
         </div>
         <button
           onClick={open}
-          className="h-9 px-4 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors flex items-center gap-2 shrink-0"
+          disabled={busy}
+          className="h-9 px-4 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors flex items-center gap-2 shrink-0 disabled:opacity-60"
         >
-          <Printer className="w-4 h-4" />
-          Open report
+          {'csv' in report && report.csv
+            ? <><Download className="w-4 h-4" />{busy ? 'Building…' : 'Download CSV'}</>
+            : <><Printer className="w-4 h-4" />Open report</>}
         </button>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2 mb-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2 mb-4">
         {REPORTS.map(r => (
           <button
             key={r.id}

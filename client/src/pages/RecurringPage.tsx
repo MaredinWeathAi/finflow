@@ -90,7 +90,7 @@ function RecurringRow({ expense, onEdit }: { expense: RecurringExpense; onEdit: 
           )}
         </div>
         <p className="text-xs text-muted-foreground mt-0.5">
-          {frequencyLabel(expense.frequency)} &middot; {expense.category_name || 'Uncategorised'}
+          {frequencyLabel(expense.frequency)} &middot; {expense.category_name || 'Uncategorized'}
         </p>
       </div>
 

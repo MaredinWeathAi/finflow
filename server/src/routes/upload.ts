@@ -955,7 +955,7 @@ router.post('/sessions/:id/import', async (req: Request, res: Response) => {
 
     res.json({
       message: `Successfully imported ${importedCount} transactions`
-        + (uncategorisedCount > 0 ? ` — ${uncategorisedCount} could not be categorised and came in as Uncategorised` : '')
+        + (uncategorisedCount > 0 ? ` — ${uncategorisedCount} could not be categorised and came in as Uncategorized` : '')
         + (skippedDateGuard > 0 ? ` (${skippedDateGuard} blocked by the statement-period date guard)` : ''),
       imported: importedCount,
       uncategorised: uncategorisedCount,

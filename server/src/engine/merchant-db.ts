@@ -711,7 +711,13 @@ const US_BANK_DESCRIPTORS: MerchantEntry[] = [
   ['exterminating', 'Home Services'], ['lawn service', 'Home Services'],
   ['pest control', 'Home Services'],
 
-  ['roofing', 'Home Improvements'], ['bill.com', 'Home Improvements'],
+  // Structural work on the house is capital, not a home-improvement habit.
+  // The T&S Roofing payments are $37,494 across three months; filed under
+  // Home Improvements they landed in the discretionary tier, which reads as
+  // "you could stop buying roofs".
+  ['roofing', 'Capital Improvements'], ['t&s roofing', 'Capital Improvements'],
+  ['re-pipe', 'Capital Improvements'], ['repipe', 'Capital Improvements'],
+  ['bill.com', 'Home Improvements'],
 
   // Taxes and government
   ['us treasury irs', 'Taxes'], ['irs des:usataxpymt', 'Taxes'],

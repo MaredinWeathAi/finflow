@@ -23,6 +23,11 @@ export interface DefaultCategory {
   isIncome: boolean;
 }
 
+// NOTE: there is deliberately no 'Uncategorized' category. A row with no
+// category IS uncategorised; having a category that means "no category" gave
+// every report two adjacent rows for the same idea — one for the real category
+// and one for the NULL bucket — which is exactly what the monthly matrix made
+// obvious. Reports label the NULL bucket 'Uncategorized' for display.
 export const DEFAULT_CATEGORIES: DefaultCategory[] = [
   { name: 'Housing', icon: '🏠', color: '#6366F1', isIncome: false },
   { name: 'Groceries', icon: '🛒', color: '#22C55E', isIncome: false },
@@ -64,8 +69,12 @@ export const DEFAULT_CATEGORIES: DefaultCategory[] = [
   { name: 'Kids', icon: '🧒', color: '#F59E0B', isIncome: false },
   { name: 'Home Services', icon: '🔧', color: '#65A30D', isIncome: false },
   { name: 'Home Improvements', icon: '🛠️', color: '#CA8A04', isIncome: false },
+  // One-off capital work on the house — a roof, a re-pipe, an addition. Kept
+  // apart from Home Improvements because a $37,494 roof is not a monthly
+  // decision, and lumping it in put it in the 'cuttable' column of the
+  // committed-vs-discretionary report.
+  { name: 'Capital Improvements', icon: '🏗️', color: '#B45309', isIncome: false },
   { name: 'Taxes', icon: '🧾', color: '#DC2626', isIncome: false },
   { name: 'Bank Fees', icon: '🏧', color: '#9F1239', isIncome: false },
   { name: 'Cash', icon: '💵', color: '#57534E', isIncome: false },
-  { name: 'Uncategorized', icon: '❓', color: '#64748B', isIncome: false },
 ];

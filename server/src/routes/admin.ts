@@ -267,7 +267,7 @@ router.get('/clients/:clientId/report', async (req: Request, res: Response) => {
       const expenses = (await db.get(`SELECT ${sqlExpenses()} as total FROM transactions WHERE user_id = ? AND ${SQL_SPEND_FLOWS} AND date >= ? AND date <= ?`, clientId, monthStart, monthEnd) as any).total;
 
       const categoryBreakdown = await db.all(`
-        SELECT COALESCE(c.name, 'Uncategorised') as name, COALESCE(c.icon, '❓') as icon, COALESCE(c.color, '#94A3B8') as color, ${sqlExpenses('t')} as total, COUNT(t.id) as count
+        SELECT COALESCE(c.name, 'Uncategorized') as name, COALESCE(c.icon, '❓') as icon, COALESCE(c.color, '#94A3B8') as color, ${sqlExpenses('t')} as total, COUNT(t.id) as count
         FROM transactions t LEFT JOIN categories c ON t.category_id = c.id
         WHERE t.user_id = ? AND t.flow_type IN ('expense', 'interest_fee', 'refund') AND t.date >= ? AND t.date <= ?
         GROUP BY c.id, c.name, c.icon, c.color ORDER BY total DESC

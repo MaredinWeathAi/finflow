@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { BarChart, Bar, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts'
 import { cn, formatCurrency } from '@/lib/utils'
 import { PageHeader } from '@/components/shared/PageHeader'
+import { CategoryMatrix } from '@/components/reports/CategoryMatrix'
 import { api } from '@/lib/api'
 import type { CashFlowData } from '@/types'
 
@@ -23,6 +24,7 @@ function monthLabel(key: string): string {
 
 export function CashFlowPage() {
   const [period, setPeriod] = useState('6m')
+  const [view, setView] = useState<'chart' | 'matrix'>('chart')
   const [data, setData] = useState<CashFlowData[]>([])
   const [isLoading, setIsLoading] = useState(true)
 
@@ -76,6 +78,24 @@ export function CashFlowPage() {
         ))}
       </div>
 
+      {/* Chart or matrix. The matrix is the same months, laid out for Excel. */}
+      <div className="flex items-center gap-2 mb-4 -mt-2">
+        {([['chart', 'Chart'], ['matrix', 'Category matrix']] as const).map(([v, lbl]) => (
+          <button
+            key={v}
+            onClick={() => setView(v)}
+            className={cn(
+              'h-8 px-4 rounded-lg text-sm font-medium transition-colors',
+              view === v
+                ? 'bg-primary text-primary-foreground'
+                : 'bg-card border border-border/50 hover:bg-accent'
+            )}
+          >
+            {lbl}
+          </button>
+        ))}
+      </div>
+
       {/* Exactly which months the numbers below cover. Complete months only —
           the current partial month is deliberately excluded so a half-finished
           August cannot masquerade as a bad month. */}
@@ -119,7 +139,22 @@ export function CashFlowPage() {
         </div>
       </div>
 
-      {isLoading ? (
+      {view === 'matrix' ? (
+        months > 0 ? (
+          <CategoryMatrix
+            start={`${data[0].month}-01`}
+            end={data[months - 1].month + '-' + String(new Date(
+              Number(data[months - 1].month.slice(0, 4)),
+              Number(data[months - 1].month.slice(5, 7)), 0,
+            ).getDate()).padStart(2, '0')}
+            label={rangeLabel}
+          />
+        ) : (
+          <div className="bg-card rounded-2xl border border-border/50 p-8 text-center text-muted-foreground">
+            No complete months in this range.
+          </div>
+        )
+      ) : isLoading ? (
         <div className="bg-card rounded-2xl border border-border/50 p-8 text-center text-muted-foreground">Loading...</div>
       ) : months === 0 ? (
         <div className="bg-card rounded-2xl border border-border/50 p-8 text-center">
